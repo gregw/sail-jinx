@@ -11,27 +11,163 @@
 
 <main>
   <h1>Races</h1>
-  <p class="banner banner-info">Skeleton — race list will be populated from local store and SailSys.</p>
-  <table>
-    <thead><tr><th>Race</th><th>Date</th><th>Name</th><th>Status</th></tr></thead>
-    <tbody id="races-tbody"><tr><td colspan="4"><em>Loading…</em></td></tr></tbody>
+  <div id="races-state" class="banner banner-info">Loading…</div>
+  <table id="races-table" style="display:none;">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Name</th>
+        <th>Date</th>
+        <th>Entries</th>
+        <th>Entrants</th>
+        <th>TCFs</th>
+        <th>Start times</th>
+        <th>Starters</th>
+        <th>Finishers</th>
+      </tr>
+    </thead>
+    <tbody id="races-tbody"></tbody>
   </table>
 </main>
 
 <script src="/common.js"></script>
 <script>
+  // Field mappings derived from sailsys-api-reference.md §7 (GET /races/{id}/status).
+  const VIS = (n) => ({0: 'draft', 1: 'published'}[n] ?? ('vis=' + n));
+  const PROC = (n) => ({0: 'pending', 1: 'processing', 2: 'processed'}[n] ?? ('proc=' + n));
+
+  function fmtDate(s) {
+    if (!s) return '';
+    // SailSys returns ISO strings like 2026-05-26T00:00:00.000 — show date only.
+    return String(s).slice(0, 10);
+  }
+
+  function entrySummary(status) {
+    if (!status) return '—';
+    const total = status.entriesCount ?? 0;
+    const pending = status.pendingEntriesCount ?? 0;
+    return pending > 0 ? `${total} (${pending} pending)` : String(total);
+  }
+
+  function renderEntrants(payload) {
+    const entrants = Array.isArray(payload) ? payload : (payload && payload.entrants);
+    if (!entrants || !entrants.length) return '<p><em>No entrants.</em></p>';
+    const rows = entrants.map(e => {
+      const boat = e.boat || {};
+      const skipper = (e.skipper && e.skipper.profile) || {};
+      const tcf = (e.handicap && e.handicap.currentHandicaps && e.handicap.currentHandicaps[0])
+        ? e.handicap.currentHandicaps[0].value
+        : '';
+      const division = (e.division && e.division.name) || '';
+      return `
+        <tr>
+          <td>${esc(boat.sailNumber || '')}</td>
+          <td>${esc(boat.name || '')}</td>
+          <td>${esc((skipper.firstname || '') + ' ' + (skipper.surname || ''))}</td>
+          <td>${esc(division)}</td>
+          <td>${esc(tcf)}</td>
+          <td>${esc(e.startTimeLocal || '')}</td>
+          <td>${esc(e.finishTimeLocal || '')}</td>
+          <td>${esc(e.elapsedTime || '')}</td>
+        </tr>`;
+    }).join('');
+    return `
+      <table>
+        <thead><tr>
+          <th>Sail #</th><th>Boat</th><th>Skipper</th><th>Division</th>
+          <th>TCF</th><th>Start</th><th>Finish</th><th>Elapsed</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  async function toggleRace(raceId, summaryRow) {
+    const next = summaryRow.nextElementSibling;
+    if (next && next.classList.contains('race-detail') && next.dataset.raceId === String(raceId)) {
+      next.remove();
+      return;
+    }
+    const detail = document.createElement('tr');
+    detail.className = 'race-detail';
+    detail.dataset.raceId = String(raceId);
+    const cell = document.createElement('td');
+    cell.colSpan = 9;
+    cell.innerHTML = '<em>Loading entrants…</em>';
+    detail.appendChild(cell);
+    summaryRow.after(detail);
+
+    const r = await fetchJson('/api/races/' + encodeURIComponent(raceId) + '/entrants');
+    if (!r.ok) {
+      cell.innerHTML = '<div class="banner banner-err">Could not load entrants: '
+        + esc((r.body && r.body.error) || ('HTTP ' + r.status)) + '</div>';
+      return;
+    }
+    cell.innerHTML = renderEntrants(r.body && r.body.entrants);
+  }
+
   (async () => {
-    const r = await fetchJson('/api/races');
+    const state = document.getElementById('races-state');
+    const table = document.getElementById('races-table');
     const tbody = document.getElementById('races-tbody');
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="4">Error loading races.</td></tr>'; return; }
-    if (!r.body.length) { tbody.innerHTML = '<tr><td colspan="4"><em>No races yet.</em></td></tr>'; return; }
-    tbody.innerHTML = r.body.map(race => `
-      <tr>
-        <td>R${esc(race.number)}</td>
-        <td>${esc(race.date)}</td>
+
+    const params = new URLSearchParams(location.search);
+    const seriesId = params.get('seriesId');
+
+    if (!seriesId) {
+      state.className = 'banner banner-warn';
+      state.innerHTML = 'No series selected. Pick a series on the <a href="/series.html">Series tab</a>.';
+      return;
+    }
+
+    state.textContent = 'Loading races for series ' + seriesId + '…';
+
+    const r = await fetchJson('/api/series/' + encodeURIComponent(seriesId) + '/races');
+
+    if (r.status === 401) {
+      state.className = 'banner banner-warn';
+      state.innerHTML = 'You are not signed in. <a href="/">Sign in to SailSys</a> first.';
+      return;
+    }
+    if (!r.ok) {
+      state.className = 'banner banner-err';
+      state.textContent = 'Could not load races: '
+        + ((r.body && r.body.error) || ('HTTP ' + r.status));
+      return;
+    }
+
+    const races = Array.isArray(r.body.races) ? r.body.races : [];
+    const statusMap = r.body.status || {};
+
+    if (!races.length) {
+      state.className = 'banner banner-info';
+      state.textContent = 'No races in series ' + seriesId + '.';
+      return;
+    }
+
+    state.className = 'banner banner-ok';
+    state.textContent = races.length + ' races in series ' + seriesId
+      + ' — click a row to see entrants.';
+    table.style.display = '';
+
+    tbody.innerHTML = '';
+    for (const race of races) {
+      const st = statusMap[race.id];
+      const tr = document.createElement('tr');
+      tr.className = 'clickable';
+      tr.dataset.raceId = String(race.id);
+      tr.innerHTML = `
+        <td>${esc(race.number)}</td>
         <td>${esc(race.name)}</td>
-        <td>${esc(race.status)}</td>
-      </tr>`).join('');
+        <td>${esc(fmtDate(race.date))}</td>
+        <td>${esc(entrySummary(st))}</td>
+        <td>${st ? esc(VIS(st.raceEntrantVisibility)) : '—'}</td>
+        <td>${st ? esc(PROC(st.handicapAndStartTimeProcessingStatus)) : '—'}</td>
+        <td>${st ? esc(VIS(st.handicapAndStartTimeVisibility)) : '—'}</td>
+        <td>${st ? esc(st.startersCount ?? 0) : '—'}</td>
+        <td>${st ? esc(st.finishersCount ?? 0) : '—'}</td>`;
+      tr.onclick = () => toggleRace(race.id, tr);
+      tbody.appendChild(tr);
+    }
   })();
 </script>
 </body>

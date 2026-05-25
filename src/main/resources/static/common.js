@@ -42,7 +42,7 @@ async function refreshAuthWidget() {
   if (data.authenticated && data.user) {
     widget.innerHTML = 'SailSys: ' + esc(data.user.email);
   } else {
-    widget.innerHTML = '<a href="/login.html">Sign in to SailSys</a>';
+    widget.innerHTML = '<a href="/">Sign in to SailSys</a>';
   }
 }
 

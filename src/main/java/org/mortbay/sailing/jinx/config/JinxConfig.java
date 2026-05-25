@@ -38,11 +38,22 @@ public record JinxConfig(
         return YAML_MAPPER.readValue(Files.readAllBytes(configFile), JinxConfig.class);
     }
 
+    /**
+     * Connection settings for the SailSys API.
+     *
+     * <p>Credentials are deliberately NOT part of this record — the race
+     * officer supplies them via the login form on each browser session, the
+     * server uses them once to mint a SailSys session token, and then discards
+     * them. They are never persisted.
+     *
+     * <p>The active <em>series</em> is also not part of this record — sail-jinx
+     * is multi-series. The Series tab lists every series the club runs; the
+     * operator picks one at runtime. Only the {@code clubId} (which scopes the
+     * series list) and {@code handicapDefinitionId} (which identifies the PHS
+     * handicap line) are club-wide configuration.
+     */
     public record SailSys(
-        String email,
-        String password,
         @JsonProperty("clubId") int clubId,
-        @JsonProperty("seriesId") int seriesId,
         @JsonProperty("handicapDefinitionId") Integer handicapDefinitionId,
         String timezone,
         Integer timezoneOffset)

@@ -1,16 +1,22 @@
 # sail-jinx local configuration.
 #
-# Copy this file to data/config/config.yaml and fill in credentials.
-# The real config.yaml is gitignored.
+# Copy this file to data/config/config.yaml and edit. The real config.yaml is
+# gitignored.
+#
+# NOTE: SailSys credentials are deliberately NOT in this file. The race officer
+# enters them via the web UI on each browser session; the server uses them once
+# to obtain a SailSys session token and then discards them. Nothing more than
+# the session token is ever held server-side.
 
 sailsys:
-  email: "you@example.com"
-  password: "your-sailsys-password"
-  clubId: 23                  # MYC
-  seriesId: 4915              # 2026 Winter Twilight Series — change each season
-  handicapDefinitionId: 5     # PHS
+  clubId: 23                  # MYC — scopes the series list shown after login
+  handicapDefinitionId: 15    # MYC TCF — series whose defaultHandicap matches
+                              # this ID are the ones jinx will operate on.
+                              # (PHS at MYC is id=5; MYC TCF is id=15.)
   timezone: "Australia/Sydney"
   timezoneOffset: 10          # 11 when daylight saving is in effect
+  # NOTE: no seriesId here — sail-jinx is multi-series. The Series tab in the
+  # web UI lists every series the club runs; pick one at runtime.
 
 algorithm:
   penaltyList: [5, 4, 3, 2, 1]

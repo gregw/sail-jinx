@@ -33,6 +33,14 @@ th { text-align: left; padding: 4px 8px; background: #f0f0f0; border-bottom: 2px
 td { padding: 4px 8px; border-bottom: 1px solid #eee; }
 tr:hover td { background: #f9f9f9; }
 
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: #eaf1fc; }
+tr.disabled { color: #aaa; cursor: not-allowed; }
+tr.disabled:hover td { background: inherit; }
+tr.disabled td { background: #fafafa; }
+tr.race-detail td { background: #f5f8fd; padding: 0.5rem 1.5rem; }
+tr.race-detail table { font-size: 0.85rem; }
+
 /* Forms */
 .form-row { display: grid; grid-template-columns: 8em 1fr; gap: 0.4rem 0.8rem; max-width: 28em; margin: 0.5rem 0; }
 .form-row input { font-family: monospace; padding: 3px 6px; }

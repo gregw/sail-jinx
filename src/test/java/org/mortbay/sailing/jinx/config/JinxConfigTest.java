@@ -21,10 +21,7 @@ class JinxConfigTest
         Path file = tmp.resolve("config.yaml");
         Files.writeString(file, """
             sailsys:
-              email: "ro@example.com"
-              password: "secret"
               clubId: 23
-              seriesId: 4915
               handicapDefinitionId: 5
               timezone: "Australia/Sydney"
               timezoneOffset: 11
@@ -39,9 +36,7 @@ class JinxConfigTest
 
         JinxConfig config = JinxConfig.load(file);
 
-        assertThat(config.sailsys().email(), equalTo("ro@example.com"));
         assertThat(config.sailsys().clubId(), equalTo(23));
-        assertThat(config.sailsys().seriesId(), equalTo(4915));
         assertThat(config.sailsys().timezoneOffset(), equalTo(11));
         assertThat(config.algorithm().penaltyList(), contains(6, 4, 2));
         assertThat(config.algorithm().idealRaceLength(), equalTo(75));
@@ -56,10 +51,7 @@ class JinxConfigTest
         Path file = tmp.resolve("config.yaml");
         Files.writeString(file, """
             sailsys:
-              email: "ro@example.com"
-              password: "secret"
               clubId: 23
-              seriesId: 4915
             algorithm: {}
             server: {}
             """);
@@ -79,6 +71,30 @@ class JinxConfigTest
 
         // Server defaults
         assertThat(config.server().port(), equalTo(8080));
+    }
+
+    @Test
+    void legacyFieldsInYamlAreIgnored(@TempDir Path tmp) throws IOException
+    {
+        // Migration safety: a legacy config.yaml may still carry email, password,
+        // or seriesId. None of these are part of the model any more — credentials
+        // come from the login form, and the series is a runtime choice driven by
+        // the Series tab. Load must succeed and expose no accessor for them
+        // (verified at compile time by the absence of any reference to .email() /
+        // .password() / .seriesId() in this test or anywhere else).
+        Path file = tmp.resolve("config.yaml");
+        Files.writeString(file, """
+            sailsys:
+              email: "legacy@example.com"
+              password: "should-be-ignored"
+              clubId: 23
+              seriesId: 4915
+            algorithm: {}
+            server: {}
+            """);
+
+        JinxConfig config = JinxConfig.load(file);
+        assertThat(config.sailsys().clubId(), equalTo(23));
     }
 
     @Test
