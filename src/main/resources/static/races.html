@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sail-jinx — Races</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- INCLUDE _nav.html -->
+
+<main>
+  <h1>Races</h1>
+  <p class="banner banner-info">Skeleton — race list will be populated from local store and SailSys.</p>
+  <table>
+    <thead><tr><th>Race</th><th>Date</th><th>Name</th><th>Status</th></tr></thead>
+    <tbody id="races-tbody"><tr><td colspan="4"><em>Loading…</em></td></tr></tbody>
+  </table>
+</main>
+
+<script src="/common.js"></script>
+<script>
+  (async () => {
+    const r = await fetchJson('/api/races');
+    const tbody = document.getElementById('races-tbody');
+    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="4">Error loading races.</td></tr>'; return; }
+    if (!r.body.length) { tbody.innerHTML = '<tr><td colspan="4"><em>No races yet.</em></td></tr>'; return; }
+    tbody.innerHTML = r.body.map(race => `
+      <tr>
+        <td>R${esc(race.number)}</td>
+        <td>${esc(race.date)}</td>
+        <td>${esc(race.name)}</td>
+        <td>${esc(race.status)}</td>
+      </tr>`).join('');
+  })();
+</script>
+</body>
+</html>

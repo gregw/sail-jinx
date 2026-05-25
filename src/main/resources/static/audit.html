@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sail-jinx — Audit</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- INCLUDE _nav.html -->
+
+<main>
+  <h1>Audit log</h1>
+  <p class="banner banner-info">Skeleton — every TCF adjustment will be recorded here.</p>
+  <table>
+    <thead><tr><th>When</th><th>Race</th><th>Action</th><th>γ</th><th>Pool</th><th>Notes</th></tr></thead>
+    <tbody id="audit-tbody"><tr><td colspan="6"><em>Loading…</em></td></tr></tbody>
+  </table>
+</main>
+
+<script src="/common.js"></script>
+<script>
+  (async () => {
+    const r = await fetchJson('/api/audit');
+    const tbody = document.getElementById('audit-tbody');
+    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6">Error loading audit.</td></tr>'; return; }
+    if (!r.body.length) { tbody.innerHTML = '<tr><td colspan="6"><em>No entries yet.</em></td></tr>'; return; }
+    tbody.innerHTML = r.body.map(e => `
+      <tr>
+        <td>${esc(e.timestamp)}</td>
+        <td>${esc(e.raceId)}</td>
+        <td>${esc(e.action)}</td>
+        <td>${e.gamma?.toFixed(3) ?? ''}</td>
+        <td>${e.penaltyPool?.toFixed(2) ?? ''}</td>
+        <td>${esc(e.notes ?? '')}</td>
+      </tr>`).join('');
+  })();
+</script>
+</body>
+</html>

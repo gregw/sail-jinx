@@ -1,0 +1,22 @@
+# sail-jinx local configuration.
+#
+# Copy this file to data/config/config.yaml and fill in credentials.
+# The real config.yaml is gitignored.
+
+sailsys:
+  email: "you@example.com"
+  password: "your-sailsys-password"
+  clubId: 23                  # MYC
+  seriesId: 4915              # 2026 Winter Twilight Series — change each season
+  handicapDefinitionId: 5     # PHS
+  timezone: "Australia/Sydney"
+  timezoneOffset: 10          # 11 when daylight saving is in effect
+
+algorithm:
+  penaltyList: [5, 4, 3, 2, 1]
+  idealRaceLength: 90         # minutes
+  dnfAllowance: 5             # minutes added to slowest finisher
+  earliestStart: "18:00"
+
+server:
+  port: 8080

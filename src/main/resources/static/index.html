@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sail-jinx</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- INCLUDE _nav.html -->
+
+<main>
+  <h1>sail-jinx</h1>
+  <p><em>Handicap management for pursuit race series. Results may vary. Complaints welcome.</em></p>
+
+  <h2>Status</h2>
+  <div id="status" class="banner banner-info">Loading…</div>
+
+  <h2>Where to next</h2>
+  <ul>
+    <li><a href="/login.html">Sign in to SailSys</a> — establish the session token used for all reads and writes.</li>
+    <li><a href="/races.html">Races</a> — manage the series race list (skeleton).</li>
+    <li><a href="/boats.html">Boats</a> — fleet and current TCFs (skeleton).</li>
+    <li><a href="/audit.html">Audit log</a> — every TCF change (skeleton).</li>
+  </ul>
+</main>
+
+<script src="/common.js"></script>
+<script>
+  (async () => {
+    const r = await fetchJson('/api/auth/status');
+    const el = document.getElementById('status');
+    if (!r.ok) {
+      el.className = 'banner banner-err';
+      el.textContent = 'Cannot reach server.';
+      return;
+    }
+    if (r.body.authenticated) {
+      el.className = 'banner banner-ok';
+      el.textContent = 'Signed in to SailSys as ' + (r.body.user?.email || '?');
+    } else {
+      el.className = 'banner banner-warn';
+      el.innerHTML = 'Not signed in to SailSys. <a href="/login.html">Sign in</a> to continue.';
+    }
+  })();
+</script>
+</body>
+</html>

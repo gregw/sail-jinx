@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sail-jinx — Boats</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- INCLUDE _nav.html -->
+
+<main>
+  <h1>Boats</h1>
+  <p class="banner banner-info">Skeleton — fleet table sourced from the local store. Refresh from SailSys is TODO.</p>
+  <table>
+    <thead><tr><th>Sail #</th><th>Name</th><th>Division</th><th>TCF</th></tr></thead>
+    <tbody id="boats-tbody"><tr><td colspan="4"><em>Loading…</em></td></tr></tbody>
+  </table>
+</main>
+
+<script src="/common.js"></script>
+<script>
+  (async () => {
+    const r = await fetchJson('/api/boats');
+    const tbody = document.getElementById('boats-tbody');
+    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="4">Error loading boats.</td></tr>'; return; }
+    if (!r.body.length) { tbody.innerHTML = '<tr><td colspan="4"><em>No boats yet. Sign in to SailSys and refresh.</em></td></tr>'; return; }
+    tbody.innerHTML = r.body.map(b => `
+      <tr>
+        <td>${esc(b.sailNumber)}</td>
+        <td>${esc(b.name)}</td>
+        <td>${esc(b.divisionName)}</td>
+        <td>${b.currentTcf?.toFixed(4) ?? ''}</td>
+      </tr>`).join('');
+  })();
+</script>
+</body>
+</html>
