@@ -16,6 +16,7 @@ import org.mortbay.sailing.jinx.model.Boat;
 import org.mortbay.sailing.jinx.model.FinishStatus;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceStatus;
+import org.mortbay.sailing.jinx.model.RaceTimes;
 import org.mortbay.sailing.jinx.model.Result;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -25,6 +26,7 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasEntry;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.nullValue;
 
 class JsonStoreTest
 {
@@ -102,6 +104,56 @@ class JsonStoreTest
         assertThat(read.get("12345").status(), equalTo(FinishStatus.FIN));
         assertThat(read.get("99999").status(), equalTo(FinishStatus.DNF));
         assertThat(store.results("never-existed").entrySet(), hasSize(0));
+    }
+
+    @Test
+    void raceTimesAreNullWhenMissing(@TempDir Path tmp) throws IOException
+    {
+        JsonStore store = new JsonStore(tmp);
+        store.start();
+        assertThat(store.raceTimes("never-existed"), nullValue());
+    }
+
+    @Test
+    void raceTimesRoundTripAcrossRestart(@TempDir Path tmp) throws IOException
+    {
+        JsonStore first = new JsonStore(tmp);
+        first.start();
+        RaceTimes times = new RaceTimes(
+            "race-9",
+            List.of("767", "765", "770"),
+            "770",
+            Map.of(
+                "767", new RaceTimes.BoatTimes(true,  "18:13:02", "19:07:11"),
+                "765", new RaceTimes.BoatTimes(true,  "18:10:00", "19:05:22"),
+                "770", new RaceTimes.BoatTimes(false, null,       null)));
+        first.putRaceTimes("race-9", times);
+
+        JsonStore reopened = new JsonStore(tmp);
+        reopened.start();
+        RaceTimes read = reopened.raceTimes("race-9");
+        assertThat(read.raceId(), equalTo("race-9"));
+        assertThat(read.boatOrder(), contains("767", "765", "770"));
+        assertThat(read.dutyBoatId(), equalTo("770"));
+        assertThat(read.times().get("767").came(), is(true));
+        assertThat(read.times().get("767").actualStart(), equalTo("18:13:02"));
+        assertThat(read.times().get("767").finish(), equalTo("19:07:11"));
+        assertThat(read.times().get("770").came(), is(false));
+        assertThat(read.times().get("770").actualStart(), nullValue());
+    }
+
+    @Test
+    void raceTimesDutyBoatNullablePersists(@TempDir Path tmp) throws IOException
+    {
+        JsonStore first = new JsonStore(tmp);
+        first.start();
+        first.putRaceTimes("race-10", new RaceTimes(
+            "race-10", List.of("767"), null,
+            Map.of("767", new RaceTimes.BoatTimes(true, "18:13:02", "19:07:11"))));
+
+        JsonStore reopened = new JsonStore(tmp);
+        reopened.start();
+        assertThat(reopened.raceTimes("race-10").dutyBoatId(), nullValue());
     }
 
     @Test

@@ -29,6 +29,18 @@ async function postJson(url, payload) {
   });
 }
 
+// Mark the current page's link in the nav. The home link ("/") is treated as
+// matching only when the path is exactly "/" or "/index.html"; other links
+// match on filename equality.
+function highlightCurrentNav() {
+  const here = location.pathname === '/' ? '/index.html' : location.pathname;
+  document.querySelectorAll('nav.site-nav a').forEach(a => {
+    const href = a.getAttribute('href');
+    const target = (href === '/') ? '/index.html' : href;
+    if (target === here) a.classList.add('active');
+  });
+}
+
 // Refresh the auth widget in the top-right of the nav. Called on every page.
 async function refreshAuthWidget() {
   const widget = document.getElementById('auth-widget');
@@ -46,4 +58,5 @@ async function refreshAuthWidget() {
   }
 }
 
+highlightCurrentNav();
 refreshAuthWidget();

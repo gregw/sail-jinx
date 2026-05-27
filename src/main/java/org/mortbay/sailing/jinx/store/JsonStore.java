@@ -17,6 +17,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.mortbay.sailing.jinx.model.AuditEntry;
 import org.mortbay.sailing.jinx.model.Boat;
 import org.mortbay.sailing.jinx.model.Race;
+import org.mortbay.sailing.jinx.model.RaceTimes;
 import org.mortbay.sailing.jinx.model.Result;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +32,7 @@ import org.slf4j.LoggerFactory;
  *   boats.json                — Map&lt;boatId, Boat&gt;
  *   races.json                — Map&lt;raceId, Race&gt;
  *   results/{raceId}.json     — Map&lt;boatId, Result&gt; per race
+ *   race-times/{raceId}.json  — RaceTimes per race (RO-captured wall clock)
  *   audit.json                — List&lt;AuditEntry&gt;, append-only
  * </pre>
  *
@@ -54,6 +56,7 @@ public class JsonStore
     private final Path boatsFile;
     private final Path racesFile;
     private final Path resultsDir;
+    private final Path raceTimesDir;
     private final Path auditFile;
 
     private Map<String, Boat> boats;
@@ -66,6 +69,7 @@ public class JsonStore
         this.boatsFile = storeDir.resolve("boats.json");
         this.racesFile = storeDir.resolve("races.json");
         this.resultsDir = storeDir.resolve("results");
+        this.raceTimesDir = storeDir.resolve("race-times");
         this.auditFile = storeDir.resolve("audit.json");
     }
 
@@ -74,6 +78,7 @@ public class JsonStore
     {
         Files.createDirectories(storeDir);
         Files.createDirectories(resultsDir);
+        Files.createDirectories(raceTimesDir);
 
         boats = readMap(boatsFile, new TypeReference<>() { });
         races = readMap(racesFile, new TypeReference<>() { });
@@ -145,6 +150,23 @@ public class JsonStore
     {
         Path file = resultsDir.resolve(raceId + ".json");
         MAPPER.writeValue(file.toFile(), results);
+    }
+
+    // --- Race times (RO-captured wall clock, per race) ---
+
+    /** Returns the saved race times for the given race, or {@code null} if none have been saved. */
+    public synchronized RaceTimes raceTimes(String raceId) throws IOException
+    {
+        Path file = raceTimesDir.resolve(raceId + ".json");
+        if (!Files.exists(file))
+            return null;
+        return MAPPER.readValue(Files.readAllBytes(file), RaceTimes.class);
+    }
+
+    public synchronized void putRaceTimes(String raceId, RaceTimes times) throws IOException
+    {
+        Path file = raceTimesDir.resolve(raceId + ".json");
+        MAPPER.writeValue(file.toFile(), times);
     }
 
     // --- Audit ---

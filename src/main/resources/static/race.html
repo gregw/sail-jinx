@@ -1,0 +1,1586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sail-jinx — Race</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    /* Mark invalid inputs red while they contain an unparsable value. */
+    input.invalid { color: red !important; }
+    input.invalid::placeholder { color: #f99; }
+    /* Ensure number inputs show red digits when invalid in browsers that
+       support styling of number inputs. */
+    input[type="number"].invalid { color: red !important; }
+  </style>
+</head>
+<body>
+<!-- INCLUDE _nav.html -->
+
+<main>
+  <h1 id="race-heading">Race</h1>
+  <div id="race-state" class="banner banner-info">Loading…</div>
+
+  <section id="race-status" style="display:none;">
+    <h2>Status</h2>
+    <dl class="status-grid" id="status-grid"></dl>
+    <div id="race-controls" style="display:none;"></div>
+    <div id="controls-msg" class="banner" style="display:none;"></div>
+  </section>
+
+  <section id="race-entrants" style="display:none;">
+    <h2>Entrants <span id="entrants-count" style="font-weight: normal; color: #666; font-size: 0.85em;"></span></h2>
+    <div id="save-bar" style="display:none;">
+      <button id="save-btn" class="primary">Save</button>
+      <span id="save-summary" style="margin-left: 1rem; color: #555;"></span>
+    </div>
+    <table id="entrants-table">
+      <thead>
+        <tr id="entrants-head"></tr>
+      </thead>
+      <tbody id="entrants-tbody"></tbody>
+    </table>
+  </section>
+
+  <section id="now-log" style="margin-top: 2rem;">
+    <h2>NOW button log <span style="font-weight: normal; color: #888; font-size: 0.85em;">(this session only)</span></h2>
+    <div style="margin-bottom: 0.5rem;">
+      <button id="now-log-btn" class="primary" type="button">NOW</button>
+      <span style="margin-left: 0.6rem; color: #666; font-size: 0.9em;">Capture a time not tied to a boat.</span>
+    </div>
+    <ol id="now-log-list"></ol>
+  </section>
+</main>
+
+<script src="/common.js"></script>
+<script>
+  const VIS = (n) => ({0: 'draft', 1: 'published'}[n] ?? ('vis=' + n));
+  const PROC = (n) => ({0: 'pending', 1: 'processing', 2: 'processed'}[n] ?? ('proc=' + n));
+
+  function fmtDate(s) { return s ? String(s).slice(0, 10) : ''; }
+
+  // Two URL-driven edit modes, set by the Races page:
+  //   editable=1 → results editing: came, actual start/finish, flags, drag
+  //                order, results visibility status. Applies to the current
+  //                race AND past races (so flags / times can be corrected
+  //                after the fact).
+  //   current=1  → narrower: current-race-only affordances. Adds TCF input
+  //                editing, the per-row NOW buttons, and the NOW-button log
+  //                section. Only the race after the last finalized race
+  //                gets this; past races are editable but not "current".
+  const PARAMS = new URLSearchParams(location.search);
+  const IS_EDITABLE = PARAMS.get('editable') === '1';
+  const IS_CURRENT  = PARAMS.get('current')  === '1';
+
+  let raceIdGlobal = null;
+  let seriesIdForSave = null;       // populated from race status
+  let currentStatus = null;         // latest race status (for controls + grid)
+  const nowLog = [];                // every NOW click, newest pushed last; in-memory only
+  let lastFinishTime = null;        // most recent finish time entered this page; used to seed next finish prefill
+  let entrantData = [];             // entrants as returned by SailSys
+  let boatOrder = [];               // ordered list of boatIds (drag order)
+  const dirtyTcf = new Map();       // boatId -> edited TCF (Number)
+  let dutyBoatId = null;            // boatId of selected duty boat, or null
+
+  // Times state. timesMap is the live editable view; originalTimesJson is the
+  // serialized snapshot we compare against to decide whether the times block
+  // is dirty (covers both per-row edits and drag-reordering).
+  let timesMap = new Map();         // boatId -> {came, actualStart, finish}
+  let originalTimesJson = '';
+  let originalOrderJson = '';
+  let originalDutyBoatId = null;    // for dirty detection on duty-boat changes
+
+  // SailSys-computed results cache. Populated from /api/races/{id}/computed-results
+  // on load and after Process Results. Shape: { boatId: {place, points, flags} }.
+  // Only treated as authoritative when isResultsClean() is true (race processed
+  // AND nothing dirty locally).
+  let sailsysResults = {};
+
+  function isAnyDirty() {
+    return dirtyTcf.size > 0 || isTimesDirty();
+  }
+
+  function isResultsClean() {
+    if (!IS_EDITABLE) return false;
+    if (isAnyDirty()) return false;
+    if (!currentStatus) return false;
+    if (currentStatus.requiresResultCalculation) return false;
+    if (!sailsysResults || Object.keys(sailsysResults).length === 0) return false;
+    return true;
+  }
+
+  // Flatten the GET /races/{id}/results competitors tree into a per-boat map.
+  // calculations[0] is the first handicap definition (MYC TCF for our club);
+  // placings[0] is the overall division placing.
+  function parseSailsysResults(data) {
+    const map = {};
+    if (!data || !Array.isArray(data.competitors)) return map;
+    for (const c of data.competitors) {
+      if (!Array.isArray(c.items)) continue;
+      for (const it of c.items) {
+        const boatId = (it.boat && it.boat.id) || it.id;
+        if (boatId == null) continue;
+        const calc = Array.isArray(it.calculations) ? it.calculations[0] : null;
+        const placing = calc && Array.isArray(calc.placings) ? calc.placings[0] : null;
+        const flags = (Array.isArray(it.penalties) ? it.penalties : [])
+          .map(p => p && p.definitionShortName)
+          .filter(Boolean);
+        map[String(boatId)] = {
+          place: placing && placing.place != null ? placing.place : null,
+          points: placing && placing.points != null ? placing.points : null,
+          flags
+        };
+      }
+    }
+    return map;
+  }
+
+  // resultStatus mapping. SailSys reports a single integer covering both
+  // "processing state" and "visibility":
+  //   0,1 → Hidden / pending recalc
+  //   2   → Hidden but recalc complete
+  //   3   → Provisional
+  //   4   → Final
+  // The URL path /results/status/{N} uses 0/1/2 = Hidden/Provisional/Final.
+  function resultStatusLabel(rs) {
+    if (rs == null) return '';
+    if (rs <= 2) return 'Hidden';
+    if (rs === 3) return 'Provisional';
+    if (rs === 4) return 'Final';
+    return 'state=' + rs;
+  }
+  function resultStatusUrlCode(rs) {
+    if (rs == null || rs <= 2) return 0;
+    if (rs === 3) return 1;
+    if (rs === 4) return 2;
+    return 0;
+  }
+
+  // sessionStorage acts as an in-tab autosave so a refresh doesn't lose typed
+  // times/TCF edits, NOW clicks, or drag order. Only the SAVE button writes to
+  // disk on the server — session storage is purely for crash/reload recovery
+  // within this browser tab.
+  const SESSION_KEY = (suffix) => 'sail-jinx.race.' + raceIdGlobal + '.' + suffix;
+
+  function sessionSaveForm() {
+    if (!raceIdGlobal) return;
+    try {
+      sessionStorage.setItem(SESSION_KEY('form'), JSON.stringify({
+        timesMap: Array.from(timesMap.entries()),
+        boatOrder: boatOrder,
+        dutyBoatId: dutyBoatId,
+        dirtyTcf: Array.from(dirtyTcf.entries())
+      }));
+    } catch (_) { /* private mode or quota — silent best effort */ }
+  }
+
+  function sessionSaveNowLog() {
+    if (!raceIdGlobal) return;
+    try { sessionStorage.setItem(SESSION_KEY('nowLog'), JSON.stringify(nowLog)); }
+    catch (_) {}
+  }
+
+  function sessionRestoreForm() {
+    if (!raceIdGlobal) return;
+    try {
+      const raw = sessionStorage.getItem(SESSION_KEY('form'));
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (Array.isArray(p.timesMap)) timesMap = new Map(p.timesMap);
+      if (Array.isArray(p.boatOrder)) boatOrder = p.boatOrder.map(String);
+      dutyBoatId = p.dutyBoatId ? String(p.dutyBoatId) : null;
+      // Only restore dirty TCF state on the current race. A past race may
+      // still have TCF dirt in sessionStorage from when it was current; that
+      // data can't be edited or pushed any more, so reviving it would just
+      // permanently mark the page dirty and block clean-results display.
+      if (IS_CURRENT && Array.isArray(p.dirtyTcf)) {
+        dirtyTcf.clear();
+        for (const [k, v] of p.dirtyTcf) dirtyTcf.set(Number(k), Number(v));
+      }
+    } catch (_) {}
+  }
+
+  function sessionRestoreNowLog() {
+    if (!raceIdGlobal) return;
+    try {
+      const raw = sessionStorage.getItem(SESSION_KEY('nowLog'));
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (Array.isArray(p)) {
+        nowLog.length = 0;
+        for (const e of p) nowLog.push(e);
+      }
+    } catch (_) {}
+  }
+
+  function emptyTimes() { return { came: false, actualStart: null, finish: null }; }
+
+  // Keys in timesMap are always strings; entrant ids from SailSys are numbers,
+  // so always coerce on access.
+  function getTimes(boatId) {
+    const k = String(boatId);
+    if (!timesMap.has(k)) timesMap.set(k, emptyTimes());
+    return timesMap.get(k);
+  }
+
+  function originalTcf(e) {
+    const h = e.handicap && e.handicap.currentHandicaps && e.handicap.currentHandicaps[0];
+    return h ? Number(h.value) : NaN;
+  }
+
+  function currentTcf(e) {
+    const id = e.boat && e.boat.id;
+    return dirtyTcf.has(id) ? dirtyTcf.get(id) : originalTcf(e);
+  }
+
+  // All internal time math is in seconds-since-midnight (integer). The RO
+  // captures wall-clock times manually — sub-second precision isn't useful in
+  // a pursuit handicap context. Legacy "HH:MM:SS.sss" values written by older
+  // versions are accepted on parse (sub-second portion is dropped).
+  function parseTime(s) {
+    if (!s) return null;
+    const m = String(s).trim().match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.\d{1,3})?$/);
+    if (!m) return null;
+    return (Number(m[1]) * 60 + Number(m[2])) * 60 + Number(m[3]);
+  }
+
+  function fmtElapsed(secs) {
+    if (secs == null || secs < 0) return '';
+    const h = Math.floor(secs / 3600);
+    const mi = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return pad(h) + ':' + pad(mi) + ':' + pad(s);
+  }
+
+  function localNow() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  // Reformat user-typed times to canonical HH:MM:SS. Accepts H:M, H:M:S, and
+  // legacy H:M:S.sss (sub-second portion dropped). Returns null if the input
+  // doesn't parse — in which case the caller leaves the raw text in place so
+  // the user can fix it.
+  function reformatTime(s) {
+    if (!s) return null;
+    const m = String(s).trim().match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.\d{1,3})?$/);
+    if (!m) return null;
+    const h = Number(m[1]);
+    const mi = Number(m[2]);
+    const ss = m[3] ? Number(m[3]) : 0;
+    if (h > 23 || mi > 59 || ss > 59) return null;
+    const pad = (n) => String(n).padStart(2, '0');
+    return pad(h) + ':' + pad(mi) + ':' + pad(ss);
+  }
+
+  // "HH:MM:" prefix from a SailSys startTimeLocal — used to prefill an empty
+  // Actual Start input so the RO only has to key the seconds. SailSys may
+  // return plain "HH:MM:SS" or an ISO "...T18:13:00" string; both work.
+  function startPrefix(sched) {
+    if (!sched) return null;
+    const m = String(sched).match(/(?:^|T)(\d{1,2}):(\d{1,2})/);
+    if (!m) return null;
+    const pad = (n, w) => String(n).padStart(w, '0');
+    return pad(Number(m[1]), 2) + ':' + pad(Number(m[2]), 2) + ':';
+  }
+
+  // "HH:MM" prefix for an empty Finish input. Boats in a pursuit race tend to
+  // finish bunched together, so once one finish is recorded the next is most
+  // likely in the same minute — basis the prefill on the most recent finish
+  // this session. Before any finish has been entered, fall back to the boat's
+  // scheduled start + 60 min as a sensible "rough race length" guess.
+  function finishPrefix(entrant) {
+    const pad = (n) => String(n).padStart(2, '0');
+    if (lastFinishTime) {
+      const m = lastFinishTime.match(/^(\d{1,2}):(\d{1,2})/);
+      if (m) return pad(Number(m[1])) + ':' + pad(Number(m[2]));
+    }
+    const sched = entrant && entrant.startTimeLocal;
+    if (sched) {
+      const m = String(sched).match(/(?:^|T)(\d{1,2}):(\d{1,2})/);
+      if (m) {
+        const total = Number(m[1]) * 60 + Number(m[2]) + 60;
+        return pad(Math.floor(total / 60) % 24) + ':' + pad(total % 60);
+      }
+    }
+    return null;
+  }
+
+  // Parse a scheduled start string (HH:MM or ISO containing 'T18:13') to
+  // seconds-since-midnight. Returns null on failure.
+  function parseScheduledSeconds(sched) {
+    if (!sched) return null;
+    const m = String(sched).match(/(?:^|T)(\d{1,2}):(\d{1,2})/);
+    if (!m) return null;
+    return (Number(m[1]) * 60 + Number(m[2])) * 60;
+  }
+
+  // Flags for an entrant. Returns an array (potentially empty) — boats can
+  // legitimately have multiple flags at once. Manual flags (e.g. DSQ) will be
+  // layered on top of this in a future iteration; the order here is just the
+  // auto-computed set.
+  //
+  // Rules:
+  //   AVG  — duty boat (selected via the controls panel). Pre-empts the
+  //          came/start/finish-driven flags because those fields are forced
+  //          empty for the duty boat.
+  //   DNC  — did not come. came=false (and not duty).
+  //   DNS  — came but no actualStart recorded.
+  //   DNF  — came, has actualStart, but no finish.
+  //   OCS  — actualStart earlier than scheduled start. Added IN ADDITION to
+  //          any other flag (per spec: "no matter what other flags it might
+  //          get (it doesn't need a finish time to get it)").
+  function flagsForEntrant(entrant) {
+    const id = entrant && entrant.boat && entrant.boat.id;
+    const flags = [];
+
+    if (String(dutyBoatId) === String(id)) {
+      flags.push('AVG');
+      return flags; // duty boat has no times → no DNS/DNF/OCS to add
+    }
+
+    const t = getTimes(id);
+    if (!t || !t.came) {
+      flags.push('DNC');
+    } else if (!t.actualStart) {
+      flags.push('DNS');
+    } else if (!t.finish) {
+      flags.push('DNF');
+    }
+
+    // OCS layers on top of any of the above. The spec deliberately doesn't
+    // require a finish time for OCS — boats can be flagged as having started
+    // early even if they later retire.
+    if (t && t.actualStart) {
+      const actual = parseTime(t.actualStart);
+      const sched = parseScheduledSeconds(entrant && entrant.startTimeLocal);
+      if (actual != null && sched != null && actual < sched) flags.push('OCS');
+    }
+    return flags;
+  }
+
+  // OCS is the only auto-flag that affects placing. AVG/DNC/DNS/DNF are
+  // handled by excluding the boat from the placed set in recomputePlaces().
+  function penaltySecondsForEntrant(entrant) {
+    return flagsForEntrant(entrant).includes('OCS') ? 5 * 60 : 0;
+  }
+
+  // Place + points are derived from the captured times. Recomputed once per
+  // render via recomputePlaces() so cell `get`s are cheap map lookups.
+  let placeMap = new Map();     // boatId -> 1-based place (finish order)
+
+  function recomputePlaces() {
+    placeMap = new Map();
+    if (!IS_EDITABLE) return;
+    const EXCLUDED = new Set(['AVG', 'DNC', 'DNS', 'DNF']);
+    const finishers = [];
+    for (const e of entrantData) {
+      const id = String(e.boat && e.boat.id);
+      const flags = flagsForEntrant(e);
+      if (flags.some(f => EXCLUDED.has(f))) continue;
+      const t = getTimes(id);
+      const f = parseTime(t.finish);
+      if (f == null) continue;
+      finishers.push({ id, fAdj: f + penaltySecondsForEntrant(e) });
+    }
+    finishers.sort((a, b) => a.fAdj - b.fAdj);
+    finishers.forEach((x, i) => placeMap.set(x.id, i + 1));
+  }
+
+  // Columns. `get` returns a sort-friendly value; `render` (optional) returns
+  // HTML for the cell. Editable-only columns are filtered out when IS_EDITABLE
+  // is false. TCF editing has moved off this table — eventually behind the
+  // boat name link to per-entry details.
+  const ENTRANT_COLS = [
+    { key: 'drag', label: '',
+      editableOnly: true, sortable: false, cellClass: 'drag-handle',
+      get: () => '',
+      render: () => '<span title="Drag to reorder">☰</span>' },
+    { key: 'division', label: 'Div',    get: e => (e.division && e.division.name) || '' },
+    { key: 'sail',     label: 'Sail#',  get: e => (e.boat && e.boat.sailNumber) || '' },
+    { key: 'name',     label: 'Name',   get: e => (e.boat && e.boat.name) || '' },
+    { key: 'tcf',      label: 'TCF',    get: e => currentTcf(e),
+      render: (e) => {
+        const cur = currentTcf(e);
+        const fmt = (n) => (typeof n === 'number' && !isNaN(n)) ? n.toFixed(4) : '';
+        // TCF input is current-race-only. Past races see the value read-only.
+        if (!IS_CURRENT) {
+          return esc(fmt(cur));
+        }
+        const orig = originalTcf(e);
+        const id = e.boat && e.boat.id;
+        const dirty = !isNaN(cur) && cur !== orig;
+        return '<input type="number" step="0.0001" class="tcf-input' + (dirty ? ' dirty' : '') + '"'
+          + ' data-boat-id="' + esc(id) + '"'
+          + ' data-original="' + esc(fmt(orig)) + '"'
+          + ' value="' + esc(fmt(cur)) + '">';
+      }},
+    { key: 'start',    label: 'Start',  get: e => e.startTimeLocal || '' },
+    { key: 'came',     label: 'Came',
+      editableOnly: true, sortable: false,
+      get: e => getTimes(e.boat && e.boat.id).came ? 1 : 0,
+      render: (e) => {
+        const id = e.boat && e.boat.id;
+        const t = getTimes(id);
+        const isDuty = String(dutyBoatId) === String(id);
+        const disabled = isDuty ? ' disabled' : '';
+        const checked = (t.came && !isDuty) ? ' checked' : '';
+        return '<input type="checkbox" class="came-input" data-boat-id="' + esc(id) + '"'
+          + checked + disabled + '>';
+      }},
+    { key: 'actualStart', label: 'Actual Start',
+      editableOnly: true,
+      get: e => getTimes(e.boat && e.boat.id).actualStart || '',
+      render: (e) => {
+        const id = e.boat && e.boat.id;
+        const t = getTimes(id);
+        const disabled = t.came ? '' : ' disabled';
+        const nowBtn = IS_CURRENT
+          ? ('<button type="button" class="now-btn" data-boat-id="' + esc(id) + '"'
+             + ' data-field="actualStart"' + disabled + '>NOW</button>')
+          : '';
+        return '<input type="text" class="time-input" placeholder="HH:MM:SS"'
+          + ' data-boat-id="' + esc(id) + '" data-field="actualStart"'
+          + ' value="' + esc(t.actualStart || '') + '"' + disabled + '>'
+          + nowBtn;
+      }},
+    { key: 'finish',  label: 'Actual Finish',
+      get: e => {
+        if (IS_EDITABLE) return getTimes(e.boat && e.boat.id).finish || '';
+        return e.finishTimeLocal || '';
+      },
+      render: (e) => {
+        if (!IS_EDITABLE) {
+          return esc(e.finishTimeLocal || '');
+        }
+        const id = e.boat && e.boat.id;
+        const t = getTimes(id);
+        const disabled = t.came ? '' : ' disabled';
+        const nowBtn = IS_CURRENT
+          ? ('<button type="button" class="now-btn" data-boat-id="' + esc(id) + '"'
+             + ' data-field="finish"' + disabled + '>NOW</button>')
+          : '';
+        return '<input type="text" class="time-input" placeholder="HH:MM:SS"'
+          + ' data-boat-id="' + esc(id) + '" data-field="finish"'
+          + ' value="' + esc(t.finish || '') + '"' + disabled + '>'
+          + nowBtn;
+      }},
+    // Mid-row repeats of drag/sail/name. The current race table is wide; by
+    // the time the RO is reading Elapsed/Place/Points they're far from the
+    // boat identity at the left edge. The duplicate columns share the
+    // original columns' sort behaviour via `sortKey`, so clicking either Sail
+    // # header toggles the same sort.
+    { key: 'drag2', label: '',
+      editableOnly: true, sortable: false, cellClass: 'drag-handle',
+      get: () => '',
+      render: () => '<span title="Drag to reorder">☰</span>' },
+    { key: 'name2', label: 'Name',   sortKey: 'name', editableOnly: true, get: e => (e.boat && e.boat.name) || '' },
+    { key: 'sail2', label: 'Sail#', sortKey: 'sail', editableOnly: true, get: e => (e.boat && e.boat.sailNumber) || '' },
+    { key: 'elapsed', label: 'Elapsed',
+      get: e => {
+        if (IS_EDITABLE) {
+          const t = getTimes(e.boat && e.boat.id);
+          const a = parseTime(t.actualStart);
+          const f = parseTime(t.finish);
+          if (a != null && f != null) {
+            return fmtElapsed((f - a) + penaltySecondsForEntrant(e));
+          }
+          return '';
+        }
+        return e.elapsedTime || '';
+      }},
+    // Flags: SailSys-authoritative when results are clean (processed AND no
+    // local edits pending). When dirty/unprocessed, fall back to local auto-
+    // computed flags. Manual flags (DSQ etc.) UI hooks are still future work.
+    { key: 'flags', label: 'Flags', sortable: false, get: e => {
+        const id = String(e.boat && e.boat.id);
+        if (isResultsClean() && sailsysResults[id]) {
+          const f = sailsysResults[id].flags || [];
+          return f.length ? f.join(', ') : '';
+        }
+        const flags = flagsForEntrant(e);
+        return flags.length ? flags.join(', ') : '';
+      } },
+    { key: 'place', label: 'Place',
+      get: e => {
+        const id = String(e.boat && e.boat.id);
+        if (isResultsClean() && sailsysResults[id] && sailsysResults[id].place != null) {
+          return sailsysResults[id].place;
+        }
+        const p = placeMap.get(id);
+        return p == null ? '' : p;
+      }},
+    // Points: ONLY shown when SailSys has computed them AND the local state
+    // matches what was pushed (no dirty edits). Anything else would be a lie —
+    // either provisional/stale, or never authoritative locally.
+    { key: 'points', label: 'Points',
+      get: e => {
+        if (!isResultsClean()) return '';
+        const r = sailsysResults[String(e.boat && e.boat.id)];
+        return (r && r.points != null) ? r.points : '';
+      }}
+  ];
+
+  function activeCols() {
+    const oneDivision = uniqueDivisionCount() < 2;
+    return ENTRANT_COLS.filter(c => {
+      if (!IS_EDITABLE && c.editableOnly) return false;
+      // No point showing Division when every boat is in the same one.
+      if (c.key === 'division' && oneDivision) return false;
+      return true;
+    });
+  }
+
+  function uniqueDivisionCount() {
+    const set = new Set();
+    for (const e of entrantData) {
+      const id = e.division && e.division.id;
+      if (id != null) set.add(id);
+    }
+    return set.size;
+  }
+
+  let sortKey = null;
+  let sortDir = 1;
+
+  function compareValues(a, b) {
+    const aNum = typeof a === 'number';
+    const bNum = typeof b === 'number';
+    if (aNum && bNum) {
+      if (isNaN(a) && isNaN(b)) return 0;
+      if (isNaN(a)) return 1;
+      if (isNaN(b)) return -1;
+      return a - b;
+    }
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  }
+
+  function orderedEntrants() {
+    // Column sort wins over manual drag order. Picking a sort column hides
+    // the drag order temporarily; the next drag will rebuild boatOrder from
+    // the sorted view and clear sortKey.
+    if (sortKey) {
+      const col = ENTRANT_COLS.find(c => c.key === sortKey);
+      return entrantData.slice().sort((a, b) =>
+        sortDir * compareValues(col.get(a), col.get(b)));
+    }
+    if (IS_EDITABLE) {
+      // Honour boatOrder: any boats listed are returned in that order; any
+      // entrants not yet in boatOrder (newly added since the last save) go to
+      // the end in their original SailSys order. Empty boatOrder = use the
+      // SailSys order as-is.
+      const byId = new Map(entrantData.map(e => [String(e.boat && e.boat.id), e]));
+      const out = [];
+      const seen = new Set();
+      for (const id of boatOrder) {
+        const e = byId.get(String(id));
+        if (e) { out.push(e); seen.add(String(id)); }
+      }
+      for (const e of entrantData) {
+        const id = String(e.boat && e.boat.id);
+        if (!seen.has(id)) out.push(e);
+      }
+      return out;
+    }
+    return entrantData.slice();
+  }
+
+  function renderEntrants() {
+    const tbody = document.getElementById('entrants-tbody');
+    const cols = activeCols();
+    recomputePlaces();
+    const rows = orderedEntrants();
+    tbody.innerHTML = rows.map(e => {
+      const boatId = e.boat && e.boat.id;
+      const cells = cols.map(c => {
+        const cls = c.cellClass ? ' class="' + c.cellClass + '"' : '';
+        if (c.render) {
+          return '<td' + cls + '>' + c.render(e) + '</td>';
+        }
+        const v = c.get(e);
+        const display = (typeof v === 'number' && isNaN(v)) ? '' : v;
+        return '<td' + cls + '>' + esc(display) + '</td>';
+      }).join('');
+      const dragAttrs = IS_EDITABLE ? ' draggable="true"' : '';
+      return '<tr data-boat-id="' + esc(boatId) + '"' + dragAttrs + '>' + cells + '</tr>';
+    }).join('');
+
+    if (IS_EDITABLE) {
+      wireTcfInputs();
+      wireTimeInputs();
+      wireDrag();
+      wireEntrantsKeyHandlers();
+    }
+  }
+
+  function wireTcfInputs() {
+    document.querySelectorAll('input.tcf-input').forEach(inp => {
+      inp.oninput = () => {
+        const id = Number(inp.dataset.boatId);
+        const orig = Number(inp.dataset.original);
+        const v = Number(inp.value);
+        if (!isNaN(v) && v !== orig) {
+          dirtyTcf.set(id, v);
+          inp.classList.add('dirty');
+        } else {
+          dirtyTcf.delete(id);
+          inp.classList.remove('dirty');
+        }
+        // Mark invalid when the value cannot be interpreted as a Number.
+        if (isNaN(v)) inp.classList.add('invalid');
+        else inp.classList.remove('invalid');
+        updateSaveBar();
+        sessionSaveForm();
+      };
+    });
+  }
+
+  function wireTimeInputs() {
+    document.querySelectorAll('input.came-input').forEach(inp => {
+      inp.onchange = () => {
+        const id = Number(inp.dataset.boatId);
+        const t = getTimes(id);
+        t.came = inp.checked;
+        // Re-render this row so the time inputs enable/disable.
+        renderEntrants();
+        updateSaveBar();
+        sessionSaveForm();
+      };
+    });
+    document.querySelectorAll('input.time-input').forEach(inp => {
+      inp.onfocus = () => {
+        // Prefill empty time inputs so the RO only has to key the delta:
+        //   Actual Start → "HH:MM:" from the boat's scheduled start
+        //   Finish       → "HH:MM" from the most recent finish (or sched+60)
+        // The prefilled marker lets blur clear the field if nothing was typed.
+        if (inp.value) return;
+        const id = inp.dataset.boatId;
+        const entrant = entrantData.find(e => String(e.boat && e.boat.id) === String(id));
+        let prefix = null;
+        if (inp.dataset.field === 'actualStart') {
+          prefix = startPrefix(entrant && entrant.startTimeLocal);
+        } else if (inp.dataset.field === 'finish') {
+          prefix = finishPrefix(entrant);
+        }
+        if (!prefix) return;
+        inp.value = prefix;
+        inp.dataset.prefilled = '1';
+        // The browser places the caret based on the click coordinates AFTER
+        // the focus handler returns, which would put it at position 0 for a
+        // click on an empty box. Defer the caret move so it wins the race.
+        setTimeout(() => {
+          try { inp.setSelectionRange(prefix.length, prefix.length); } catch (_) {}
+        }, 0);
+      };
+      inp.oninput = () => {
+        // Any typing means the user took ownership of the value — drop the
+        // prefilled marker so blur won't clear it.
+        delete inp.dataset.prefilled;
+        const id = Number(inp.dataset.boatId);
+        const field = inp.dataset.field;
+        const t = getTimes(id);
+        t[field] = inp.value || null;
+        const tr = inp.closest('tr');
+        updateElapsedCell(tr, id);
+        updateFlagsCell(tr, id);
+        // Mark invalid while the value cannot be parsed into a canonical time.
+        if (!inp.value) {
+          inp.classList.remove('invalid');
+        } else {
+          const can = reformatTime(inp.value);
+          if (can) inp.classList.remove('invalid');
+          else inp.classList.add('invalid');
+        }
+        updateSaveBar();
+        sessionSaveForm();
+      };
+      inp.onblur = () => {
+        const id = Number(inp.dataset.boatId);
+        const field = inp.dataset.field;
+        const t = getTimes(id);
+        if (inp.dataset.prefilled) {
+          // Prefilled but unchanged — clear back to empty so the field stays
+          // honest about whether a time has actually been captured.
+          inp.value = '';
+          t[field] = null;
+          delete inp.dataset.prefilled;
+          // Clearing leaves the field non-invalid.
+          inp.classList.remove('invalid');
+        } else {
+          const canon = reformatTime(inp.value);
+          if (canon) {
+            inp.value = canon;
+            t[field] = canon;
+            if (field === 'finish') lastFinishTime = canon;
+            inp.classList.remove('invalid');
+          }
+          // If unparseable, leave the raw text in place — oninput already
+          // stored it on timesMap so the dirty state is honest.
+          else {
+            // Mark invalid so the user sees the problem.
+            inp.classList.add('invalid');
+          }
+        }
+        const tr = inp.closest('tr');
+        updateElapsedCell(tr, id);
+        updateFlagsCell(tr, id);
+        updateSaveBar();
+        sessionSaveForm();
+      };
+    });
+    document.querySelectorAll('button.now-btn').forEach(btn => {
+      btn.onclick = () => {
+        const id = Number(btn.dataset.boatId);
+        const field = btn.dataset.field;
+        const now = localNow();
+        const t = getTimes(id);
+        t[field] = now;
+        if (field === 'finish') lastFinishTime = now;
+        const tr = btn.closest('tr');
+        const inp = tr.querySelector('input.time-input[data-field="' + field + '"]');
+        if (inp) {
+          inp.value = now;
+          // NOW is an explicit commit; if the user had focus and we'd
+          // prefilled, the prefill is now superseded.
+          delete inp.dataset.prefilled;
+          // NOW provides a valid canonical time.
+          inp.classList.remove('invalid');
+        }
+        updateElapsedCell(tr, id);
+        updateFlagsCell(tr, id);
+        updateSaveBar();
+        sessionSaveForm();
+        logNow(id, field, now);
+      };
+    });
+  }
+
+  function logNow(boatId, field, time) {
+    const entrant = entrantData.find(e => String(e.boat && e.boat.id) === String(boatId));
+    const sail = entrant && entrant.boat && entrant.boat.sailNumber;
+    const name = entrant && entrant.boat && entrant.boat.name;
+    nowLog.push({ time, field, sail, name });
+    renderNowLog();
+    sessionSaveNowLog();
+  }
+
+  function logNowUnattached() {
+    nowLog.push({ time: localNow() });
+    renderNowLog();
+    sessionSaveNowLog();
+  }
+
+  function renderNowLog() {
+    const list = document.getElementById('now-log-list');
+    if (nowLog.length === 0) {
+      list.innerHTML = '<li style="color: #888; list-style: none; margin-left: -1.5em;">(no NOW clicks yet)</li>';
+      return;
+    }
+    // Earliest first (ascending). Sort by parsed time where possible so
+    // entries read top-to-bottom from oldest to newest.
+    const sorted = nowLog.slice().sort((a, b) => {
+      const pa = parseTime(a.time);
+      const pb = parseTime(b.time);
+      if (pa != null && pb != null) return pa - pb;
+      return String(a.time).localeCompare(String(b.time));
+    });
+    list.innerHTML = sorted.map(e => {
+      // Entries from the standalone NOW button have no field/boat — render
+      // just the time. Boat-tied entries get " — start/finish for <boat>".
+      const fld = e.field === 'actualStart' ? 'start'
+                : e.field === 'finish'      ? 'finish' : null;
+      const who = [e.sail, e.name].filter(Boolean).map(esc).join(' ');
+      const tail = fld
+        ? (' — ' + esc(fld) + (who ? ' for ' + who : ''))
+        : '';
+      return '<li><code>' + esc(e.time) + '</code>' + tail + '</li>';
+    }).join('');
+  }
+
+  function updateElapsedCell(tr, boatId) {
+    const cols = activeCols();
+    const idx = cols.findIndex(c => c.key === 'elapsed');
+    if (idx >= 0) {
+      const t = getTimes(boatId);
+      const a = parseTime(t.actualStart);
+      const f = parseTime(t.finish);
+      const entrant = entrantData.find(e => String(e.boat && e.boat.id) === String(boatId));
+      const penalty = entrant ? penaltySecondsForEntrant(entrant) : 0;
+      const txt = (a != null && f != null) ? fmtElapsed(f - a + penalty) : '';
+      const cells = tr.querySelectorAll('td');
+      if (cells[idx]) cells[idx].textContent = txt;
+    }
+    // A finish-time change rearranges Place/Points across every row. Patch
+    // those cells in place rather than re-rendering — a full re-render would
+    // recreate the input the user is currently typing in and steal focus.
+    patchPlacesPoints();
+  }
+
+  function updateFlagsCell(tr, boatId) {
+    const cols = activeCols();
+    const idx = cols.findIndex(c => c.key === 'flags');
+    if (idx >= 0) {
+      const entrant = entrantData.find(e => String(e.boat && e.boat.id) === String(boatId));
+      const flags = flagsForEntrant(entrant);
+      const txt = flags.length ? flags.join(', ') : '';
+      const cells = tr.querySelectorAll('td');
+      if (cells[idx]) cells[idx].textContent = txt;
+    }
+    // Flags can affect places (e.g., OCS penalty), so re-patch places.
+    patchPlacesPoints();
+  }
+
+  function patchPlacesPoints() {
+    recomputePlaces();
+    const cols = activeCols();
+    const placeIdx = cols.findIndex(c => c.key === 'place');
+    const pointsIdx = cols.findIndex(c => c.key === 'points');
+    if (placeIdx < 0 && pointsIdx < 0) return;
+    document.querySelectorAll('#entrants-tbody tr').forEach(tr => {
+      const p = placeMap.get(tr.dataset.boatId);
+      const txt = p == null ? '' : String(p);
+      const cells = tr.querySelectorAll('td');
+      if (placeIdx >= 0 && cells[placeIdx]) cells[placeIdx].textContent = txt;
+      if (pointsIdx >= 0 && cells[pointsIdx]) cells[pointsIdx].textContent = txt;
+    });
+  }
+
+  // HTML5 native drag-drop: drag whole row, reorder boatOrder, re-render.
+  let dragSrcId = null;
+  function wireDrag() {
+    document.querySelectorAll('#entrants-tbody tr').forEach(tr => {
+      tr.ondragstart = (ev) => {
+        dragSrcId = tr.dataset.boatId;
+        tr.classList.add('dragging');
+        ev.dataTransfer.effectAllowed = 'move';
+        ev.dataTransfer.setData('text/plain', dragSrcId);
+      };
+      tr.ondragend = () => {
+        tr.classList.remove('dragging');
+        document.querySelectorAll('tr.drag-over').forEach(x => x.classList.remove('drag-over'));
+      };
+      tr.ondragover = (ev) => {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = 'move';
+        document.querySelectorAll('tr.drag-over').forEach(x => x.classList.remove('drag-over'));
+        tr.classList.add('drag-over');
+      };
+      tr.ondragleave = () => {
+        tr.classList.remove('drag-over');
+      };
+      tr.ondrop = (ev) => {
+        ev.preventDefault();
+        tr.classList.remove('drag-over');
+        const srcId = dragSrcId;
+        const dstId = tr.dataset.boatId;
+        if (!srcId || srcId === dstId) return;
+        // Rebuild boatOrder from the current rendered order, then move src
+        // immediately before dst. Doing this BEFORE clearing sortKey means we
+        // capture whatever the user currently sees as their new manual order.
+        const cur = orderedEntrants().map(e => String(e.boat && e.boat.id));
+        const arr = cur.filter(x => x !== srcId);
+        const at = arr.indexOf(dstId);
+        arr.splice(at < 0 ? arr.length : at, 0, srcId);
+        // Dropping just past a row's mid-line can produce an identical visual
+        // order — e.g. dragging row B onto the row immediately below it
+        // re-inserts B in the same slot. Don't mark the form dirty in that
+        // case; otherwise SAVE would surface "times changed" with no actual
+        // change to push.
+        const unchanged = arr.length === cur.length && arr.every((id, i) => id === cur[i]);
+        if (unchanged) return;
+        boatOrder = arr;
+        // Any new manual ordering deselects the column sort.
+        sortKey = null;
+        renderEntrantsHead();
+        renderEntrants();
+        updateSaveBar();
+        sessionSaveForm();
+      };
+    });
+  }
+
+  // Keyboard handling for inputs in the entrants table. When the user hits
+  // Tab or Enter while focused on an input in the table, accept the current
+  // value (trigger blur handlers/formatting) and move focus to the entry
+  // immediately below in the visual order (the DOM order), preserving the
+  // column index. This respects the current sort order because the tbody
+  // rows are rendered in that order.
+  function wireEntrantsKeyHandlers() {
+    const tbody = document.getElementById('entrants-tbody');
+    if (!tbody || tbody.dataset.keywired) return;
+    tbody.dataset.keywired = '1';
+    tbody.addEventListener('keydown', (ev) => {
+      const k = ev.key;
+      if (k !== 'Tab' && k !== 'Enter') return;
+      const target = ev.target;
+      if (!target) return;
+      // Only handle relevant inputs inside the table.
+      if (!target.matches('input.time-input, input.tcf-input, input.came-input')) return;
+      // Intercept default Tab behaviour so we can move vertically instead of
+      // horizontally. Prevent native tabbing.
+      ev.preventDefault();
+
+      // Commit the current value by blurring — existing onblur/oninput
+      // handlers will take care of formatting and state updates.
+      try { target.blur(); } catch (_) {}
+
+      const tr = target.closest('tr');
+      if (!tr) return;
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      const idx = rows.indexOf(tr);
+      if (idx < 0) return;
+      // Determine the TD index of the focused control so we can focus the
+      // same column in the next/previous row (works even when columns are hidden
+      // or reordered by sorting/dragging).
+      const td = target.closest('td');
+      if (!td) return;
+      const tds = Array.from(tr.querySelectorAll('td'));
+      const cellIndex = tds.indexOf(td);
+      if (cellIndex < 0) return;
+
+      // Support Shift+Tab to move up; otherwise move down one row. If the
+      // same-column control in the immediate row is absent or disabled, walk
+      // until we find a focusable control or run out of rows.
+      const dir = (ev.shiftKey ? -1 : 1);
+      let scanIdx = idx + dir;
+      let next = null;
+      while (scanIdx >= 0 && scanIdx < rows.length) {
+        const candidate = rows[scanIdx];
+        const nextTds = Array.from(candidate.querySelectorAll('td'));
+        if (cellIndex < nextTds.length) {
+          const f = nextTds[cellIndex].querySelector('input, button, select, textarea');
+          if (f && !f.disabled) { next = candidate; break; }
+        }
+        scanIdx += dir;
+      }
+      if (!next) return; // nothing suitable
+      // Focusable control determined during scanning above.
+      const nextTds = Array.from(next.querySelectorAll('td'));
+      const focusable = nextTds[cellIndex].querySelector('input, button, select, textarea');
+      if (!focusable || focusable.disabled) return;
+
+      // Move focus after a tick so blur/commit handlers run first.
+      setTimeout(() => {
+        try { focusable.focus(); } catch (_) {}
+        // If the target is a text input, place caret at end for convenience.
+        try {
+          if ((focusable.classList && focusable.classList.contains('time-input'))
+              || (focusable.tagName === 'INPUT' && focusable.type === 'text')) {
+            const len = focusable.value ? focusable.value.length : 0;
+            if (typeof focusable.setSelectionRange === 'function') focusable.setSelectionRange(len, len);
+          }
+        } catch (_) {}
+      }, 0);
+    });
+  }
+
+  // --- dirty/save plumbing ---
+
+  function currentTimesPayload() {
+    const times = {};
+    const ids = orderedEntrants().map(e => String(e.boat && e.boat.id));
+    for (const id of ids) {
+      const t = timesMap.get(id);
+      if (!t) continue;
+      times[id] = { came: !!t.came, actualStart: t.actualStart || null, finish: t.finish || null };
+    }
+    return {
+      raceId: String(raceIdGlobal),
+      boatOrder: ids,
+      dutyBoatId: dutyBoatId || null,
+      times
+    };
+  }
+
+  function isTimesDirty() {
+    if (!IS_EDITABLE) return false;
+    const payload = currentTimesPayload();
+    return JSON.stringify(payload.times) !== originalTimesJson
+        || JSON.stringify(payload.boatOrder) !== originalOrderJson
+        || (payload.dutyBoatId || '') !== (originalDutyBoatId || '');
+  }
+
+  function updateSaveBar() {
+    const bar = document.getElementById('save-bar');
+    const summary = document.getElementById('save-summary');
+    const tcfN = dirtyTcf.size;
+    const timesD = isTimesDirty();
+    if (tcfN > 0 || timesD) {
+      bar.style.display = '';
+      const parts = [];
+      if (tcfN > 0) parts.push(tcfN + ' TCF edit' + (tcfN === 1 ? '' : 's'));
+      if (timesD) parts.push('times changed');
+      summary.textContent = parts.join(', ') + '.';
+    } else {
+      bar.style.display = 'none';
+      summary.textContent = '';
+    }
+  }
+
+  // Repeat columns (sail2, name2) share their original's sort behaviour via
+  // a `sortKey` override — clicking either Sail # header toggles the same sort.
+  const sortKeyForCol = (c) => c.sortKey || c.key;
+
+  function renderEntrantsHead() {
+    const head = document.getElementById('entrants-head');
+    const cols = activeCols();
+    head.innerHTML = cols.map(c => {
+      const sortable = c.sortable !== false;
+      const myKey = sortKeyForCol(c);
+      let marker = '';
+      if (sortable && sortKey === myKey) marker = '<span class="sort-marker">' + (sortDir > 0 ? '▲' : '▼') + '</span>';
+      const cls = sortable ? ' class="sortable"' : '';
+      return '<th' + cls + ' data-key="' + myKey + '">' + esc(c.label) + marker + '</th>';
+    }).join('');
+    head.querySelectorAll('th.sortable').forEach(th => {
+      th.onclick = () => {
+        const k = th.dataset.key;
+        if (sortKey === k) sortDir = -sortDir;
+        else { sortKey = k; sortDir = 1; }
+        renderEntrantsHead();
+        renderEntrants();
+      };
+    });
+  }
+
+  function renderStatus(status, raceId) {
+    const heading = document.getElementById('race-heading');
+    const grid = document.getElementById('status-grid');
+    document.getElementById('race-status').style.display = '';
+
+    currentStatus = status;
+    seriesIdForSave = status ? status.seriesId : null;
+    // Show the race name in the page heading with the id in parentheses
+    // afterwards when a name is available, otherwise fall back to "Race N".
+    let title;
+    if (status && status.name) title = status.name + ' (id ' + raceId + ')';
+    else title = 'Race ' + raceId;
+    if (IS_EDITABLE) title += ' — current race';
+    heading.textContent = title;
+
+    // Visibility rows render a tickbox inline with the status text (editable
+    // mode only). Ticking = publish, unticking = unpublish — same calls that
+    // the old buttons made, just driven from the status grid.
+    const procStatus = status ? (status.handicapAndStartTimeProcessingStatus ?? 0) : 0;
+    const processing = procStatus === 1;
+    const vis = (flag, endpoint) => {
+      const pub = flag === 1;
+      const label = VIS(flag);
+      if (!IS_EDITABLE) return esc(label);
+      const dis = processing ? ' disabled' : '';
+      return '<label class="vis-toggle">'
+        + '<input type="checkbox" class="vis-check" data-endpoint="' + endpoint + '"'
+        + (pub ? ' checked' : '') + dis + '> ' + esc(label) + '</label>';
+    };
+
+    // List of status rows shown in the status grid. We intentionally omit
+    // the standalone Race ID row (the race id is now shown in the page
+    // heading) and a few other rows the RO doesn't need here.
+    // Results status: selector for Hidden/Provisional/Final + (when
+    // appropriate) a "Process Results" button. Disabled in read-only mode;
+    // also disabled when local data is dirty or SailSys still owes us a
+    // recalculation.
+    const resultsStatusHtml = (() => {
+      const rs = status ? (status.resultStatus ?? 0) : 0;
+      const reqCalc = status ? !!status.requiresResultCalculation : false;
+      if (!IS_EDITABLE) return esc(resultStatusLabel(rs));
+      const dirty = isAnyDirty();
+      const cur = resultStatusUrlCode(rs);
+      // `processing` here is start-times processing (unrelated to results) —
+      // don't let it gate the results selector. Disable only when local data
+      // is dirty (would publish stale state) or when SailSys still owes us a
+      // recalculation of the just-pushed results.
+      const selDisabled = (dirty || reqCalc) ? ' disabled' : '';
+      let html = '<select id="results-status-sel"' + selDisabled + '>';
+      for (const opt of [[0, 'Hidden'], [1, 'Provisional'], [2, 'Final']]) {
+        html += '<option value="' + opt[0] + '"' + (opt[0] === cur ? ' selected' : '')
+          + '>' + esc(opt[1]) + '</option>';
+      }
+      html += '</select>';
+      if (reqCalc && !dirty) {
+        html += ' <button type="button" id="process-results-btn"' + (processing ? ' disabled' : '') + '>'
+          + 'Process Results</button>';
+      } else if (reqCalc && dirty) {
+        html += ' <span style="color:#888;">(SAVE first, then process)</span>';
+      }
+      return html;
+    })();
+
+    const rows = [
+      ['Date',             esc(fmtDate(status && status.dateTime))],
+      ['Series',           esc(status && status.seriesName ? status.seriesName + ' (id ' + status.seriesId + ')' : '')],
+      ['Entrants visibility', status ? vis(status.raceEntrantVisibility, 'entrants-visibility') : ''],
+      ['Start times visibility', status ? vis(status.handicapAndStartTimeVisibility, 'start-times-visibility') : ''],
+      ['Results status',   resultsStatusHtml],
+      // requiresResultCalculation is the authoritative SailSys flag for
+      // "results are out of date relative to the last finishers PUT".
+      // isProcessingNeeded is a separate (and observed-always-false) field
+      // that we previously surfaced here — don't trust it.
+      ['Processing needed?', esc(status ? (status.requiresResultCalculation ? 'yes' : 'no') : '')]
+    ];
+    grid.innerHTML = rows.map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + v + '</dd>').join('');
+    grid.querySelectorAll('input.vis-check').forEach(cb => {
+      cb.onchange = () => doVisibility(cb.dataset.endpoint, cb.checked);
+    });
+    const rsSel = document.getElementById('results-status-sel');
+    if (rsSel) rsSel.onchange = () => doSetResultsStatus(Number(rsSel.value));
+    const procBtn = document.getElementById('process-results-btn');
+    if (procBtn) procBtn.onclick = doProcessResults;
+
+    renderControls();
+  }
+
+  // Controls panel: course length + process start times, duty boat selector.
+  // The course-length row is for the PRE-RACE start-time computation step;
+  // once the race is under way (any boat ticked as came) or its results have
+  // been published (Provisional/Final), there's no point re-running it, so
+  // it's hidden in those states.
+  function renderControls() {
+    const panel = document.getElementById('race-controls');
+    if (!IS_EDITABLE || !currentStatus) {
+      panel.style.display = 'none';
+      panel.innerHTML = '';
+      return;
+    }
+    const s = currentStatus;
+    const procStatus = s.handicapAndStartTimeProcessingStatus ?? 0;
+    const processing = procStatus === 1;
+
+    // Course length: prefilled from divisionTiming[0] (MYC Twilight has one
+    // division). If multiple divisions exist, the server applies the entered
+    // value to all of them.
+    const dt = Array.isArray(s.divisionTiming) ? s.divisionTiming[0] : null;
+    const currentCourse = (dt && dt.courseLength) ? dt.courseLength : '';
+
+    // Hide the course-length row once the race has progressed past the
+    // pre-start setup phase.
+    const resultsPublished = (s.resultStatus || 0) > 2;
+    const anyCame = Array.from(timesMap.values()).some(t => t && t.came);
+    const showCourseRow = !resultsPublished && !anyCame;
+
+    // Duty boat selector: populated from entrantData; if set, that boat is
+    // marked AVG and its Came checkbox is disabled.
+    const dutyOptions = ['<option value="">(none)</option>']
+      .concat(entrantData.map(e => {
+        const id = e.boat && e.boat.id;
+        const sail = e.boat && e.boat.sailNumber || '';
+        const name = e.boat && e.boat.name || '';
+        return '<option value="' + esc(id) + '"' + (String(dutyBoatId) === String(id) ? ' selected' : '') + '>'
+          + esc(sail + (name ? ' ' + name : '')) + '</option>';
+      }));
+
+    panel.style.display = '';
+    panel.innerHTML = (showCourseRow ? `
+      <div class="controls-row">
+        <label>Course length:
+          <input type="number" id="ctrl-course" step="0.1" min="0"
+                 value="${esc(currentCourse)}" style="width: 5em;">
+        </label>
+        <button id="ctrl-process" class="primary" ${processing ? 'disabled' : ''}>
+          ${processing ? 'Processing…' : 'Process start times'}
+        </button>
+      </div>` : '') + `
+      <div class="controls-row">
+        <label>Duty boat:
+          <select id="ctrl-duty-boat">` + dutyOptions.join('') + `</select>
+        </label>
+      </div>`;
+    const procBtn = document.getElementById('ctrl-process');
+    if (procBtn) procBtn.onclick = doProcess;
+    document.getElementById('ctrl-duty-boat').onchange = () => {
+      const sel = document.getElementById('ctrl-duty-boat');
+      const val = sel.value;
+      dutyBoatId = val ? String(val) : null;
+      // Duty boats are flagged AVG; their captured times don't count. Clear
+      // came + start + finish so the row tells the truth even if the user had
+      // already filled them in. (Persists on next SAVE alongside dutyBoatId.)
+      if (dutyBoatId) {
+        const t = getTimes(dutyBoatId);
+        if (t) { t.came = false; t.actualStart = null; t.finish = null; }
+      }
+      renderEntrantsHead();
+      renderEntrants();
+      updateSaveBar();
+      sessionSaveForm();
+    };
+  }
+
+  function ctrlMsg(cls, text) {
+    const el = document.getElementById('controls-msg');
+    if (!text) { el.style.display = 'none'; el.textContent = ''; return; }
+    el.className = 'banner ' + cls;
+    el.textContent = text;
+    el.style.display = '';
+  }
+
+  async function doVisibility(endpoint, published) {
+    setControlsDisabled(true);
+    ctrlMsg('banner-info', (published ? 'Publishing' : 'Unpublishing') + '…');
+    const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/' + endpoint,
+      { published });
+    if (!r.ok) {
+      ctrlMsg('banner-err', 'Failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+      setControlsDisabled(false);
+      return;
+    }
+    renderStatus(r.body.status, raceIdGlobal);
+    ctrlMsg('banner-ok', (published ? 'Published.' : 'Unpublished.'));
+  }
+
+  async function doSetResultsStatus(code) {
+    setControlsDisabled(true);
+    const label = ['Hidden', 'Provisional', 'Final'][code] || ('code=' + code);
+    ctrlMsg('banner-info', 'Setting results status to ' + label + '…');
+    const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/results-status',
+      { status: code });
+    if (!r.ok) {
+      ctrlMsg('banner-err', 'Failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+      setControlsDisabled(false);
+      return;
+    }
+    renderStatus(r.body.status, raceIdGlobal);
+    ctrlMsg('banner-ok', 'Results status set to ' + label + '.');
+  }
+
+  async function doProcessResults() {
+    setControlsDisabled(true);
+    ctrlMsg('banner-info', 'Processing results — waiting for SailSys…');
+    const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/process-results', {});
+    if (!r.ok) {
+      ctrlMsg('banner-err', 'Failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+      setControlsDisabled(false);
+      return;
+    }
+    if (r.body && r.body.error) {
+      // Timed out; render whatever status came back so the user can retry.
+      renderStatus(r.body.status, raceIdGlobal);
+      ctrlMsg('banner-warn', r.body.error);
+      return;
+    }
+    sailsysResults = parseSailsysResults(r.body.results);
+    renderStatus(r.body.status, raceIdGlobal);
+    renderEntrants();
+    ctrlMsg('banner-ok', 'Results processed.');
+  }
+
+  async function doProcess() {
+    const courseInp = document.getElementById('ctrl-course');
+    const courseLength = Number(courseInp.value);
+    if (!courseLength || courseLength <= 0) {
+      ctrlMsg('banner-warn', 'Enter a course length first.');
+      courseInp.focus();
+      return;
+    }
+    setControlsDisabled(true);
+    ctrlMsg('banner-info', 'Setting course length and waiting for SailSys to process…');
+    const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/process',
+      { courseLength });
+    if (!r.ok) {
+      ctrlMsg('banner-err', 'Failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+      setControlsDisabled(false);
+      return;
+    }
+    if (r.body && r.body.error) {
+      // Timed out waiting for SailSys; still re-render with whatever status we got.
+      renderStatus(r.body.status, raceIdGlobal);
+      ctrlMsg('banner-warn', r.body.error);
+    } else {
+      renderStatus(r.body.status, raceIdGlobal);
+      ctrlMsg('banner-ok', 'Processed. Start times updated for course length ' + courseLength + '.');
+    }
+    // Refetch entrants — their startTimeLocal will have changed after processing.
+    await loadEntrants();
+  }
+
+  function setControlsDisabled(disabled) {
+    ['ctrl-process', 'ctrl-course'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = disabled;
+    });
+    document.querySelectorAll('input.vis-check').forEach(cb => { cb.disabled = disabled; });
+  }
+
+  async function loadEntrants() {
+    const r = await fetchJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/entrants');
+    if (!r.ok) return r;
+    entrantData = (r.body && Array.isArray(r.body.entrants)) ? r.body.entrants : [];
+    document.getElementById('entrants-count').textContent = '(' + entrantData.length + ')';
+    document.getElementById('race-entrants').style.display = '';
+    renderEntrantsHead();
+    renderEntrants();
+    // Controls include a duty-boat selector populated from entrantData; re-render
+    // controls so the selector is up-to-date.
+    renderControls();
+    return r;
+  }
+
+  async function doSave() {
+    const btn = document.getElementById('save-btn');
+    const summary = document.getElementById('save-summary');
+    const state = document.getElementById('race-state');
+    btn.disabled = true;
+
+    const messages = [];
+    let anyError = false;
+
+    // --- TCFs first (writes to SailSys) ---
+    if (dirtyTcf.size > 0) {
+      if (!seriesIdForSave) {
+        state.className = 'banner banner-err';
+        state.textContent = 'Internal: seriesId not yet known. Reload and try again.';
+        btn.disabled = false;
+        return;
+      }
+      function spinnakerTypeFor(boatId) {
+        const e = entrantData.find(x => x.boat && x.boat.id === boatId);
+        if (!e) return 1;
+        const h = e.handicap && e.handicap.currentHandicaps && e.handicap.currentHandicaps[0];
+        if (h && h.spinnakerType != null) return h.spinnakerType;
+        if (e.division && e.division.spinnakerType != null) return e.division.spinnakerType;
+        return 1;
+      }
+      const updates = [];
+      for (const [boatId, value] of dirtyTcf) {
+        updates.push({ boatId, value, spinnakerType: spinnakerTypeFor(boatId) });
+      }
+      summary.textContent = 'Saving ' + updates.length + ' TCF update'
+        + (updates.length === 1 ? '' : 's') + '...';
+      const r = await postJson('/api/series/' + encodeURIComponent(seriesIdForSave) + '/tcfs',
+        { updates });
+      if (!r.ok) {
+        messages.push('TCF save failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+        anyError = true;
+      } else {
+        const results = (r.body && r.body.results) || [];
+        const failed = results.filter(x => !x.ok);
+        if (failed.length === 0) {
+          messages.push('Saved ' + results.length + ' TCF update'
+            + (results.length === 1 ? '' : 's') + ' to SailSys.');
+          dirtyTcf.clear();
+        } else {
+          messages.push('Saved ' + (results.length - failed.length) + '/' + results.length
+            + ' TCF updates. Failed boats: '
+            + failed.map(f => f.boatId + ' (' + (f.error || 'unknown') + ')').join(', '));
+          anyError = true;
+          const failedIds = new Set(failed.map(f => f.boatId));
+          for (const id of Array.from(dirtyTcf.keys())) {
+            if (!failedIds.has(id)) dirtyTcf.delete(id);
+          }
+        }
+      }
+    }
+
+    // --- Race times (writes to local JSON) ---
+    if (isTimesDirty()) {
+      const payload = currentTimesPayload();
+      summary.textContent = 'Saving race times...';
+      const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/times', payload);
+      if (!r.ok) {
+        messages.push('Times save failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+        anyError = true;
+      } else {
+        messages.push('Saved race times.');
+        originalTimesJson = JSON.stringify(payload.times);
+        originalOrderJson = JSON.stringify(payload.boatOrder);
+        originalDutyBoatId = payload.dutyBoatId;
+      }
+    }
+
+    // --- Push results to SailSys (came → startedRace, finish → finishTime,
+    //     flags → penalties). The start times stay local-only — SailSys
+    //     handles starts via the timing/processing pipeline, not as a
+    //     captured actualStart. Always push if there's anything to send.
+    {
+      const boats = {};
+      for (const e of entrantData) {
+        const id = e.boat && e.boat.id;
+        if (id == null) continue;
+        const t = getTimes(id);
+        boats[String(id)] = {
+          came: !!t.came,
+          finish: t.finish || null,
+          // AVG is intentionally included so the server can choose to drop
+          // it (no SailSys penalty); other flags map 1:1 to penalty defs.
+          flags: flagsForEntrant(e)
+        };
+      }
+      summary.textContent = 'Pushing results to SailSys...';
+      const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/push-results',
+        { boats });
+      if (!r.ok) {
+        messages.push('Results push failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+        anyError = true;
+      } else {
+        messages.push('Pushed results to SailSys.');
+        // SailSys-computed results are now stale (requiresResultCalculation
+        // will be true). Clear the cache so the columns fall back to local
+        // values, and re-render status so the Process Results button appears.
+        sailsysResults = {};
+        if (r.body && r.body.status) {
+          renderStatus(r.body.status, raceIdGlobal);
+        }
+      }
+    }
+
+    btn.disabled = false;
+
+    state.className = anyError ? 'banner banner-warn' : 'banner banner-ok';
+    state.textContent = messages.join(' ');
+
+    // Refresh TCFs from server only if any TCFs were saved (cheap re-fetch).
+    if (dirtyTcf.size === 0 && messages.some(m => m.startsWith('Saved') && m.includes('TCF'))) {
+      await loadEntrants();
+    }
+    updateSaveBar();
+  }
+
+  function snapshotTimes(saved) {
+    timesMap = new Map();
+    if (saved && saved.times) {
+      for (const [id, t] of Object.entries(saved.times)) {
+        // Normalise legacy "HH:MM:SS.sss" → "HH:MM:SS" on load so the dirty
+        // baseline matches what we'll re-serialize.
+        timesMap.set(String(id), {
+          came: !!t.came,
+          actualStart: t.actualStart ? (reformatTime(t.actualStart) || t.actualStart) : null,
+          finish: t.finish ? (reformatTime(t.finish) || t.finish) : null
+        });
+      }
+    }
+    boatOrder = (saved && Array.isArray(saved.boatOrder)) ? saved.boatOrder.map(String) : [];
+    dutyBoatId = (saved && saved.dutyBoatId) ? String(saved.dutyBoatId) : null;
+    // Seed empty entries for any entrants we haven't seen yet so getTimes works.
+    for (const e of entrantData) {
+      const id = String(e.boat && e.boat.id);
+      if (!timesMap.has(id)) timesMap.set(id, emptyTimes());
+    }
+    // Snapshot for dirty detection — use the same shape currentTimesPayload produces.
+    const payload = currentTimesPayload();
+    originalTimesJson = JSON.stringify(payload.times);
+    originalOrderJson = JSON.stringify(payload.boatOrder);
+    originalDutyBoatId = payload.dutyBoatId;
+  }
+
+  // NOW log section is current-race-only — live timing isn't relevant when
+  // editing a past race's results. Hide the whole section on non-current
+  // races; on the current race, wire the standalone NOW button and seed the
+  // (possibly empty) list.
+  if (IS_CURRENT) {
+    document.getElementById('now-log-btn').onclick = logNowUnattached;
+    renderNowLog();
+  } else {
+    document.getElementById('now-log').style.display = 'none';
+  }
+
+  (async () => {
+    const state = document.getElementById('race-state');
+
+    // URL param wins; otherwise the last raceId we looked at.
+    let raceId = PARAMS.get('raceId');
+    if (raceId) localStorage.setItem('sail-jinx.lastRaceId', raceId);
+    else raceId = localStorage.getItem('sail-jinx.lastRaceId');
+
+    if (!raceId) {
+      state.className = 'banner banner-warn';
+      state.innerHTML = 'No race selected. Pick one on the <a href="/races.html">Races tab</a>.';
+      return;
+    }
+    raceIdGlobal = raceId;
+
+    state.textContent = 'Loading race ' + raceId + '…';
+
+    const fetches = [
+      fetchJson('/api/races/' + encodeURIComponent(raceId) + '/status'),
+      fetchJson('/api/races/' + encodeURIComponent(raceId) + '/entrants')
+    ];
+    if (IS_EDITABLE) {
+      fetches.push(fetchJson('/api/races/' + encodeURIComponent(raceId) + '/times'));
+      // Best-effort fetch of SailSys-computed results. Empty/missing is fine
+      // — isResultsClean() will return false and the columns will fall back
+      // to local computation.
+      fetches.push(fetchJson('/api/races/' + encodeURIComponent(raceId) + '/computed-results'));
+    }
+    const [statusR, entrantsR, timesR, resultsR] = await Promise.all(fetches);
+
+    if (statusR.status === 401 || entrantsR.status === 401) {
+      state.className = 'banner banner-warn';
+      state.innerHTML = 'You are not signed in. <a href="/">Sign in to SailSys</a> first.';
+      return;
+    }
+
+    if (!statusR.ok) {
+      state.className = 'banner banner-err';
+      state.textContent = 'Could not load status: '
+        + ((statusR.body && statusR.body.error) || ('HTTP ' + statusR.status));
+      return;
+    }
+
+    renderStatus(statusR.body && statusR.body.status, raceId);
+
+    if (!entrantsR.ok) {
+      state.className = 'banner banner-err';
+      state.textContent = 'Could not load entrants: '
+        + ((entrantsR.body && entrantsR.body.error) || ('HTTP ' + entrantsR.status));
+      return;
+    }
+
+    entrantData = (entrantsR.body && Array.isArray(entrantsR.body.entrants))
+      ? entrantsR.body.entrants : [];
+
+    if (IS_EDITABLE) {
+      // TODO: this load currently trusts the local JSON for came/finish too,
+      // but SailSys is the source of truth for those fields (they're written
+      // to /results/starters and /results/finishers on SAVE). We should also
+      // fetch GET /api/races/{raceId}/results from SailSys and overlay
+      // startedRace → came and finishTime → finish onto timesMap. The JSON
+      // should ultimately hold only the locally-captured actualStart times,
+      // dutyBoatId, and boatOrder.
+      //
+      // Server snapshot first — establishes the dirty baseline. Then overlay
+      // any unsaved edits from this tab's sessionStorage; those changes will
+      // correctly re-register as dirty against the server baseline.
+      snapshotTimes(timesR && timesR.ok ? timesR.body.times : null);
+      sessionRestoreForm();
+      // NOW log is current-race-only; don't restore/render on past races
+      // (the section is hidden in the script-load block above).
+      if (IS_CURRENT) {
+        sessionRestoreNowLog();
+        renderNowLog();
+      }
+      // Seed sailsysResults cache from the optional fetch. Empty if the race
+      // hasn't been processed yet — that's fine; isResultsClean() handles it.
+      if (resultsR && resultsR.ok && resultsR.body && resultsR.body.results) {
+        sailsysResults = parseSailsysResults(resultsR.body.results);
+      }
+    }
+
+    state.className = 'banner banner-ok';
+    state.textContent = entrantData.length + ' entrants loaded'
+      + (IS_EDITABLE
+          ? ' — edit TCFs and capture times; click a header to sort, or drag rows to set a manual order. SAVE appears once something changes.'
+          : ' — click a column header to sort.');
+    document.getElementById('entrants-count').textContent = '(' + entrantData.length + ')';
+    document.getElementById('race-entrants').style.display = '';
+
+    renderEntrantsHead();
+    renderEntrants();
+
+    document.getElementById('save-btn').onclick = doSave;
+
+    // The first renderStatus() call ran BEFORE snapshotTimes and before
+    // entrantData was assigned, so its dirty baseline was empty (every field
+    // looked dirty → status selector permanently disabled) and the duty-boat
+    // <select> had no <option>s. Re-render now that the state is set up so
+    // both controls reflect reality.
+    if (currentStatus) renderStatus(currentStatus, raceIdGlobal);
+
+    // sessionRestoreForm() may have rehydrated unsaved edits from a prior
+    // tab session — surface the SAVE bar immediately if so. Without this
+    // the bar only appears after the next interactive mutation.
+    updateSaveBar();
+  })();
+</script>
+</body>
+</html>

@@ -184,14 +184,216 @@ public class SailSysClient
     }
 
     /**
-     * PUT /series/{seriesId}/entries/{boatId}/handicaps — write a single boat's TCF.
-     * TODO: read-back verification and rate-limited batch wrapper.
+     * Publish or unpublish the entrants list for a race.
+     * {@code PUT /races/{raceId}/entrants/visibility/{0|1}} with an empty body.
+     * Toggles {@code raceEntrantVisibility} between 0 (draft) and 1 (published).
      */
-    public JsonNode updateHandicap(String sessionToken, int seriesId, int boatId, double value) throws Exception
+    public JsonNode setEntrantsVisibility(String sessionToken, int raceId, boolean published) throws Exception
+    {
+        requireToken(sessionToken);
+        int flag = published ? 1 : 0;
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/entrants/visibility/" + flag, sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", "")),
+            "setEntrantsVisibility", "(empty)");
+        return root.path("data");
+    }
+
+    /**
+     * Publish or unpublish the start sheet (TCFs + start times) for a race.
+     * {@code PUT /races/{raceId}/handicaps/visibility/{0|1}} with an empty body.
+     * Toggles {@code handicapAndStartTimeVisibility} between 0 and 1.
+     */
+    public JsonNode setStartTimesVisibility(String sessionToken, int raceId, boolean published) throws Exception
+    {
+        requireToken(sessionToken);
+        int flag = published ? 1 : 0;
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/handicaps/visibility/" + flag, sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", "")),
+            "setStartTimesVisibility", "(empty)");
+        return root.path("data");
+    }
+
+    /**
+     * Set per-division race timing (start time + course length). This is the
+     * call that triggers SailSys-side start-time processing — after success,
+     * {@code handicapAndStartTimeProcessingStatus} transitions 0→1→2; poll
+     * {@link #fetchRaceStatus} until it leaves 1 before refetching entrants.
+     *
+     * <p>{@code divisionTiming} is the same shape as returned in
+     * {@link #fetchRaceStatus}: an array of
+     * {@code {divisionId, divisionName, startTimeLocal, raceType, startTimeUtc,
+     * courseLength, isAbandoned, isShortened}}.
+     */
+    public JsonNode setRaceTiming(String sessionToken, int raceId, JsonNode divisionTiming) throws Exception
+    {
+        requireToken(sessionToken);
+        String body = MAPPER.writeValueAsString(divisionTiming);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/timing", sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", body)),
+            "setRaceTiming", body);
+        return root.path("data");
+    }
+
+    /**
+     * GET /divisions/{divisionId}/penalties?type=undefined — fetch the
+     * full catalogue of penalty definitions available to this division. We
+     * use this to translate a Jinx flag (e.g. {@code "OCS"}) into the exact
+     * penalty object SailSys expects on a finisher entry (each penalty has a
+     * unique id, definitionId, value, description, etc. — SailSys rejects
+     * partially-filled stubs).
+     */
+    public JsonNode fetchDivisionPenalties(String sessionToken, int divisionId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/divisions/" + divisionId + "/penalties?type=undefined", sessionToken)
+                .method(HttpMethod.GET),
+            "fetchDivisionPenalties", null);
+        return root.path("data");
+    }
+
+    /**
+     * GET /races/{raceId}/results/finishers — fetch the full per-boat results
+     * template for a race. Every entered boat is in the response, with the
+     * fields SailSys requires on a results PUT (skipper, boat, division,
+     * startTimeOffset, etc.). Mutate {@code startedRace}, {@code finishTime},
+     * {@code finishDate}, {@code penalties} per boat and PUT the array back.
+     *
+     * <p>The starters endpoint returns an identical shape; finishers is the
+     * superset (it also carries the finishTime), so a single fetch is enough
+     * to drive both subsequent PUTs.
+     */
+    public JsonNode fetchRaceFinishers(String sessionToken, int raceId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/results/finishers", sessionToken)
+                .method(HttpMethod.GET),
+            "fetchRaceFinishers", null);
+        return root.path("data");
+    }
+
+    /**
+     * PUT /races/{raceId}/results/starters?token={N} — submit the
+     * startedRace flag per boat. The body is the full results array (same
+     * shape as {@link #fetchRaceFinishers}) with the desired startedRace
+     * values. {@code saveToken} is the {@code resultSaveToken} from the
+     * current race status; SailSys returns a fresh race object whose new
+     * resultSaveToken is what the subsequent finishers PUT must use.
+     */
+    public JsonNode putRaceStarters(String sessionToken, int raceId, int saveToken,
+                                    JsonNode entries) throws Exception
+    {
+        requireToken(sessionToken);
+        String body = MAPPER.writeValueAsString(entries);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/results/starters?token=" + saveToken, sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", body)),
+            "putRaceStarters", body);
+        return root.path("data");
+    }
+
+    /**
+     * PUT /races/{raceId}/results/finishers?token={N} — submit finishTime,
+     * finishDate, and penalties per boat. Body shape matches the GET above.
+     * Must follow a starters PUT and use the chained resultSaveToken.
+     */
+    public JsonNode putRaceFinishers(String sessionToken, int raceId, int saveToken,
+                                     JsonNode entries) throws Exception
+    {
+        requireToken(sessionToken);
+        String body = MAPPER.writeValueAsString(entries);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/results/finishers?token=" + saveToken, sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", body)),
+            "putRaceFinishers", body);
+        return root.path("data");
+    }
+
+    /**
+     * GET /races/{raceId}/results — the SailSys-computed results, after the
+     * Process step. Contains {@code competitors[].items[]} with per-boat
+     * {@code calculations[].placings[].place} and {@code .points}, plus the
+     * authoritative {@code penalties[]} list and {@code elapsedTime}.
+     *
+     * <p>Only meaningful when the race status reports
+     * {@code requiresResultCalculation=false} — otherwise the values are
+     * stale relative to the last finishers PUT.
+     */
+    public JsonNode fetchRaceResults(String sessionToken, int raceId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/results", sessionToken)
+                .method(HttpMethod.GET),
+            "fetchRaceResults", null);
+        return root.path("data");
+    }
+
+    /**
+     * GET /races/{raceId}/results/check — kicks off a results-calculation pass
+     * for the race. Returns the race status; callers should poll
+     * {@link #fetchRaceStatus} until {@code requiresResultCalculation} is
+     * false before reading {@link #fetchRaceResults}.
+     */
+    public JsonNode checkRaceResults(String sessionToken, int raceId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/results/check", sessionToken)
+                .method(HttpMethod.GET),
+            "checkRaceResults", null);
+        return root.path("data");
+    }
+
+    /**
+     * PUT /races/{raceId}/results/status/{N}?notify=false — publish or
+     * un-publish the computed results. The path {@code N} maps to the
+     * user-visible state, not directly to the {@code resultStatus} field on
+     * the race object:
+     * <ul>
+     *   <li>{@code 0} → Hidden (resultStatus settles back to 2 once any
+     *       recalc completes)</li>
+     *   <li>{@code 1} → Provisional (resultStatus = 3)</li>
+     *   <li>{@code 2} → Final (resultStatus = 4)</li>
+     * </ul>
+     * {@code notify=false} suppresses the email-to-skippers side effect.
+     */
+    public JsonNode setResultsStatus(String sessionToken, int raceId, int status) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/results/status/" + status + "?notify=false", sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", "")),
+            "setResultsStatus", "(empty)");
+        return root.path("data");
+    }
+
+    /**
+     * PUT /series/{seriesId}/entries/{boatId}/handicaps — write a single boat's TCF.
+     *
+     * <p>{@code spinnakerType} <b>must match the existing handicap row</b> for
+     * the (boat, definition) pair, otherwise SailSys responds HTTP 400 with the
+     * misleading message "Handicaps should be greater than 0". The HAR-captured
+     * MYC TCF row uses {@code spinnakerType=1}; callers should read the value
+     * from the entrant's {@code handicap.currentHandicaps[i].spinnakerType}
+     * field rather than guessing.
+     */
+    public JsonNode updateHandicap(String sessionToken, int seriesId, int boatId,
+                                   double value, int spinnakerType) throws Exception
     {
         requireToken(sessionToken);
         String body = MAPPER.writeValueAsString(List.of(new HandicapUpdate(
-            null, config.handicapDefinitionId(), value, 3, null)));
+            null, config.handicapDefinitionId(), value, spinnakerType, null)));
         JsonNode root = sendAndParse(
             newRequest("/series/" + seriesId + "/entries/" + boatId + "/handicaps", sessionToken)
                 .method(HttpMethod.PUT)

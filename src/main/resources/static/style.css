@@ -1,8 +1,29 @@
 /* sail-jinx — shared styles. Borrowed from sailing-pf and pared back. */
-body { font-family: monospace; margin: 0 auto; padding: 0 1.5rem 2rem; background: #fff; max-width: 1100px; }
+body { font-family: monospace; margin: 0; padding: 0 1.5rem 2rem; background: #fff; }
 h1 { margin-bottom: 0.5rem; }
 h2 { margin-top: 1.5rem; margin-bottom: 0.5rem; border-bottom: 1px solid #ccc; padding-bottom: 0.25rem; }
 button { font-family: monospace; padding: 3px 10px; cursor: pointer; }
+button.primary { background: #2255aa; color: #fff; border: 1px solid #1d4790; padding: 5px 16px; font-weight: bold; }
+button.primary:hover:not(:disabled) { background: #1d4790; }
+button:disabled { opacity: 0.6; cursor: wait; }
+
+/* TCF input — sized for exactly "0.0000" in monospace. The number spinner is
+   suppressed so the box doesn't need extra room for it; 0.0001-step typing is
+   fine for the RO. */
+input.tcf-input {
+  font-family: monospace; width: 6ch; padding: 2px 4px; text-align: right;
+  -moz-appearance: textfield;
+}
+input.tcf-input::-webkit-outer-spin-button,
+input.tcf-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input.tcf-input.dirty { background: #fffbe0; border-color: #d4a700; }
+
+/* Time input — sized for exactly "00:00:00". */
+input.time-input { font-family: monospace; width: 8ch; padding: 2px 4px; text-align: right; }
+input.time-input.dirty { background: #fffbe0; border-color: #d4a700; }
+input.time-input:disabled { background: #f0f0f0; color: #aaa; }
+button.now-btn { font-size: 0.75rem; padding: 2px 6px; margin-left: 3px; }
+button.now-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 a { color: #2255aa; }
 
 /* Navigation */
@@ -15,9 +36,13 @@ a { color: #2255aa; }
   border-bottom: 2px solid #ccc;
   font-size: 0.95rem;
 }
-.site-nav a { text-decoration: none; color: #333; }
-.site-nav a:hover { color: #2255aa; }
-.site-nav a.nav-home { font-weight: bold; font-size: 1.1rem; margin-right: 0.5rem; color: #111; }
+.site-nav a { text-decoration: none; color: #333; padding: 0.25rem 0.5rem; border-radius: 4px; }
+.site-nav a:hover { color: #2255aa; background: #f0f0f0; }
+.site-nav a.active { color: #fff; background: #2255aa; }
+.site-nav a.active:hover { color: #fff; background: #1d4790; }
+.site-nav a.nav-home { font-weight: bold; font-size: 1.1rem; margin-right: 0.5rem; color: #111; padding: 0; background: none; }
+.site-nav a.nav-home:hover { background: none; }
+.site-nav a.nav-home.active { color: #111; background: none; }
 .site-nav .auth-widget { margin-left: auto; font-size: 0.9rem; color: #555; }
 
 /* Banners */
@@ -33,14 +58,73 @@ th { text-align: left; padding: 4px 8px; background: #f0f0f0; border-bottom: 2px
 td { padding: 4px 8px; border-bottom: 1px solid #eee; }
 tr:hover td { background: #f9f9f9; }
 
+/* The entrants table shrinks to its content rather than filling the page —
+   columns sit close together, which is what the RO wants when scanning rows
+   under time pressure. */
+#entrants-table { width: auto; }
+#entrants-table th, #entrants-table td { padding: 3px 6px; white-space: nowrap; }
+
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: #eaf1fc; }
 tr.disabled { color: #aaa; cursor: not-allowed; }
 tr.disabled:hover td { background: inherit; }
 tr.disabled td { background: #fafafa; }
-tr.race-detail td { background: #f5f8fd; padding: 0.5rem 1.5rem; }
-tr.race-detail table { font-size: 0.85rem; }
+tr.current-race td { background: #fffbe0; font-weight: bold; }
+tr.current-race:hover td { background: #fff5b0; }
+
+/* Drag-to-reorder handle on entrant rows */
+td.drag-handle {
+  cursor: grab; user-select: none; text-align: center;
+  color: #999; font-size: 1.1rem; width: 1.5em;
+}
+td.drag-handle:hover { color: #2255aa; background: #eaf1fc; }
+tr.dragging { opacity: 0.4; }
+tr.drag-over td { border-top: 2px solid #2255aa; }
+
+/* Sortable column headers */
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { background: #e6e6e6; }
+th.sortable .sort-marker { color: #888; margin-left: 0.3em; font-size: 0.85em; }
+
+/* Key/value status grid (race header) */
+.status-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.2rem 1rem;
+  margin: 0.5rem 0 1rem;
+  font-size: 0.9rem;
+}
+.status-grid dt { color: #555; }
+.status-grid dd { margin: 0; font-weight: bold; }
 
 /* Forms */
 .form-row { display: grid; grid-template-columns: 8em 1fr; gap: 0.4rem 0.8rem; max-width: 28em; margin: 0.5rem 0; }
 .form-row input { font-family: monospace; padding: 3px 6px; }
+
+/* Race controls panel (publish/process row above entrants) */
+.controls-row {
+  display: flex; align-items: center; gap: 0.5rem;
+  flex-wrap: wrap; margin: 0.5rem 0;
+}
+.controls-row label { display: inline-flex; align-items: center; gap: 0.3rem; }
+.controls-row input[type=number] { font-family: monospace; padding: 3px 6px; text-align: right; }
+#controls-msg { margin-top: 0.3rem; }
+
+/* Inline publish/unpublish tickboxes in the status grid */
+.vis-toggle { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
+.vis-toggle input[type=checkbox] { cursor: pointer; }
+.vis-toggle input[type=checkbox]:disabled { cursor: wait; }
+
+/* SAVE bar sticks just under the page nav so it stays visible while the RO
+   scrolls down a long entrants table. A yellow background mirrors the dirty
+   colour used on TCF inputs. */
+#save-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #fffbe0;
+  border: 1px solid #d4a700;
+  padding: 0.4rem 0.8rem;
+  margin: 0.5rem 0;
+  border-radius: 4px;
+}

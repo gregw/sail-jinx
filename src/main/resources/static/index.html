@@ -1,154 +1,157 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>sail-jinx</title>
-  <link rel="stylesheet" href="/style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sail-Jinx</title>
+    <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <!-- INCLUDE _nav.html -->
 
 <main>
-  <h1>sail-jinx</h1>
-  <p class="lead">
-    Handicap management for pursuit race series. Self-correcting TCFs, computed
-    from race results, pushed back into SailSys.
-  </p>
+    <h1>Sail-Jinx</h1>
+    <p class="lead">
+        A companion application to <a href="sailsys.com.au">SailSys</a> that provides an alternate race processing UI and
+        the Jinx handicap solution for pursuit races. After each race, a boat's handicap is adjusted to achieve the effect on
+        their next starting time as follows:
+    <ul>
+        <li><b>Top finishers receive fixed time penalties</b> by place. For example: 6 minutes for first, 4 for second, 2 for
+            third, 1 for fourth. This is added to their next start time.
+        </li>
+        <li><b>All starters receive a variable time bonus</b> equal to the total time penalties given (e.g. 6+4+2+1),
+            distributed so that slower boats get a larger share, especially in longer races.
+        </li>
+        <li><b>Fleet adjusted for the earliest starter</b> so that the slowest boat starts exactly on the earliest allowed start
+            time.
+        </li>
+    </ul>
+    <p>
+        Further reading:
+        <a href="https://github.com/gregw/sail-jinx/wiki/Home" target="_blank">project overview</a>
+        &middot;
+        <a href="https://github.com/gregw/sail-jinx/wiki/Jinx-Handicaps" target="_blank">Jinx Handicaps</a>
+    </p>
 
-  <p>
-    The first target is the MYC Twilight pursuit handicap, but the architecture
-    is intentionally general — alternative algorithms can be plugged in without
-    changing the server, persistence, or SailSys integration layers.
-  </p>
-  <p>
-    Further reading:
-    <a href="https://github.com/gregw/sail-jinx/wiki/Home" target="_blank">project overview</a>
-    &middot;
-    <a href="https://github.com/gregw/sail-jinx/wiki/myc-twilight-handicap-v2" target="_blank">algorithm spec</a>
-    &middot;
-    <a href="https://github.com/gregw/sail-jinx/wiki/sailsys-api-reference" target="_blank">SailSys API notes</a>
-  </p>
+    <section>
+        <h2>Configuration</h2>
+        <div id="config-summary" class="banner banner-info">Loading…</div>
+    </section>
 
-  <section>
-    <h2>Configuration</h2>
-    <div id="config-summary" class="banner banner-info">Loading…</div>
-  </section>
+    <section>
+        <h2>Sign in to SailSys</h2>
+        <div id="auth-state" class="banner banner-warn">Checking session…</div>
 
-  <section>
-    <h2>Sign in to SailSys</h2>
-    <div id="auth-state" class="banner banner-warn">Checking session…</div>
+        <form id="login-form" onsubmit="doLogin(event)" style="display:none;">
+            <p>
+                Enter the SailSys credentials of a club admin for the configured club.
+                They are sent once to SailSys to obtain a session token and then
+                discarded — sail-jinx never persists them.
+            </p>
+            <div class="form-row">
+                <label for="login-email">Email</label>
+                <input type="email" id="login-email" autocomplete="username" required>
 
-    <form id="login-form" onsubmit="doLogin(event)" style="display:none;">
-      <p>
-        Enter the SailSys credentials of a club admin for the configured club.
-        They are sent once to SailSys to obtain a session token and then
-        discarded — sail-jinx never persists them.
-      </p>
-      <div class="form-row">
-        <label for="login-email">Email</label>
-        <input type="email" id="login-email" autocomplete="username" required>
+                <label for="login-password">Password</label>
+                <input type="password" id="login-password" autocomplete="current-password" required>
+            </div>
+            <button type="submit" id="login-btn">Sign in</button>
+            <div id="login-result" class="banner" style="margin-top:0.75rem; display:none;"></div>
+        </form>
 
-        <label for="login-password">Password</label>
-        <input type="password" id="login-password" autocomplete="current-password" required>
-      </div>
-      <button type="submit" id="login-btn">Sign in</button>
-      <div id="login-result" class="banner" style="margin-top:0.75rem; display:none;"></div>
-    </form>
-
-    <div id="signed-in-actions" style="display:none;">
-      <button onclick="doLogout()">Sign out</button>
-      <p style="margin-top:0.75rem;">
-        Next steps:
-        <a href="/races.html">Races</a> &middot;
-        <a href="/boats.html">Boats</a> &middot;
-        <a href="/audit.html">Audit</a>
-      </p>
-    </div>
-  </section>
+        <div id="signed-in-actions" style="display:none;">
+            <button onclick="doLogout()">Sign out</button>
+            <p style="margin-top:0.75rem;">
+                Next steps:
+                <a href="/races.html">Races</a> &middot;
+                <a href="/boats.html">Boats</a> &middot;
+                <a href="/audit.html">Audit</a>
+            </p>
+        </div>
+    </section>
 </main>
 
 <script src="/common.js"></script>
 <script>
-  async function refreshState() {
-    const [statusR, configR] = await Promise.all([
-      fetchJson('/api/auth/status'),
-      fetchJson('/api/config')
-    ]);
+    async function refreshState() {
+        const [statusR, configR] = await Promise.all([
+            fetchJson('/api/auth/status'),
+            fetchJson('/api/config')
+        ]);
 
-    const cfgEl = document.getElementById('config-summary');
-    if (configR.ok) {
-      const c = configR.body;
-      cfgEl.className = 'banner banner-info';
-      cfgEl.innerHTML =
-        '<strong>SailSys club:</strong> ' + esc(c.sailsys.clubId) +
-        ' &middot; <strong>handicap definition:</strong> ' + esc(c.sailsys.handicapDefinitionId) +
-        ' &middot; <em>series is chosen at runtime via the <a href="/series.html">Series tab</a></em>' +
-        '<br><strong>Algorithm:</strong> penalty list ' +
-        esc(JSON.stringify(c.algorithm.penaltyList)) +
-        ', ideal race length ' + esc(c.algorithm.idealRaceLength) +
-        ' min, DNF allowance ' + esc(c.algorithm.dnfAllowance) +
-        ' min, earliest start ' + esc(c.algorithm.earliestStart);
-    } else {
-      cfgEl.className = 'banner banner-err';
-      cfgEl.textContent = 'Cannot reach server.';
+        const cfgEl = document.getElementById('config-summary');
+        if (configR.ok) {
+            const c = configR.body;
+            cfgEl.className = 'banner banner-info';
+            cfgEl.innerHTML =
+                '<strong>SailSys club:</strong> ' + esc(c.sailsys.clubId) +
+                ' &middot; <strong>handicap definition:</strong> ' + esc(c.sailsys.handicapDefinitionId) +
+                ' &middot; <em>series is chosen at runtime via the <a href="/series.html">Series tab</a></em>' +
+                '<br><strong>Algorithm:</strong> penalty list ' +
+                esc(JSON.stringify(c.algorithm.penaltyList)) +
+                ', ideal race length ' + esc(c.algorithm.idealRaceLength) +
+                ' min, DNF allowance ' + esc(c.algorithm.dnfAllowance) +
+                ' min, earliest start ' + esc(c.algorithm.earliestStart);
+        } else {
+            cfgEl.className = 'banner banner-err';
+            cfgEl.textContent = 'Cannot reach server.';
+        }
+
+        const authEl = document.getElementById('auth-state');
+        const form = document.getElementById('login-form');
+        const signedIn = document.getElementById('signed-in-actions');
+        if (statusR.ok && statusR.body.authenticated) {
+            const u = statusR.body.user;
+            authEl.className = 'banner banner-ok';
+            authEl.textContent = 'Signed in as ' + (u.email || '?') +
+                (statusR.body.loginTime ? ' (since ' + statusR.body.loginTime + ')' : '');
+            form.style.display = 'none';
+            signedIn.style.display = 'block';
+        } else {
+            authEl.className = 'banner banner-warn';
+            authEl.textContent = 'Not signed in.';
+            form.style.display = 'block';
+            signedIn.style.display = 'none';
+        }
     }
 
-    const authEl = document.getElementById('auth-state');
-    const form = document.getElementById('login-form');
-    const signedIn = document.getElementById('signed-in-actions');
-    if (statusR.ok && statusR.body.authenticated) {
-      const u = statusR.body.user;
-      authEl.className = 'banner banner-ok';
-      authEl.textContent = 'Signed in as ' + (u.email || '?') +
-        (statusR.body.loginTime ? ' (since ' + statusR.body.loginTime + ')' : '');
-      form.style.display = 'none';
-      signedIn.style.display = 'block';
-    } else {
-      authEl.className = 'banner banner-warn';
-      authEl.textContent = 'Not signed in.';
-      form.style.display = 'block';
-      signedIn.style.display = 'none';
+    async function doLogin(e) {
+        e.preventDefault();
+        const email = document.getElementById('login-email').value.trim();
+        const password = document.getElementById('login-password').value;
+        const btn = document.getElementById('login-btn');
+        const out = document.getElementById('login-result');
+
+        btn.disabled = true;
+        out.style.display = 'block';
+        out.className = 'banner banner-info';
+        out.textContent = 'Signing in…';
+
+        const r = await postJson('/api/auth/login', {email, password});
+
+        // Clear the password field as soon as the request returns, regardless of
+        // outcome. The credentials are never echoed back from the server.
+        document.getElementById('login-password').value = '';
+
+        if (r.ok) {
+            out.className = 'banner banner-ok';
+            out.textContent = 'Signed in as ' + (r.body.user?.email || email);
+        } else {
+            out.className = 'banner banner-err';
+            out.textContent = 'Sign in failed: ' + (r.body?.error || ('HTTP ' + r.status));
+        }
+        btn.disabled = false;
+        refreshAuthWidget();
+        refreshState();
     }
-  }
 
-  async function doLogin(e) {
-    e.preventDefault();
-    const email = document.getElementById('login-email').value.trim();
-    const password = document.getElementById('login-password').value;
-    const btn = document.getElementById('login-btn');
-    const out = document.getElementById('login-result');
-
-    btn.disabled = true;
-    out.style.display = 'block';
-    out.className = 'banner banner-info';
-    out.textContent = 'Signing in…';
-
-    const r = await postJson('/api/auth/login', { email, password });
-
-    // Clear the password field as soon as the request returns, regardless of
-    // outcome. The credentials are never echoed back from the server.
-    document.getElementById('login-password').value = '';
-
-    if (r.ok) {
-      out.className = 'banner banner-ok';
-      out.textContent = 'Signed in as ' + (r.body.user?.email || email);
-    } else {
-      out.className = 'banner banner-err';
-      out.textContent = 'Sign in failed: ' + (r.body?.error || ('HTTP ' + r.status));
+    async function doLogout() {
+        await postJson('/api/auth/logout', {});
+        refreshAuthWidget();
+        refreshState();
     }
-    btn.disabled = false;
-    refreshAuthWidget();
+
     refreshState();
-  }
-
-  async function doLogout() {
-    await postJson('/api/auth/logout', {});
-    refreshAuthWidget();
-    refreshState();
-  }
-
-  refreshState();
 </script>
 </body>
 </html>

@@ -38,7 +38,6 @@
 
   function fmtDate(s) {
     if (!s) return '';
-    // SailSys returns ISO strings like 2026-05-26T00:00:00.000 — show date only.
     return String(s).slice(0, 10);
   }
 
@@ -49,69 +48,21 @@
     return pending > 0 ? `${total} (${pending} pending)` : String(total);
   }
 
-  function renderEntrants(payload) {
-    const entrants = Array.isArray(payload) ? payload : (payload && payload.entrants);
-    if (!entrants || !entrants.length) return '<p><em>No entrants.</em></p>';
-    const rows = entrants.map(e => {
-      const boat = e.boat || {};
-      const skipper = (e.skipper && e.skipper.profile) || {};
-      const tcf = (e.handicap && e.handicap.currentHandicaps && e.handicap.currentHandicaps[0])
-        ? e.handicap.currentHandicaps[0].value
-        : '';
-      const division = (e.division && e.division.name) || '';
-      return `
-        <tr>
-          <td>${esc(boat.sailNumber || '')}</td>
-          <td>${esc(boat.name || '')}</td>
-          <td>${esc((skipper.firstname || '') + ' ' + (skipper.surname || ''))}</td>
-          <td>${esc(division)}</td>
-          <td>${esc(tcf)}</td>
-          <td>${esc(e.startTimeLocal || '')}</td>
-          <td>${esc(e.finishTimeLocal || '')}</td>
-          <td>${esc(e.elapsedTime || '')}</td>
-        </tr>`;
-    }).join('');
-    return `
-      <table>
-        <thead><tr>
-          <th>Sail #</th><th>Boat</th><th>Skipper</th><th>Division</th>
-          <th>TCF</th><th>Start</th><th>Finish</th><th>Elapsed</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
-  }
-
-  async function toggleRace(raceId, summaryRow) {
-    const next = summaryRow.nextElementSibling;
-    if (next && next.classList.contains('race-detail') && next.dataset.raceId === String(raceId)) {
-      next.remove();
-      return;
-    }
-    const detail = document.createElement('tr');
-    detail.className = 'race-detail';
-    detail.dataset.raceId = String(raceId);
-    const cell = document.createElement('td');
-    cell.colSpan = 9;
-    cell.innerHTML = '<em>Loading entrants…</em>';
-    detail.appendChild(cell);
-    summaryRow.after(detail);
-
-    const r = await fetchJson('/api/races/' + encodeURIComponent(raceId) + '/entrants');
-    if (!r.ok) {
-      cell.innerHTML = '<div class="banner banner-err">Could not load entrants: '
-        + esc((r.body && r.body.error) || ('HTTP ' + r.status)) + '</div>';
-      return;
-    }
-    cell.innerHTML = renderEntrants(r.body && r.body.entrants);
-  }
-
   (async () => {
     const state = document.getElementById('races-state');
     const table = document.getElementById('races-table');
     const tbody = document.getElementById('races-tbody');
 
+    // URL param wins (explicit navigation from Series tab or a bookmark).
+    // Otherwise fall back to the last seriesId we looked at in this browser,
+    // so a bare /races.html click in the nav restores the previous view.
     const params = new URLSearchParams(location.search);
-    const seriesId = params.get('seriesId');
+    let seriesId = params.get('seriesId');
+    if (seriesId) {
+      localStorage.setItem('sail-jinx.lastSeriesId', seriesId);
+    } else {
+      seriesId = localStorage.getItem('sail-jinx.lastSeriesId');
+    }
 
     if (!seriesId) {
       state.className = 'banner banner-warn';
@@ -144,16 +95,34 @@
       return;
     }
 
+    // A race is "finalized" once SailSys reports a non-zero resultStatus.
+    // (Observed values: 0 = no results entered. We have not yet seen a HAR
+    // capture of a post-results state; if the user reports a finalized race
+    // not being recognised, capture the status JSON and refine this rule.)
+    const isFinalized = (st) => !!(st && st.resultStatus && st.resultStatus > 0);
+
+    let lastFinalized = -1;
+    for (let i = 0; i < races.length; i++) {
+      if (isFinalized(statusMap[races[i].id])) lastFinalized = i;
+    }
+    // The "current race" is the one immediately after the last finalized race
+    // — or race 0 if nothing has been finalized yet. This is the only race the
+    // RO can actively edit (TCFs, came/start/finish times); later races are
+    // locked until their predecessors are finalized.
+    const currentIndex = lastFinalized + 1; // races.length means "none editable"
+
     state.className = 'banner banner-ok';
     state.textContent = races.length + ' races in series ' + seriesId
-      + ' — click a row to see entrants.';
+      + (currentIndex < races.length
+          ? ' — race ' + races[currentIndex].number + ' is the current race.'
+          : ' — all races are finalized.');
     table.style.display = '';
 
     tbody.innerHTML = '';
-    for (const race of races) {
+    for (let i = 0; i < races.length; i++) {
+      const race = races[i];
       const st = statusMap[race.id];
       const tr = document.createElement('tr');
-      tr.className = 'clickable';
       tr.dataset.raceId = String(race.id);
       tr.innerHTML = `
         <td>${esc(race.number)}</td>
@@ -165,7 +134,28 @@
         <td>${st ? esc(VIS(st.handicapAndStartTimeVisibility)) : '—'}</td>
         <td>${st ? esc(st.startersCount ?? 0) : '—'}</td>
         <td>${st ? esc(st.finishersCount ?? 0) : '—'}</td>`;
-      tr.onclick = () => toggleRace(race.id, tr);
+
+      if (i > currentIndex) {
+        // Future race, gated until its predecessors are finalized.
+        tr.className = 'disabled';
+        tr.title = 'Locked until earlier races are finalized';
+      } else if (i === currentIndex) {
+        // Current race — full edit (TCFs + live timing + results).
+        tr.className = 'clickable current-race';
+        tr.title = 'Current race — edit TCFs, capture times, manage results';
+        tr.onclick = () => {
+          location.href = '/race.html?raceId=' + encodeURIComponent(race.id)
+            + '&editable=1&current=1';
+        };
+      } else {
+        // Past race — results editable (times, flags, visibility) but no
+        // TCFs and no NOW/live timing affordances.
+        tr.className = 'clickable';
+        tr.title = 'Past race — edit results';
+        tr.onclick = () => {
+          location.href = '/race.html?raceId=' + encodeURIComponent(race.id) + '&editable=1';
+        };
+      }
       tbody.appendChild(tr);
     }
   })();

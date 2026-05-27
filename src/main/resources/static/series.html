@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sail-jinx — Series</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- INCLUDE _nav.html -->
+
+<main>
+  <h1>Series</h1>
+  <p class="lead">
+    All series at the configured SailSys club. Only series whose default
+    handicap matches the configured jinx handicap (MYC TCF, id 15 at MYC) are
+    eligible — click one to load its races.
+  </p>
+
+  <div id="series-state" class="banner banner-info">Loading…</div>
+
+  <table id="series-table" style="display:none;">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Name</th>
+        <th>Status</th>
+        <th>Races</th>
+        <th>Divisions</th>
+        <th>Default handicap</th>
+      </tr>
+    </thead>
+    <tbody id="series-tbody"></tbody>
+  </table>
+</main>
+
+<script src="/common.js"></script>
+<script>
+  (async () => {
+    const state = document.getElementById('series-state');
+    const table = document.getElementById('series-table');
+    const tbody = document.getElementById('series-tbody');
+
+    const r = await fetchJson('/api/series');
+
+    if (r.status === 401) {
+      state.className = 'banner banner-warn';
+      state.innerHTML = 'You are not signed in. <a href="/">Sign in to SailSys</a> to load the series list.';
+      return;
+    }
+    if (!r.ok) {
+      state.className = 'banner banner-err';
+      const detail = (r.body && r.body.error) ? r.body.error : ('HTTP ' + r.status);
+      state.textContent = 'Could not load series: ' + detail;
+      return;
+    }
+
+    const series = r.body.series || [];
+    const requiredHandicapId = r.body.handicapDefinitionId;
+    if (!series.length) {
+      state.className = 'banner banner-info';
+      state.textContent = 'No series returned for club ' + r.body.clubId + '.';
+      return;
+    }
+
+    const statusLabel = (n) => ({0: 'upcoming', 1: 'active', 2: 'completed'}[n] || ('status=' + n));
+
+    const eligibleCount = series.filter(s => s.defaultHandicap === requiredHandicapId).length;
+    state.className = 'banner banner-ok';
+    state.textContent =
+      series.length + ' series at club ' + r.body.clubId +
+      ' — ' + eligibleCount + ' using handicap definition id ' + requiredHandicapId +
+      ' (click to load races).';
+    table.style.display = '';
+
+    tbody.innerHTML = series.map(s => {
+      const eligible = s.defaultHandicap === requiredHandicapId;
+      const cls = eligible ? 'clickable' : 'disabled';
+      const onclick = eligible
+        ? `onclick="location.href='/races.html?seriesId=${s.id}'"`
+        : '';
+      const title = eligible
+        ? `title="Open races for ${esc(s.name).replace(/"/g, '&quot;')}"`
+        : `title="default handicap is ${esc(s.defaultHandicap)}, not the configured ${esc(requiredHandicapId)}"`;
+      return `
+        <tr class="${cls}" ${onclick} ${title}>
+          <td>${esc(s.id)}</td>
+          <td>${esc(s.name)}</td>
+          <td>${esc(statusLabel(s.status))}</td>
+          <td>${esc(s.racesCount)}</td>
+          <td>${esc(s.divisionsCount)}</td>
+          <td>${esc(s.defaultHandicap)}</td>
+        </tr>`;
+    }).join('');
+  })();
+</script>
+</body>
+</html>
