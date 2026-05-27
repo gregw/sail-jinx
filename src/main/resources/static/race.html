@@ -32,6 +32,7 @@
     <h2>Entrants <span id="entrants-count" style="font-weight: normal; color: #666; font-size: 0.85em;"></span></h2>
     <div id="save-bar" style="display:none;">
       <button id="save-btn" class="primary">Save</button>
+      <button id="reset-btn" type="button">Reset</button>
       <span id="save-summary" style="margin-left: 1rem; color: #555;"></span>
     </div>
     <table id="entrants-table">
@@ -317,6 +318,29 @@
     return (Number(m[1]) * 60 + Number(m[2])) * 60;
   }
 
+  // Seconds late vs allocated start for an entrant. Positive = late,
+  // negative = early (early triggers OCS via flagsForEntrant). Returns null
+  // when either time is missing/unparseable.
+  function lateSeconds(entrant) {
+    const id = entrant && entrant.boat && entrant.boat.id;
+    const t = getTimes(id);
+    if (!t || !t.actualStart) return null;
+    const actual = parseTime(t.actualStart);
+    const sched = parseScheduledSeconds(entrant && entrant.startTimeLocal);
+    if (actual == null || sched == null) return null;
+    return actual - sched;
+  }
+
+  // Format a late-seconds value as M:SS (or -M:SS for early). Empty for null.
+  function fmtLate(secs) {
+    if (secs == null) return '';
+    const neg = secs < 0;
+    const abs = Math.abs(secs);
+    const m = Math.floor(abs / 60);
+    const s = abs % 60;
+    return (neg ? '-' : '') + m + ':' + String(s).padStart(2, '0');
+  }
+
   // Flags for an entrant. Returns an array (potentially empty) — boats can
   // legitimately have multiple flags at once. Manual flags (e.g. DSQ) will be
   // layered on top of this in a future iteration; the order here is just the
@@ -417,7 +441,7 @@
           + ' data-original="' + esc(fmt(orig)) + '"'
           + ' value="' + esc(fmt(cur)) + '">';
       }},
-    { key: 'start',    label: 'Start',  get: e => e.startTimeLocal || '' },
+    { key: 'start',    label: 'Allocated', get: e => e.startTimeLocal || '' },
     { key: 'came',     label: 'Came',
       editableOnly: true, sortable: false,
       get: e => getTimes(e.boat && e.boat.id).came ? 1 : 0,
@@ -430,7 +454,7 @@
         return '<input type="checkbox" class="came-input" data-boat-id="' + esc(id) + '"'
           + checked + disabled + '>';
       }},
-    { key: 'actualStart', label: 'Actual Start',
+    { key: 'actualStart', label: 'Start',
       editableOnly: true,
       get: e => getTimes(e.boat && e.boat.id).actualStart || '',
       render: (e) => {
@@ -446,7 +470,7 @@
           + ' value="' + esc(t.actualStart || '') + '"' + disabled + '>'
           + nowBtn;
       }},
-    { key: 'finish',  label: 'Actual Finish',
+    { key: 'finish',  label: 'Finish',
       get: e => {
         if (IS_EDITABLE) return getTimes(e.boat && e.boat.id).finish || '';
         return e.finishTimeLocal || '';
@@ -467,17 +491,17 @@
           + ' value="' + esc(t.finish || '') + '"' + disabled + '>'
           + nowBtn;
       }},
-    // Mid-row repeats of drag/sail/name. The current race table is wide; by
-    // the time the RO is reading Elapsed/Place/Points they're far from the
-    // boat identity at the left edge. The duplicate columns share the
-    // original columns' sort behaviour via `sortKey`, so clicking either Sail
-    // # header toggles the same sort.
-    { key: 'drag2', label: '',
-      editableOnly: true, sortable: false, cellClass: 'drag-handle',
-      get: () => '',
-      render: () => '<span title="Drag to reorder">☰</span>' },
-    { key: 'name2', label: 'Name',   sortKey: 'name', editableOnly: true, get: e => (e.boat && e.boat.name) || '' },
-    { key: 'sail2', label: 'Sail#', sortKey: 'sail', editableOnly: true, get: e => (e.boat && e.boat.sailNumber) || '' },
+    // Late: actualStart minus allocated start, in seconds. Negative = early
+    // (and OCS-flagged elsewhere). Empty when the boat has no recorded
+    // actualStart. The `get` returns a Number so sorting is numeric; render
+    // formats as M:SS (with leading minus when early).
+    { key: 'late', label: 'Late', editableOnly: true,
+      get: e => {
+        const s = lateSeconds(e);
+        return s == null ? NaN : s;
+      },
+      render: e => esc(fmtLate(lateSeconds(e)))
+    },
     { key: 'elapsed', label: 'Elapsed',
       get: e => {
         if (IS_EDITABLE) {
@@ -801,16 +825,22 @@
 
   function updateElapsedCell(tr, boatId) {
     const cols = activeCols();
-    const idx = cols.findIndex(c => c.key === 'elapsed');
-    if (idx >= 0) {
-      const t = getTimes(boatId);
-      const a = parseTime(t.actualStart);
-      const f = parseTime(t.finish);
-      const entrant = entrantData.find(e => String(e.boat && e.boat.id) === String(boatId));
+    const entrant = entrantData.find(e => String(e.boat && e.boat.id) === String(boatId));
+    const t = getTimes(boatId);
+    const a = parseTime(t.actualStart);
+    const f = parseTime(t.finish);
+
+    const elapsedIdx = cols.findIndex(c => c.key === 'elapsed');
+    if (elapsedIdx >= 0) {
       const penalty = entrant ? penaltySecondsForEntrant(entrant) : 0;
       const txt = (a != null && f != null) ? fmtElapsed(f - a + penalty) : '';
       const cells = tr.querySelectorAll('td');
-      if (cells[idx]) cells[idx].textContent = txt;
+      if (cells[elapsedIdx]) cells[elapsedIdx].textContent = txt;
+    }
+    const lateIdx = cols.findIndex(c => c.key === 'late');
+    if (lateIdx >= 0 && entrant) {
+      const cells = tr.querySelectorAll('td');
+      if (cells[lateIdx]) cells[lateIdx].textContent = fmtLate(lateSeconds(entrant));
     }
     // A finish-time change rearranges Place/Points across every row. Patch
     // those cells in place rather than re-rendering — a full re-render would
@@ -1215,6 +1245,16 @@
     el.style.display = '';
   }
 
+  // Like ctrlMsg but accepts trusted HTML — used for the long-running
+  // Process Results progress display. Callers must hand-escape any
+  // user-supplied content; here it's all hard-coded strings + numbers.
+  function ctrlMsgHtml(cls, html) {
+    const el = document.getElementById('controls-msg');
+    el.className = 'banner ' + cls;
+    el.innerHTML = html;
+    el.style.display = '';
+  }
+
   async function doVisibility(endpoint, published) {
     setControlsDisabled(true);
     ctrlMsg('banner-info', (published ? 'Publishing' : 'Unpublishing') + '…');
@@ -1246,23 +1286,43 @@
 
   async function doProcessResults() {
     setControlsDisabled(true);
-    ctrlMsg('banner-info', 'Processing results — waiting for SailSys…');
-    const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/process-results', {});
-    if (!r.ok) {
-      ctrlMsg('banner-err', 'Failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
-      setControlsDisabled(false);
-      return;
-    }
-    if (r.body && r.body.error) {
-      // Timed out; render whatever status came back so the user can retry.
+    // The server holds the request open while polling SailSys for up to 90s.
+    // Drive a visible elapsed-time / progress bar so the RO can see the page
+    // is alive and roughly how close to timeout we are.
+    const startMs = Date.now();
+    const TIMEOUT_S = 90;
+    const tick = setInterval(() => {
+      const elapsed = (Date.now() - startMs) / 1000;
+      const secs = Math.floor(elapsed);
+      const pct = Math.min(100, Math.round((elapsed / TIMEOUT_S) * 100));
+      const bar = '<div class="progress"><div class="progress-bar" style="width:' + pct + '%"></div></div>';
+      const dot = '⏳'.repeat(((secs % 3) + 1));
+      ctrlMsgHtml('banner-info',
+        '<strong>' + dot + ' Processing results in SailSys…</strong> '
+        + '<span style="color:#555;">' + secs + 's / ' + TIMEOUT_S + 's</span>' + bar);
+    }, 500);
+    try {
+      const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/process-results', {});
+      clearInterval(tick);
+      if (!r.ok) {
+        ctrlMsg('banner-err', 'Failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+        setControlsDisabled(false);
+        return;
+      }
+      if (r.body && r.body.error) {
+        // Timed out; render whatever status came back so the user can retry.
+        renderStatus(r.body.status, raceIdGlobal);
+        ctrlMsg('banner-warn', r.body.error);
+        return;
+      }
+      sailsysResults = parseSailsysResults(r.body.results);
       renderStatus(r.body.status, raceIdGlobal);
-      ctrlMsg('banner-warn', r.body.error);
-      return;
+      renderEntrants();
+      const took = Math.round((Date.now() - startMs) / 100) / 10;
+      ctrlMsg('banner-ok', 'Results processed in ' + took + 's.');
+    } finally {
+      clearInterval(tick);
     }
-    sailsysResults = parseSailsysResults(r.body.results);
-    renderStatus(r.body.status, raceIdGlobal);
-    renderEntrants();
-    ctrlMsg('banner-ok', 'Results processed.');
   }
 
   async function doProcess() {
@@ -1314,6 +1374,15 @@
     // controls so the selector is up-to-date.
     renderControls();
     return r;
+  }
+
+  function doReset() {
+    if (!confirm('Discard all unsaved edits and refetch this race from SailSys?')) return;
+    // Drop the in-tab autosave so the reload doesn't immediately restore the
+    // edits we're throwing away. NOW-log entries live under a separate key
+    // and are preserved — they're a record of clicks the RO may still want.
+    try { sessionStorage.removeItem(SESSION_KEY('form')); } catch (_) {}
+    location.reload();
   }
 
   async function doSave() {
@@ -1568,6 +1637,7 @@
     renderEntrants();
 
     document.getElementById('save-btn').onclick = doSave;
+    document.getElementById('reset-btn').onclick = doReset;
 
     // The first renderStatus() call ran BEFORE snapshotTimes and before
     // entrantData was assigned, so its dirty baseline was empty (every field

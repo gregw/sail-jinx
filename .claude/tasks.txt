@@ -15,7 +15,8 @@ Once a race is selected, then do not offer the TCF column to non-admin users.
 
 Eventually, once we have the jinx handicap system implemented, we will need to add an extra step after processing,
 where the next handicaps are back calculated to new TCFs and pushed into sailsys - this will need an admin user to do it.
-So let's call this a "process handicaps" step.  Non admin users should be told to ask an admin user to do this. admin users should be offered the button to do this.
+So let's call this a "process handicaps" step.  Non admin users should be told to ask an admin user to do this.
+admin users should be offered the button to do this.
 
 
 
