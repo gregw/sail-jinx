@@ -12,9 +12,11 @@
 <main>
   <h1>Series</h1>
   <p class="lead">
-    All series at the configured SailSys club. Only series whose default
-    handicap matches the configured jinx handicap (MYC TCF, id 15 at MYC) are
-    eligible — click one to load its races.
+    All series at the configured SailSys club. Every series is clickable —
+    click one to load its races. Series whose default handicap matches the
+    configured jinx handicap (MYC TCF, id 15 at MYC) get the full editing
+    workflow; others can be browsed and have their per-race results edited,
+    but TCFs are display-only and handicap processing is unavailable.
   </p>
 
   <div id="series-state" class="banner banner-info">Loading…</div>
@@ -70,26 +72,25 @@
     state.textContent =
       series.length + ' series at club ' + r.body.clubId +
       ' — ' + eligibleCount + ' using handicap definition id ' + requiredHandicapId +
-      ' (click to load races).';
+      ' (full editing). All series are clickable.';
     table.style.display = '';
 
     tbody.innerHTML = series.map(s => {
-      const eligible = s.defaultHandicap === requiredHandicapId;
-      const cls = eligible ? 'clickable' : 'disabled';
-      const onclick = eligible
-        ? `onclick="location.href='/races.html?seriesId=${s.id}'"`
-        : '';
-      const title = eligible
+      const ourHandicap = s.defaultHandicap === requiredHandicapId;
+      const title = ourHandicap
         ? `title="Open races for ${esc(s.name).replace(/"/g, '&quot;')}"`
-        : `title="default handicap is ${esc(s.defaultHandicap)}, not the configured ${esc(requiredHandicapId)}"`;
+        : `title="Default handicap ${esc(s.defaultHandicap)} differs from configured ${esc(requiredHandicapId)} — TCFs will be view-only"`;
+      const handicapCell = ourHandicap
+        ? esc(s.defaultHandicap)
+        : esc(s.defaultHandicap) + ' <span style="color:#888;">(view-only)</span>';
       return `
-        <tr class="${cls}" ${onclick} ${title}>
+        <tr class="clickable" onclick="location.href='/races.html?seriesId=${s.id}'" ${title}>
           <td>${esc(s.id)}</td>
           <td>${esc(s.name)}</td>
           <td>${esc(statusLabel(s.status))}</td>
           <td>${esc(s.racesCount)}</td>
           <td>${esc(s.divisionsCount)}</td>
-          <td>${esc(s.defaultHandicap)}</td>
+          <td>${handicapCell}</td>
         </tr>`;
     }).join('');
   })();

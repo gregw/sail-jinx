@@ -11,20 +11,11 @@
 
 <main>
   <h1>Races</h1>
+  <div id="filter-chip" style="display:none; margin: 0 0 0.5rem;"></div>
   <div id="races-state" class="banner banner-info">Loading…</div>
   <table id="races-table" style="display:none;">
     <thead>
-      <tr>
-        <th>#</th>
-        <th>Name</th>
-        <th>Date</th>
-        <th>Entries</th>
-        <th>Entrants</th>
-        <th>TCFs</th>
-        <th>Start times</th>
-        <th>Starters</th>
-        <th>Finishers</th>
-      </tr>
+      <tr id="races-head"></tr>
     </thead>
     <tbody id="races-tbody"></tbody>
   </table>
@@ -48,32 +39,70 @@
     return pending > 0 ? `${total} (${pending} pending)` : String(total);
   }
 
+  // A race is "finalized" once SailSys reports a non-zero resultStatus
+  // (resultStatus 2,3,4 = processed; published as Hidden/Provisional/Final).
+  const isFinalized = (st) => !!(st && st.resultStatus && st.resultStatus > 0);
+
+  // For a list of races (one series), find the index of the "current" race
+  // — the first race after the most recent finalized one. Returns races.length
+  // if every race is finalized.
+  function currentIndexFor(racesGroup, statusMap) {
+    let lastFinalized = -1;
+    for (let i = 0; i < racesGroup.length; i++) {
+      if (isFinalized(statusMap[racesGroup[i].id])) lastFinalized = i;
+    }
+    return lastFinalized + 1;
+  }
+
+  function renderFilterChip(seriesName, seriesId) {
+    const chip = document.getElementById('filter-chip');
+    if (!seriesId) {
+      chip.style.display = 'none';
+      chip.innerHTML = '';
+      return;
+    }
+    chip.style.display = '';
+    chip.innerHTML = '<span class="filter-chip">'
+      + 'Filter: <strong>' + esc(seriesName || ('series ' + seriesId)) + '</strong>'
+      + ' <a href="/races.html?all=1" title="Clear filter" class="filter-clear">×</a>'
+      + '</span>';
+  }
+
   (async () => {
     const state = document.getElementById('races-state');
     const table = document.getElementById('races-table');
     const tbody = document.getElementById('races-tbody');
+    const head = document.getElementById('races-head');
 
-    // URL param wins (explicit navigation from Series tab or a bookmark).
-    // Otherwise fall back to the last seriesId we looked at in this browser,
-    // so a bare /races.html click in the nav restores the previous view.
+    // Mode selection — see previous version for the full reasoning.
     const params = new URLSearchParams(location.search);
+    const wantsAll = params.get('all') === '1';
     let seriesId = params.get('seriesId');
     if (seriesId) {
       localStorage.setItem('sail-jinx.lastSeriesId', seriesId);
-    } else {
+    } else if (!wantsAll) {
       seriesId = localStorage.getItem('sail-jinx.lastSeriesId');
+    } else {
+      localStorage.removeItem('sail-jinx.lastSeriesId');
     }
 
-    if (!seriesId) {
-      state.className = 'banner banner-warn';
-      state.innerHTML = 'No series selected. Pick a series on the <a href="/series.html">Series tab</a>.';
-      return;
+    await awaitAuth();
+    if (!isAdmin() && seriesId) {
+      seriesId = null;
+      localStorage.removeItem('sail-jinx.lastSeriesId');
     }
 
-    state.textContent = 'Loading races for series ' + seriesId + '…';
+    const url = seriesId
+      ? ('/api/series/' + encodeURIComponent(seriesId) + '/races')
+      : '/api/races/current';
 
-    const r = await fetchJson('/api/series/' + encodeURIComponent(seriesId) + '/races');
-
+    // Step 1: fetch the bare race list. The server no longer bundles per-race
+    // status with this response — it returns in a single round trip so we
+    // can render the table skeleton instantly.
+    state.textContent = seriesId
+      ? ('Loading races for series ' + seriesId + '…')
+      : 'Loading current races…';
+    const r = await fetchJson(url);
     if (r.status === 401) {
       state.className = 'banner banner-warn';
       state.innerHTML = 'You are not signed in. <a href="/">Sign in to SailSys</a> first.';
@@ -87,77 +116,244 @@
     }
 
     const races = Array.isArray(r.body.races) ? r.body.races : [];
-    const statusMap = r.body.status || {};
+    // For series-filtered fetches the response carries a top-level
+    // seriesName resolved server-side (SailSys's per-series race summary
+    // doesn't include it on each race). Fall back to the first race's
+    // seriesName for /races/current (where each race carries its own).
+    const filteredSeriesName = (seriesId && r.body.seriesName)
+      || (seriesId && races[0] && races[0].seriesName)
+      || null;
+    renderFilterChip(filteredSeriesName, seriesId);
 
     if (!races.length) {
       state.className = 'banner banner-info';
-      state.textContent = 'No races in series ' + seriesId + '.';
+      state.textContent = seriesId
+        ? ('No races in series ' + seriesId + '.')
+        : 'No current races found for this club.';
       return;
     }
 
-    // A race is "finalized" once SailSys reports a non-zero resultStatus.
-    // (Observed values: 0 = no results entered. We have not yet seen a HAR
-    // capture of a post-results state; if the user reports a finalized race
-    // not being recognised, capture the status JSON and refine this rule.)
-    const isFinalized = (st) => !!(st && st.resultStatus && st.resultStatus > 0);
-
-    let lastFinalized = -1;
-    for (let i = 0; i < races.length; i++) {
-      if (isFinalized(statusMap[races[i].id])) lastFinalized = i;
+    // Columns. `needsStatus` marks cells that depend on the per-race status
+    // (start as "…" placeholders until the per-race status fetch lands).
+    // `sortable` columns get a sort-toggle header; `sortValue` returns the
+    // value the row should be ranked by (the display string isn't always
+    // sort-friendly — e.g. Date displays "YYYY-MM-DD" but we want the full
+    // ISO timestamp ordering, including times for tie-break).
+    const cols = [
+      { key: 'date',   label: 'Date',   sortable: true,
+        sortValue: r => String(r.dateTime || r.date || ''),
+        get: r => esc(fmtDate(r.date || r.dateTime)) },
+      { key: 'name',   label: 'Name',   sortable: true,
+        sortValue: r => String(r.name || '').toLowerCase(),
+        get: r => esc(r.name) },
+      { key: 'series', label: 'Series', sortable: true,
+        // In /races/current the per-race seriesName is populated by SailSys.
+        // In /series/{id}/races (filtered view) it isn't, so we fall back
+        // to the server-resolved filteredSeriesName captured above, then
+        // finally to "id N" if both are missing.
+        sortValue: r => String(r.seriesName || filteredSeriesName || ('id ' + r.seriesId) || '').toLowerCase(),
+        get: r => esc(r.seriesName || filteredSeriesName || ('id ' + r.seriesId)) }
+    ];
+    if (seriesId) {
+      // Within a single-series view the # column is useful for round
+      // ordering even when the chosen sort isn't by Date. Sortable so the
+      // user can flip back to numeric order with one click.
+      cols.push({ key: 'number', label: '#', sortable: true,
+        sortValue: r => Number(r.number) || 0,
+        get: r => esc(r.number) });
     }
-    // The "current race" is the one immediately after the last finalized race
-    // — or race 0 if nothing has been finalized yet. This is the only race the
-    // RO can actively edit (TCFs, came/start/finish times); later races are
-    // locked until their predecessors are finalized.
-    const currentIndex = lastFinalized + 1; // races.length means "none editable"
+    cols.push(
+      { key: 'entries',   label: 'Entries',  needsStatus: true,
+        get: (r, st) => esc(entrySummary(st)) },
+      { key: 'entrants',  label: 'Entrants', needsStatus: true,
+        get: (r, st) => esc(VIS(st.raceEntrantVisibility)) },
+      { key: 'tcfs',      label: 'TCFs',     needsStatus: true,
+        get: (r, st) => esc(PROC(st.handicapAndStartTimeProcessingStatus)) },
+      { key: 'starts',    label: 'Start times', needsStatus: true,
+        get: (r, st) => esc(VIS(st.handicapAndStartTimeVisibility)) },
+      { key: 'starters',  label: 'Starters', needsStatus: true,
+        get: (r, st) => esc(st.startersCount ?? 0) },
+      { key: 'finishers', label: 'Finishers', needsStatus: true,
+        get: (r, st) => esc(st.finishersCount ?? 0) }
+    );
 
-    state.className = 'banner banner-ok';
-    state.textContent = races.length + ' races in series ' + seriesId
-      + (currentIndex < races.length
-          ? ' — race ' + races[currentIndex].number + ' is the current race.'
-          : ' — all races are finalized.');
+    // Sort state. Default: Date ascending — the most natural order for a
+    // race list. Clicking a sortable header sets the sort key (or flips
+    // direction if it's already the active key).
+    let sortKey = 'date';
+    let sortDir = 1;
+
+    function compareSortValues(a, b) {
+      if (typeof a === 'number' && typeof b === 'number') return a - b;
+      return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+    }
+
+    function sortedRaces() {
+      const col = cols.find(c => c.key === sortKey);
+      if (!col || !col.sortValue) return races.slice();
+      return races.slice().sort((a, b) => sortDir * compareSortValues(col.sortValue(a), col.sortValue(b)));
+    }
+
+    function renderHead() {
+      head.innerHTML = cols.map(c => {
+        if (c.sortable) {
+          const marker = (sortKey === c.key)
+            ? '<span class="sort-marker">' + (sortDir > 0 ? '▲' : '▼') + '</span>'
+            : '';
+          return '<th class="sortable" data-key="' + c.key + '">' + esc(c.label) + marker + '</th>';
+        }
+        return '<th>' + esc(c.label) + '</th>';
+      }).join('');
+      head.querySelectorAll('th.sortable').forEach(th => {
+        th.onclick = () => {
+          const k = th.dataset.key;
+          if (sortKey === k) sortDir = -sortDir;
+          else { sortKey = k; sortDir = 1; }
+          renderHead();
+          renderBody();
+        };
+      });
+    }
+
+    state.className = 'banner banner-info';
+    const totalRaces = races.length;
+    let pending = totalRaces;
+    state.textContent = totalRaces + ' race' + (totalRaces === 1 ? '' : 's')
+      + (seriesId ? ' in series ' + seriesId : ' across all current series')
+      + ' — loading status for ' + pending + '…';
     table.style.display = '';
 
-    tbody.innerHTML = '';
-    for (let i = 0; i < races.length; i++) {
-      const race = races[i];
-      const st = statusMap[race.id];
-      const tr = document.createElement('tr');
-      tr.dataset.raceId = String(race.id);
-      tr.innerHTML = `
-        <td>${esc(race.number)}</td>
-        <td>${esc(race.name)}</td>
-        <td>${esc(fmtDate(race.date))}</td>
-        <td>${esc(entrySummary(st))}</td>
-        <td>${st ? esc(VIS(st.raceEntrantVisibility)) : '—'}</td>
-        <td>${st ? esc(PROC(st.handicapAndStartTimeProcessingStatus)) : '—'}</td>
-        <td>${st ? esc(VIS(st.handicapAndStartTimeVisibility)) : '—'}</td>
-        <td>${st ? esc(st.startersCount ?? 0) : '—'}</td>
-        <td>${st ? esc(st.finishersCount ?? 0) : '—'}</td>`;
+    // statusMap holds the latest fetched status per race (or null on fetch
+    // failure). A key missing from the map means the fetch is still in
+    // flight — used to decide whether a needsStatus cell should be "…"
+    // (loading) or "—" (failed) or the real value.
+    const statusMap = {};
+    const racesById = new Map();
+    for (const race of races) racesById.set(String(race.id), race);
 
-      if (i > currentIndex) {
-        // Future race, gated until its predecessors are finalized.
-        tr.className = 'disabled';
-        tr.title = 'Locked until earlier races are finalized';
-      } else if (i === currentIndex) {
-        // Current race — full edit (TCFs + live timing + results).
-        tr.className = 'clickable current-race';
-        tr.title = 'Current race — edit TCFs, capture times, manage results';
-        tr.onclick = () => {
-          location.href = '/race.html?raceId=' + encodeURIComponent(race.id)
-            + '&editable=1&current=1';
-        };
-      } else {
-        // Past race — results editable (times, flags, visibility) but no
-        // TCFs and no NOW/live timing affordances.
-        tr.className = 'clickable';
-        tr.title = 'Past race — edit results';
-        tr.onclick = () => {
-          location.href = '/race.html?raceId=' + encodeURIComponent(race.id) + '&editable=1';
-        };
+    // classification is filled in after all statuses resolve. Until then,
+    // every row is plain "clickable". Once known, locked-future rows lose
+    // their click and current rows get the highlight.
+    let classification = null;
+
+    // Single source of truth for tbody rendering. Called on initial paint,
+    // on every sort change, and once at the end after classification is
+    // determined (to apply the locked/current classes). Each call reads
+    // from statusMap so partially-loaded rows continue to show "…"
+    // placeholders for the cells that haven't arrived yet.
+    function renderBody() {
+      tbody.innerHTML = '';
+      for (const race of sortedRaces()) {
+        const idStr = String(race.id);
+        const hasStatus = idStr in statusMap;
+        const st = statusMap[idStr];
+        const tr = document.createElement('tr');
+        tr.dataset.raceId = idStr;
+        tr.innerHTML = cols.map(c => {
+          if (c.needsStatus) {
+            if (!hasStatus) return '<td class="status-cell status-loading">…</td>';
+            if (st == null) return '<td>—</td>';
+            return '<td>' + c.get(race, st) + '</td>';
+          }
+          return '<td>' + c.get(race) + '</td>';
+        }).join('');
+        if (classification && classification.lockedIds.has(idStr)) {
+          tr.className = 'disabled';
+          tr.title = 'Locked until earlier races are finalized';
+          tr.onclick = null;
+        } else if (classification && classification.currentIds.has(idStr)) {
+          tr.className = 'clickable current-race';
+          tr.title = 'Current race — live timing';
+          tr.onclick = () => {
+            location.href = '/race.html?raceId=' + encodeURIComponent(race.id);
+          };
+        } else {
+          tr.className = 'clickable';
+          tr.title = 'Open race';
+          tr.onclick = () => {
+            location.href = '/race.html?raceId=' + encodeURIComponent(race.id);
+          };
+        }
+        tbody.appendChild(tr);
       }
-      tbody.appendChild(tr);
     }
+
+    renderHead();
+    renderBody();
+
+    // Incremental cell update for a single race's row — used as each
+    // status fetch lands so we don't redraw the whole table on every
+    // arrival. Falls back to a no-op when the row isn't in the DOM yet
+    // (which can't happen given the initial renderBody but is cheap to
+    // guard).
+    function updateRowStatus(idStr) {
+      const tr = tbody.querySelector('tr[data-race-id="' + idStr + '"]');
+      if (!tr) return;
+      const race = racesById.get(idStr);
+      const st = statusMap[idStr];
+      const cells = tr.querySelectorAll('td');
+      cols.forEach((c, i) => {
+        if (!c.needsStatus) return;
+        const td = cells[i];
+        td.classList.remove('status-loading');
+        td.textContent = '';
+        if (st) td.innerHTML = c.get(race, st);
+        else td.textContent = '—';
+      });
+    }
+
+    // Step 2: fan out per-race status fetches in parallel. Each row's
+    // status cells are filled as soon as that race's response arrives.
+    const promises = races.map(race => {
+      const idStr = String(race.id);
+      return fetchJson('/api/races/' + encodeURIComponent(race.id) + '/status')
+        .then(rs => {
+          statusMap[idStr] = (rs.ok && rs.body && rs.body.status) ? rs.body.status : null;
+          updateRowStatus(idStr);
+        })
+        .catch(_ => { statusMap[idStr] = null; updateRowStatus(idStr); })
+        .finally(() => {
+          pending--;
+          if (pending > 0) {
+            state.textContent = totalRaces + ' race' + (totalRaces === 1 ? '' : 's')
+              + (seriesId ? ' in series ' + seriesId : ' across all current series')
+              + ' — loading status for ' + pending + '…';
+          }
+        });
+    });
+
+    // Step 3: once every status has resolved, re-classify rows into past /
+    // current / locked-future per the per-series finalized prefix, then
+    // re-render the body so the new classes / click handlers apply.
+    await Promise.all(promises);
+
+    const currentIds = new Set();
+    const lockedIds = new Set();
+    if (seriesId) {
+      const curIdx = currentIndexFor(races, statusMap);
+      if (curIdx < races.length) currentIds.add(String(races[curIdx].id));
+      for (let i = curIdx + 1; i < races.length; i++) lockedIds.add(String(races[i].id));
+    } else {
+      const bySeries = new Map();
+      for (const race of races) {
+        const k = String(race.seriesId);
+        if (!bySeries.has(k)) bySeries.set(k, []);
+        bySeries.get(k).push(race);
+      }
+      for (const grp of bySeries.values()) {
+        grp.sort((a, b) => String(a.dateTime || a.date || '').localeCompare(String(b.dateTime || b.date || '')));
+        const curIdx = currentIndexFor(grp, statusMap);
+        if (curIdx < grp.length) currentIds.add(String(grp[curIdx].id));
+        for (let i = curIdx + 1; i < grp.length; i++) lockedIds.add(String(grp[i].id));
+      }
+    }
+    classification = { currentIds, lockedIds };
+    renderBody();
+
+    state.className = 'banner banner-ok';
+    state.textContent = totalRaces + ' race' + (totalRaces === 1 ? '' : 's')
+      + (seriesId ? ' in series ' + seriesId : ' across all current series')
+      + (currentIds.size ? ' — ' + currentIds.size + ' marked as current.' : '');
   })();
 </script>
 </body>

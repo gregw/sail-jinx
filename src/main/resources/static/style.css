@@ -40,6 +40,10 @@ a { color: #2255aa; }
 .site-nav a:hover { color: #2255aa; background: #f0f0f0; }
 .site-nav a.active { color: #fff; background: #2255aa; }
 .site-nav a.active:hover { color: #fff; background: #1d4790; }
+.site-nav a.nav-disabled,
+.site-nav a.nav-disabled:hover {
+  color: #aaa; background: transparent; cursor: not-allowed; pointer-events: none;
+}
 .site-nav a.nav-home { font-weight: bold; font-size: 1.1rem; margin-right: 0.5rem; color: #111; padding: 0; background: none; }
 .site-nav a.nav-home:hover { background: none; }
 .site-nav a.nav-home.active { color: #111; background: none; }
@@ -60,9 +64,11 @@ tr:hover td { background: #f9f9f9; }
 
 /* The entrants table shrinks to its content rather than filling the page —
    columns sit close together, which is what the RO wants when scanning rows
-   under time pressure. */
-#entrants-table { width: auto; }
+   under time pressure. The races table follows suit so a long Date / Name
+   column doesn't get padded out across the viewport. */
+#entrants-table, #races-table { width: auto; }
 #entrants-table th, #entrants-table td { padding: 3px 6px; white-space: nowrap; }
+#races-table th, #races-table td { padding: 3px 10px; white-space: nowrap; }
 
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: #eaf1fc; }
@@ -114,6 +120,35 @@ th.sortable .sort-marker { color: #888; margin-left: 0.3em; font-size: 0.85em; }
 .vis-toggle { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
 .vis-toggle input[type=checkbox] { cursor: pointer; }
 .vis-toggle input[type=checkbox]:disabled { cursor: wait; }
+
+/* Skeleton placeholder used while status cells on the Races page are
+   awaiting their /api/races/{id}/status fetch. Faded text with a subtle
+   pulse so the eye can see that data is still incoming. */
+td.status-loading {
+  color: #aaa; text-align: center;
+  animation: status-pulse 1.2s ease-in-out infinite;
+}
+@keyframes status-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+/* Filter chip — used on the Races page when the list is constrained to a
+   single series. Clicking the × clears the filter and shows all races. */
+.filter-chip {
+  display: inline-flex; align-items: center;
+  background: #e8f0fe; border: 1px solid #aac4f7; color: #1a3666;
+  padding: 0.2rem 0.5rem 0.2rem 0.7rem; border-radius: 12px;
+  font-size: 0.85em;
+}
+.filter-chip .filter-clear {
+  margin-left: 0.5rem;
+  width: 1.2em; height: 1.2em; line-height: 1.1em; text-align: center;
+  border-radius: 50%; text-decoration: none;
+  background: #fff; color: #555; border: 1px solid #aac4f7;
+  font-weight: bold;
+}
+.filter-chip .filter-clear:hover { background: #2255aa; color: #fff; }
 
 /* Progress bar used while waiting for long-running SailSys actions
    (e.g. results processing — up to 90 s). */

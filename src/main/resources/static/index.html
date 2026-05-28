@@ -141,12 +141,16 @@
             out.textContent = 'Sign in failed: ' + (r.body?.error || ('HTTP ' + r.status));
         }
         btn.disabled = false;
+        // Drop the cached pre-login auth state so the widget + nav pick up
+        // the new role (admin vs race officer) without needing a reload.
+        invalidateAuth();
         refreshAuthWidget();
         refreshState();
     }
 
     async function doLogout() {
         await postJson('/api/auth/logout', {});
+        invalidateAuth();
         refreshAuthWidget();
         refreshState();
     }

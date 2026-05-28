@@ -123,6 +123,7 @@ class JsonStoreTest
             "race-9",
             List.of("767", "765", "770"),
             "770",
+            null,
             Map.of(
                 "767", new RaceTimes.BoatTimes(true,  "18:13:02", "19:07:11"),
                 "765", new RaceTimes.BoatTimes(true,  "18:10:00", "19:05:22"),
@@ -148,12 +149,35 @@ class JsonStoreTest
         JsonStore first = new JsonStore(tmp);
         first.start();
         first.putRaceTimes("race-10", new RaceTimes(
-            "race-10", List.of("767"), null,
+            "race-10", List.of("767"), null, null,
             Map.of("767", new RaceTimes.BoatTimes(true, "18:13:02", "19:07:11"))));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
         assertThat(reopened.raceTimes("race-10").dutyBoatId(), nullValue());
+    }
+
+    @Test
+    void raceTimesDivisionStartsRoundTrip(@TempDir Path tmp) throws IOException
+    {
+        // Non-pursuit races: the RO captures one actualStart per division
+        // (not per boat). Stored alongside the per-boat times so a future
+        // schema upgrade doesn't have to migrate two parallel files.
+        JsonStore first = new JsonStore(tmp);
+        first.start();
+        first.putRaceTimes("race-11", new RaceTimes(
+            "race-11", List.of("100", "200"), null,
+            Map.of("13779", "14:00:05", "13780", "14:10:02"),
+            Map.of(
+                "100", new RaceTimes.BoatTimes(true, null, "15:21:00"),
+                "200", new RaceTimes.BoatTimes(true, null, "15:33:14"))));
+
+        JsonStore reopened = new JsonStore(tmp);
+        reopened.start();
+        RaceTimes read = reopened.raceTimes("race-11");
+        assertThat(read.divisionStarts(), aMapWithSize(2));
+        assertThat(read.divisionStarts(), hasEntry(is("13779"), is("14:00:05")));
+        assertThat(read.divisionStarts(), hasEntry(is("13780"), is("14:10:02")));
     }
 
     @Test

@@ -4,13 +4,37 @@ Please read [README.md](README.md) for a project overview.
 
 ## Scope and extensibility
 
-The immediate scope is the MYC Twilight pursuit handicap. However the architecture is intentionally general:
+The originating use case is the MYC Twilight pursuit handicap, but the
+application has grown into a general SailSys-companion results UI:
 
-- The `HandicapEngine` interface is designed to be implemented by multiple algorithms. The pursuit algorithm is the first implementation.
-- Other algorithms (e.g. a pure PHS/TCF pass-through, or a different reward distribution) can be added without changing the server, persistence, or SailSys integration layers.
-- The series and club identifiers are configuration, not code. Another club running a pursuit series on SailSys could point sail-jinx at their own series with a different `config.yaml`.
+- All series at the configured club are listed and clickable.
+- All races (any race type, any handicap) are clickable; the race page adapts
+  its affordances rather than refusing to open the race.
+- TCF editing and the Process Handicaps step are unlocked only when the race
+  belongs to a series scored against the configured handicap definition
+  (`handicapDefinitionId` in `config.yaml`). Other series get TCF as a
+  view-only column and no Process Handicaps button.
+- The race page distinguishes pursuit races (`raceType=0`) from fleet starts:
+  pursuit shows per-entrant allocated/start, while fleet shows one
+  scheduled+actual gun time per division in a panel above the entrants
+  table.
+- The race page no longer takes any edit-mode URL flags. The page is
+  always editable subject to gates; live-timing affordances (NOW buttons,
+  NOW log) appear automatically when the race's `resultStatus < 2`.
 
-The name reflects this: it is not called `myc-twilight` because it should be useful beyond that context.
+Architectural pluggability is preserved:
+
+- The `HandicapEngine` interface is designed to be implemented by multiple
+  algorithms. The pursuit algorithm is the first implementation.
+- Other algorithms (e.g. a pure PHS/TCF pass-through, or a different reward
+  distribution) can be added without changing the server, persistence, or
+  SailSys integration layers.
+- The series and club identifiers are configuration, not code. Another club
+  running a pursuit series on SailSys could point sail-jinx at their own
+  series with a different `config.yaml`.
+
+The name reflects this: it is not called `myc-twilight` because it is useful
+beyond that context.
 
 ---
 

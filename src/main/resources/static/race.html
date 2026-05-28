@@ -29,7 +29,12 @@
   </section>
 
   <section id="race-entrants" style="display:none;">
-    <h2>Entrants <span id="entrants-count" style="font-weight: normal; color: #666; font-size: 0.85em;"></span></h2>
+    <h2>Entrants
+      <span id="entrants-count" style="font-weight: normal; color: #666; font-size: 0.85em;"></span>
+      <label id="hide-dnc-toggle" style="display:none; font-weight: normal; font-size: 0.85em; color: #555; margin-left: 1rem;">
+        <input type="checkbox" id="hide-dnc"> Hide DNC
+      </label>
+    </h2>
     <div id="save-bar" style="display:none;">
       <button id="save-btn" class="primary">Save</button>
       <button id="reset-btn" type="button">Reset</button>
@@ -60,18 +65,24 @@
 
   function fmtDate(s) { return s ? String(s).slice(0, 10) : ''; }
 
-  // Two URL-driven edit modes, set by the Races page:
-  //   editable=1 → results editing: came, actual start/finish, flags, drag
-  //                order, results visibility status. Applies to the current
-  //                race AND past races (so flags / times can be corrected
-  //                after the fact).
-  //   current=1  → narrower: current-race-only affordances. Adds TCF input
-  //                editing, the per-row NOW buttons, and the NOW-button log
-  //                section. Only the race after the last finalized race
-  //                gets this; past races are editable but not "current".
+  // The race page no longer takes any edit-mode URL flags. It is always
+  // editable subject to user permissions / race type / handicap type, and
+  // "is this race currently live" is derived from the race's own state:
+  // any race whose results have not yet been processed (resultStatus < 2)
+  // is treated as current and gets the live-timing affordances (TCF input,
+  // per-row + per-division NOW buttons, the NOW log section).
   const PARAMS = new URLSearchParams(location.search);
-  const IS_EDITABLE = PARAMS.get('editable') === '1';
-  const IS_CURRENT  = PARAMS.get('current')  === '1';
+  // The page is always editable now; per-feature gating is via isAdmin /
+  // isOurHandicap / isPursuit. IS_EDITABLE is kept as a constant so the
+  // many `if (IS_EDITABLE)` branches stay readable rather than being
+  // collapsed inline — also leaves a single chokepoint for any future
+  // read-only mode (e.g. spectator view).
+  const IS_EDITABLE = true;
+  // isCurrentRace is recomputed every time the race status lands (initial
+  // load, after SAVE, after Process Results, etc.). Defaults to false so
+  // the initial paint (before status arrives) doesn't show NOW buttons that
+  // would then disappear once we know better.
+  let isCurrentRace = false;
 
   let raceIdGlobal = null;
   let seriesIdForSave = null;       // populated from race status
@@ -83,6 +94,25 @@
   const dirtyTcf = new Map();       // boatId -> edited TCF (Number)
   let dutyBoatId = null;            // boatId of selected duty boat, or null
 
+  // Race classification — derived once the data lands and consulted by the
+  // column / panel renderers below.
+  //   configHandicapId is the configured handicapDefinitionId (e.g. 15 = MYC
+  //   TCF). isOurHandicap is true when at least one entrant carries a current
+  //   handicap whose definition matches configHandicapId — i.e. this race is
+  //   scored against the handicap our app manages. isPursuit is true when
+  //   every division in this race is raceType=0 (pursuit start). Non-pursuit
+  //   races use per-division start gun times; pursuit races stagger per boat.
+  let configHandicapId = null;
+  let isOurHandicap = false;
+  let isPursuit = true;
+
+  // divisionStartsMap is the live, editable per-division actualStart for a
+  // non-pursuit race: divisionId (String) -> "HH:MM:SS". Empty for pursuit
+  // races (per-boat actualStart on timesMap is used instead). Snapshot for
+  // dirty detection mirrors timesMap's originalTimesJson.
+  let divisionStartsMap = new Map();
+  let originalDivisionStartsJson = '';
+
   // Times state. timesMap is the live editable view; originalTimesJson is the
   // serialized snapshot we compare against to decide whether the times block
   // is dirty (covers both per-row edits and drag-reordering).
@@ -90,6 +120,7 @@
   let originalTimesJson = '';
   let originalOrderJson = '';
   let originalDutyBoatId = null;    // for dirty detection on duty-boat changes
+  let hideDnc = false;              // UI filter: when true, hide non-Came boats from the table
 
   // SailSys-computed results cache. Populated from /api/races/{id}/computed-results
   // on load and after Process Results. Shape: { boatId: {place, points, flags} }.
@@ -170,7 +201,9 @@
         timesMap: Array.from(timesMap.entries()),
         boatOrder: boatOrder,
         dutyBoatId: dutyBoatId,
-        dirtyTcf: Array.from(dirtyTcf.entries())
+        divisionStarts: Array.from(divisionStartsMap.entries()),
+        dirtyTcf: Array.from(dirtyTcf.entries()),
+        hideDnc: hideDnc
       }));
     } catch (_) { /* private mode or quota — silent best effort */ }
   }
@@ -190,11 +223,15 @@
       if (Array.isArray(p.timesMap)) timesMap = new Map(p.timesMap);
       if (Array.isArray(p.boatOrder)) boatOrder = p.boatOrder.map(String);
       dutyBoatId = p.dutyBoatId ? String(p.dutyBoatId) : null;
-      // Only restore dirty TCF state on the current race. A past race may
-      // still have TCF dirt in sessionStorage from when it was current; that
-      // data can't be edited or pushed any more, so reviving it would just
-      // permanently mark the page dirty and block clean-results display.
-      if (IS_CURRENT && Array.isArray(p.dirtyTcf)) {
+      if (Array.isArray(p.divisionStarts)) {
+        divisionStartsMap = new Map(p.divisionStarts.map(([k, v]) => [String(k), v]));
+      }
+      hideDnc = !!p.hideDnc;
+      // Only restore dirty TCF state when the race is current AND we manage
+      // the handicap. Past races / foreign-handicap series have no editable
+      // TCF input, so reviving the dirt would permanently mark the page
+      // dirty without offering the user any way to clear it.
+      if (isCurrentRace && isOurHandicap && Array.isArray(p.dirtyTcf)) {
         dirtyTcf.clear();
         for (const [k, v] of p.dirtyTcf) dirtyTcf.set(Number(k), Number(v));
       }
@@ -260,17 +297,22 @@
     return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
 
-  // Reformat user-typed times to canonical HH:MM:SS. Accepts H:M, H:M:S, and
-  // legacy H:M:S.sss (sub-second portion dropped). Returns null if the input
-  // doesn't parse — in which case the caller leaves the raw text in place so
-  // the user can fix it.
+  // Reformat user-typed times to canonical HH:MM:SS. Tolerant of:
+  //   "H:M"        → ":00" seconds
+  //   "H:M:"       → trailing colon, treated as ":00"
+  //   "H:M:S"      → single-digit second padded to ":0S"
+  //   "H:M:S.sss"  → legacy millis suffix dropped
+  // Returns null if the input still doesn't parse — caller leaves the raw
+  // text in place so the user can fix it. The blur and Enter paths both
+  // funnel through here so the same normalisation applies on focus loss
+  // and on Enter keypress.
   function reformatTime(s) {
     if (!s) return null;
-    const m = String(s).trim().match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.\d{1,3})?$/);
+    const m = String(s).trim().match(/^(\d{1,2}):(\d{1,2})(?::(\d{0,2}))?(?:\.\d{1,3})?$/);
     if (!m) return null;
     const h = Number(m[1]);
     const mi = Number(m[2]);
-    const ss = m[3] ? Number(m[3]) : 0;
+    const ss = (m[3] != null && m[3] !== '') ? Number(m[3]) : 0;
     if (h > 23 || mi > 59 || ss > 59) return null;
     const pad = (n) => String(n).padStart(2, '0');
     return pad(h) + ':' + pad(mi) + ':' + pad(ss);
@@ -318,15 +360,62 @@
     return (Number(m[1]) * 60 + Number(m[2])) * 60;
   }
 
+  // The actualStart time for an entrant — pursuit races stagger per boat
+  // (held on timesMap[boatId].actualStart); non-pursuit races share one gun
+  // time per division (held on divisionStartsMap when the user has captured
+  // it locally, else on SailSys's currentStatus.divisionTiming.startTimeLocal
+  // — for fleet races SailSys treats that field AS the gun time, so once
+  // saved it IS the actual). Returns null when nothing is available.
+  function actualStartFor(entrant) {
+    if (isPursuit) {
+      const id = entrant && entrant.boat && entrant.boat.id;
+      const t = getTimes(id);
+      return t ? (t.actualStart || null) : null;
+    }
+    const divId = entrant && entrant.division && entrant.division.id;
+    if (divId == null) return null;
+    if (divisionStartsMap.has(String(divId))) {
+      const v = divisionStartsMap.get(String(divId));
+      if (v) return v;
+    }
+    return divisionScheduledStart(divId);
+  }
+
+  // Pull a division's start time straight out of currentStatus.divisionTiming
+  // and return it as "HH:MM:SS". For non-pursuit races this is what SailSys
+  // considers the gun time. Returns null when the status hasn't loaded yet
+  // or the division isn't in divisionTiming.
+  function divisionScheduledStart(divisionId) {
+    if (!currentStatus || !Array.isArray(currentStatus.divisionTiming)) return null;
+    const dt = currentStatus.divisionTiming.find(d => d && d.divisionId === divisionId);
+    if (!dt || !dt.startTimeLocal) return null;
+    const m = String(dt.startTimeLocal).match(/(?:^|T)(\d{1,2}):(\d{1,2}):(\d{1,2})/);
+    if (!m) return null;
+    const pad = (n) => String(n).padStart(2, '0');
+    return pad(Number(m[1])) + ':' + pad(Number(m[2])) + ':' + pad(Number(m[3]));
+  }
+
+  // The scheduled start string for an entrant — for pursuit, the entrant's
+  // own startTimeLocal (computed by SailSys after start-time processing);
+  // for non-pursuit, the division's startTimeLocal from divisionTiming on
+  // the race status (all boats in the division share it).
+  function scheduledStartFor(entrant) {
+    if (isPursuit) return entrant && entrant.startTimeLocal;
+    if (!currentStatus || !Array.isArray(currentStatus.divisionTiming)) return null;
+    const divId = entrant && entrant.division && entrant.division.id;
+    if (divId == null) return null;
+    const dt = currentStatus.divisionTiming.find(d => d && d.divisionId === divId);
+    return dt ? dt.startTimeLocal : null;
+  }
+
   // Seconds late vs allocated start for an entrant. Positive = late,
   // negative = early (early triggers OCS via flagsForEntrant). Returns null
   // when either time is missing/unparseable.
   function lateSeconds(entrant) {
-    const id = entrant && entrant.boat && entrant.boat.id;
-    const t = getTimes(id);
-    if (!t || !t.actualStart) return null;
-    const actual = parseTime(t.actualStart);
-    const sched = parseScheduledSeconds(entrant && entrant.startTimeLocal);
+    const actualStr = actualStartFor(entrant);
+    if (!actualStr) return null;
+    const actual = parseTime(actualStr);
+    const sched = parseScheduledSeconds(scheduledStartFor(entrant));
     if (actual == null || sched == null) return null;
     return actual - sched;
   }
@@ -366,20 +455,23 @@
     }
 
     const t = getTimes(id);
+    const actualStr = actualStartFor(entrant);
     if (!t || !t.came) {
       flags.push('DNC');
-    } else if (!t.actualStart) {
+    } else if (!actualStr) {
       flags.push('DNS');
     } else if (!t.finish) {
       flags.push('DNF');
     }
 
-    // OCS layers on top of any of the above. The spec deliberately doesn't
-    // require a finish time for OCS — boats can be flagged as having started
-    // early even if they later retire.
-    if (t && t.actualStart) {
-      const actual = parseTime(t.actualStart);
-      const sched = parseScheduledSeconds(entrant && entrant.startTimeLocal);
+    // OCS layers on top of any of the above for pursuit races, where each
+    // boat has its own actualStart that we can compare against the boat's
+    // staggered allocated start. For fleet (non-pursuit) starts every boat
+    // shares one division gun time, so an "OCS" call is per-boat RO
+    // judgement (not derivable from times) — don't auto-flag it.
+    if (isPursuit && actualStr) {
+      const actual = parseTime(actualStr);
+      const sched = parseScheduledSeconds(scheduledStartFor(entrant));
       if (actual != null && sched != null && actual < sched) flags.push('OCS');
     }
     return flags;
@@ -429,8 +521,11 @@
       render: (e) => {
         const cur = currentTcf(e);
         const fmt = (n) => (typeof n === 'number' && !isNaN(n)) ? n.toFixed(4) : '';
-        // TCF input is current-race-only. Past races see the value read-only.
-        if (!IS_CURRENT) {
+        // TCF input is current-race-only AND only when the race is scored
+        // against the handicap definition this app manages. Past races, or
+        // any race whose series uses a different default handicap, see the
+        // value read-only — we have no business writing those TCFs.
+        if (!isCurrentRace || !isOurHandicap) {
           return esc(fmt(cur));
         }
         const orig = originalTcf(e);
@@ -461,7 +556,7 @@
         const id = e.boat && e.boat.id;
         const t = getTimes(id);
         const disabled = t.came ? '' : ' disabled';
-        const nowBtn = IS_CURRENT
+        const nowBtn = isCurrentRace
           ? ('<button type="button" class="now-btn" data-boat-id="' + esc(id) + '"'
              + ' data-field="actualStart"' + disabled + '>NOW</button>')
           : '';
@@ -482,7 +577,7 @@
         const id = e.boat && e.boat.id;
         const t = getTimes(id);
         const disabled = t.came ? '' : ' disabled';
-        const nowBtn = IS_CURRENT
+        const nowBtn = isCurrentRace
           ? ('<button type="button" class="now-btn" data-boat-id="' + esc(id) + '"'
              + ' data-field="finish"' + disabled + '>NOW</button>')
           : '';
@@ -505,8 +600,8 @@
     { key: 'elapsed', label: 'Elapsed',
       get: e => {
         if (IS_EDITABLE) {
+          const a = parseTime(actualStartFor(e));
           const t = getTimes(e.boat && e.boat.id);
-          const a = parseTime(t.actualStart);
           const f = parseTime(t.finish);
           if (a != null && f != null) {
             return fmtElapsed((f - a) + penaltySecondsForEntrant(e));
@@ -549,10 +644,19 @@
 
   function activeCols() {
     const oneDivision = uniqueDivisionCount() < 2;
+    const admin = (typeof isAdmin === 'function') && isAdmin();
     return ENTRANT_COLS.filter(c => {
       if (!IS_EDITABLE && c.editableOnly) return false;
       // No point showing Division when every boat is in the same one.
       if (c.key === 'division' && oneDivision) return false;
+      // TCF column is admin-only. Race officers can't edit it (SailSys
+      // returns 403 on the underlying handicap PUT) and shouldn't see it
+      // either — keep the table focused on the timing affordances they need.
+      if (c.key === 'tcf' && !admin) return false;
+      // Non-pursuit races: per-entrant Allocated + Start columns are
+      // meaningless (every boat in a division shares one gun time). The
+      // per-division Start panel above the table replaces them.
+      if (!isPursuit && (c.key === 'start' || c.key === 'actualStart')) return false;
       return true;
     });
   }
@@ -570,6 +674,15 @@
   let sortDir = 1;
 
   function compareValues(a, b) {
+    // Empty values (null, undefined, '') always sort to the end regardless of
+    // direction. Without this, a column like Place (where DNC/unprocessed
+    // boats produce '') would sort empties first ascending, which the RO
+    // never wants — finishers should always cluster at the top.
+    const aEmpty = (a == null || a === '');
+    const bEmpty = (b == null || b === '');
+    if (aEmpty && bEmpty) return 0;
+    if (aEmpty) return 1;
+    if (bEmpty) return -1;
     const aNum = typeof a === 'number';
     const bNum = typeof b === 'number';
     if (aNum && bNum) {
@@ -582,15 +695,15 @@
   }
 
   function orderedEntrants() {
+    let rows;
     // Column sort wins over manual drag order. Picking a sort column hides
     // the drag order temporarily; the next drag will rebuild boatOrder from
     // the sorted view and clear sortKey.
     if (sortKey) {
       const col = ENTRANT_COLS.find(c => c.key === sortKey);
-      return entrantData.slice().sort((a, b) =>
+      rows = entrantData.slice().sort((a, b) =>
         sortDir * compareValues(col.get(a), col.get(b)));
-    }
-    if (IS_EDITABLE) {
+    } else if (IS_EDITABLE) {
       // Honour boatOrder: any boats listed are returned in that order; any
       // entrants not yet in boatOrder (newly added since the last save) go to
       // the end in their original SailSys order. Empty boatOrder = use the
@@ -606,9 +719,22 @@
         const id = String(e.boat && e.boat.id);
         if (!seen.has(id)) out.push(e);
       }
-      return out;
+      rows = out;
+    } else {
+      rows = entrantData.slice();
     }
-    return entrantData.slice();
+    // "Hide DNC" filter: drop any boats not currently flagged as Came.
+    // Applied AFTER ordering so the underlying boatOrder isn't perturbed —
+    // toggling the filter just shows/hides rows. Duty boats are AVG (not
+    // DNC) but came is forced false for them, so they'd also be hidden;
+    // that matches the user's expectation since they're not racing either.
+    if (IS_EDITABLE && hideDnc) {
+      rows = rows.filter(e => {
+        const t = getTimes(e.boat && e.boat.id);
+        return t && t.came;
+      });
+    }
+    return rows;
   }
 
   function renderEntrants() {
@@ -674,6 +800,25 @@
       };
     });
     document.querySelectorAll('input.time-input').forEach(inp => {
+      // + and - bump the displayed time; = is treated the same as + (same
+      // physical key on US keyboards — saves reaching for Shift on a busy
+      // NOW evening). Granularity is decided by bumpTimeValue (see its
+      // doc): one colon = minute, two or more = seconds. Wraps mod 24 h.
+      // Unparseable values pass through without consuming the key.
+      inp.onkeydown = (ev) => {
+        const k = ev.key;
+        const isPlus = (k === '+' || k === '=');
+        const isMinus = (k === '-');
+        if (!isPlus && !isMinus) return;
+        const next = bumpTimeValue(inp.value, isPlus ? 1 : -1);
+        if (next == null) return;
+        ev.preventDefault();
+        inp.value = next;
+        try { inp.setSelectionRange(next.length, next.length); } catch (_) {}
+        // Reuse the oninput pipeline so dirty/elapsed/late/save-bar/session
+        // state all update exactly as they would for typed input.
+        inp.dispatchEvent(new Event('input'));
+      };
       inp.onfocus = () => {
         // Prefill empty time inputs so the RO only has to key the delta:
         //   Actual Start → "HH:MM:" from the boat's scheduled start
@@ -827,7 +972,7 @@
     const cols = activeCols();
     const entrant = entrantData.find(e => String(e.boat && e.boat.id) === String(boatId));
     const t = getTimes(boatId);
-    const a = parseTime(t.actualStart);
+    const a = parseTime(actualStartFor(entrant));
     const f = parseTime(t.finish);
 
     const elapsedIdx = cols.findIndex(c => c.key === 'elapsed');
@@ -862,18 +1007,30 @@
     patchPlacesPoints();
   }
 
+  // In-place refresh of the Place + Points cells after a time / flag edit.
+  // Delegates to each column's own `get` function so the right source-of-
+  // truth wins per cell: Place falls back to local placeMap when results
+  // are dirty (otherwise sailsysResults); Points returns '' whenever the
+  // race state is dirty, since local computation has no notion of
+  // pointscore. (Earlier this helper wrote the place value into BOTH
+  // cells, which surfaced the place number as bogus "points" the moment
+  // the user edited a time.)
   function patchPlacesPoints() {
     recomputePlaces();
     const cols = activeCols();
     const placeIdx = cols.findIndex(c => c.key === 'place');
     const pointsIdx = cols.findIndex(c => c.key === 'points');
     if (placeIdx < 0 && pointsIdx < 0) return;
+    const placeCol = placeIdx >= 0 ? cols[placeIdx] : null;
+    const pointsCol = pointsIdx >= 0 ? cols[pointsIdx] : null;
+    const fmt = (v) => (typeof v === 'number' && isNaN(v)) ? '' : (v == null ? '' : String(v));
     document.querySelectorAll('#entrants-tbody tr').forEach(tr => {
-      const p = placeMap.get(tr.dataset.boatId);
-      const txt = p == null ? '' : String(p);
+      const boatId = tr.dataset.boatId;
+      const entrant = entrantData.find(e => String(e.boat && e.boat.id) === boatId);
+      if (!entrant) return;
       const cells = tr.querySelectorAll('td');
-      if (placeIdx >= 0 && cells[placeIdx]) cells[placeIdx].textContent = txt;
-      if (pointsIdx >= 0 && cells[pointsIdx]) cells[pointsIdx].textContent = txt;
+      if (placeCol && cells[placeIdx]) cells[placeIdx].textContent = fmt(placeCol.get(entrant));
+      if (pointsCol && cells[pointsIdx]) cells[pointsIdx].textContent = fmt(pointsCol.get(entrant));
     });
   }
 
@@ -1009,13 +1166,37 @@
   // --- dirty/save plumbing ---
 
   function currentTimesPayload() {
+    // Use the persisted boatOrder for the ids list (drag-set order, with
+    // entrantData as the fallback for boats that haven't been dragged).
+    // Display sort is a transient view and MUST NOT be folded into what's
+    // saved — and crucially, calling orderedEntrants() here used to create
+    // a recursion when sortKey was set:
+    //   currentTimesPayload → orderedEntrants (sort by Place)
+    //     → col.get(Place) → isResultsClean() → isAnyDirty()
+    //     → isTimesDirty() → currentTimesPayload → orderedEntrants → …
+    // which silently aborted the sort and left rows in their original
+    // order despite the active sort marker.
+    const byId = new Map(entrantData.map(e => [String(e.boat && e.boat.id), e]));
+    const seen = new Set();
+    const ids = [];
+    for (const raw of (boatOrder || [])) {
+      const id = String(raw);
+      if (byId.has(id) && !seen.has(id)) { ids.push(id); seen.add(id); }
+    }
+    for (const e of entrantData) {
+      const id = String(e.boat && e.boat.id);
+      if (!seen.has(id)) ids.push(id);
+    }
     const times = {};
-    const ids = orderedEntrants().map(e => String(e.boat && e.boat.id));
     for (const id of ids) {
       const t = timesMap.get(id);
       if (!t) continue;
       times[id] = { came: !!t.came, actualStart: t.actualStart || null, finish: t.finish || null };
     }
+    // Note: divisionStarts is NOT bundled here — for non-pursuit races the
+    // actual gun time is pushed directly to SailSys (via the
+    // /division-starts endpoint) on Save. SailSys is the source of truth
+    // for the value; local JSON only holds per-boat times + order metadata.
     return {
       raceId: String(raceIdGlobal),
       boatOrder: ids,
@@ -1029,7 +1210,8 @@
     const payload = currentTimesPayload();
     return JSON.stringify(payload.times) !== originalTimesJson
         || JSON.stringify(payload.boatOrder) !== originalOrderJson
-        || (payload.dutyBoatId || '') !== (originalDutyBoatId || '');
+        || (payload.dutyBoatId || '') !== (originalDutyBoatId || '')
+        || isDivisionStartsDirty();
   }
 
   function updateSaveBar() {
@@ -1082,12 +1264,18 @@
 
     currentStatus = status;
     seriesIdForSave = status ? status.seriesId : null;
+    // Refresh derived race-level flags every time the status arrives — they
+    // can flip across the page's lifetime (e.g. Process Results flipping
+    // resultStatus from 0 → 2 changes isCurrentRace; an admin changing the
+    // race type in SailSys would change isPursuit on next status fetch).
+    isCurrentRace = !!(status && (status.resultStatus || 0) < 2);
+    isPursuit = computeIsPursuit(status);
     // Show the race name in the page heading with the id in parentheses
     // afterwards when a name is available, otherwise fall back to "Race N".
     let title;
     if (status && status.name) title = status.name + ' (id ' + raceId + ')';
     else title = 'Race ' + raceId;
-    if (IS_EDITABLE) title += ' — current race';
+    if (isCurrentRace) title += ' — current race';
     heading.textContent = title;
 
     // Visibility rows render a tickbox inline with the status text (editable
@@ -1141,16 +1329,52 @@
     const rows = [
       ['Date',             esc(fmtDate(status && status.dateTime))],
       ['Series',           esc(status && status.seriesName ? status.seriesName + ' (id ' + status.seriesId + ')' : '')],
-      ['Entrants visibility', status ? vis(status.raceEntrantVisibility, 'entrants-visibility') : ''],
-      ['Start times visibility', status ? vis(status.handicapAndStartTimeVisibility, 'start-times-visibility') : ''],
+      ['Entrants visibility', status ? vis(status.raceEntrantVisibility, 'entrants-visibility') : '']
+    ];
+    // "Start times visibility" is a pursuit-only concept — it controls the
+    // publication of the staggered per-boat start sheet. Fleet races don't
+    // have a per-boat start sheet, so the row is meaningless and is hidden.
+    if (isPursuit) {
+      rows.push(['Start times visibility',
+        status ? vis(status.handicapAndStartTimeVisibility, 'start-times-visibility') : '']);
+    }
+    rows.push(
       ['Results status',   resultsStatusHtml],
       // requiresResultCalculation is the authoritative SailSys flag for
       // "results are out of date relative to the last finishers PUT".
       // isProcessingNeeded is a separate (and observed-always-false) field
       // that we previously surfaced here — don't trust it.
       ['Processing needed?', esc(status ? (status.requiresResultCalculation ? 'yes' : 'no') : '')]
-    ];
+    );
+    // Non-pursuit: append one row per division with the gun time. Scheduled
+    // shows what's currently in SailSys; actual is an editable HH:MM:SS
+    // input that defaults to scheduled and gets pushed to SailSys via the
+    // /division-starts endpoint on Save. NOW button only appears in
+    // live-timing mode.
+    if (!isPursuit && status && Array.isArray(status.divisionTiming)) {
+      for (const d of status.divisionTiming) {
+        if (!d || d.divisionId == null) continue;
+        const divId = d.divisionId;
+        const name = d.divisionName || ('Div ' + divId);
+        const sched = divisionScheduledStart(divId) || '';
+        const actual = (divisionStartsMap.get(String(divId)) || sched || '');
+        const dirty = (divisionStartsMap.has(String(divId))
+          && divisionStartsMap.get(String(divId)) !== sched) ? ' dirty' : '';
+        const nowBtn = isCurrentRace
+          ? ('<button type="button" class="now-btn div-now-btn" data-div-id="' + esc(divId) + '">NOW</button>')
+          : '';
+        const cell = '<span style="color:#666; margin-right:0.4rem;">sched ' + esc(sched || '—') + '</span>'
+          + '<input type="text" class="time-input division-start' + dirty + '"'
+          + ' placeholder="HH:MM:SS" data-div-id="' + esc(divId) + '"'
+          + ' value="' + esc(actual) + '">'
+          + (nowBtn ? ' ' + nowBtn : '');
+        rows.push([name + ' start', cell]);
+      }
+    }
     grid.innerHTML = rows.map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + v + '</dd>').join('');
+    // Division-start inputs/NOW buttons live inside the status grid now —
+    // wire them after the grid is rebuilt.
+    wireDivisionStartInputs();
     grid.querySelectorAll('input.vis-check').forEach(cb => {
       cb.onchange = () => doVisibility(cb.dataset.endpoint, cb.checked);
     });
@@ -1160,6 +1384,10 @@
     if (procBtn) procBtn.onclick = doProcessResults;
 
     renderControls();
+    // Status updates can flip isCurrentRace (resultStatus crossing 2 after
+    // Process Results) — keep the NOW-log section in sync. (Division start
+    // inputs are now rendered inline in the status grid above.)
+    updateNowLogSection();
   }
 
   // Controls panel: course length + process start times, duty boat selector.
@@ -1184,11 +1412,16 @@
     const dt = Array.isArray(s.divisionTiming) ? s.divisionTiming[0] : null;
     const currentCourse = (dt && dt.courseLength) ? dt.courseLength : '';
 
-    // Hide the course-length row once the race has progressed past the
-    // pre-start setup phase.
-    const resultsPublished = (s.resultStatus || 0) > 2;
-    const anyCame = Array.from(timesMap.values()).some(t => t && t.came);
-    const showCourseRow = !resultsPublished && !anyCame;
+    // Show the course-length / Process start times row whenever start
+    // times have not been published — the RO can recompute a start sheet
+    // any time they haven't committed one. (Even a race that was
+    // previously processed and published becomes a candidate again once
+    // its start sheet is unpublished or its starters/finishes are wiped.)
+    // Hidden for non-pursuit races: start-time processing on SailSys is
+    // the pursuit-staggering pipeline, not a concept that applies to
+    // fleet starts.
+    const startTimesPublished = (s.handicapAndStartTimeVisibility ?? 0) === 1;
+    const showCourseRow = isPursuit && !startTimesPublished;
 
     // Duty boat selector: populated from entrantData; if set, that boat is
     // marked AVG and its Came checkbox is disabled.
@@ -1200,6 +1433,29 @@
         return '<option value="' + esc(id) + '"' + (String(dutyBoatId) === String(id) ? ' selected' : '') + '>'
           + esc(sail + (name ? ' ' + name : '')) + '</option>';
       }));
+
+    // Process Handicaps — back-calculate next-race TCFs from this race's
+    // results via the Jinx algorithm and push them to SailSys. Admin-only:
+    // writing TCFs requires admin permission and race officers see a note
+    // directing them to ask an admin. The Jinx algorithm itself isn't
+    // implemented yet, so the admin button is rendered disabled with a
+    // TODO marker. Only shown once SailSys has finished its own result
+    // processing — there's nothing to back-calculate from before then.
+    // Also gated on isOurHandicap: when the series uses a different default
+    // handicap, this app has no business computing replacements for it.
+    const admin = (typeof isAdmin === 'function') && isAdmin();
+    const resultsReady = !!s.lastProcessedTime && !s.requiresResultCalculation;
+    const handicapsHtml = (resultsReady && isOurHandicap)
+      ? (admin
+          ? `<div class="controls-row">
+               <button id="ctrl-handicaps" class="primary" disabled
+                       title="Jinx algorithm not yet implemented">Process Handicaps (TODO)</button>
+               <span style="color:#888;">Compute next-race TCFs from this race's results.</span>
+             </div>`
+          : `<div class="controls-row">
+               <span style="color:#555;">Next-race handicaps need to be processed by an admin user.</span>
+             </div>`)
+      : '';
 
     panel.style.display = '';
     panel.innerHTML = (showCourseRow ? `
@@ -1216,7 +1472,7 @@
         <label>Duty boat:
           <select id="ctrl-duty-boat">` + dutyOptions.join('') + `</select>
         </label>
-      </div>`;
+      </div>` + handicapsHtml;
     const procBtn = document.getElementById('ctrl-process');
     if (procBtn) procBtn.onclick = doProcess;
     document.getElementById('ctrl-duty-boat').onchange = () => {
@@ -1235,6 +1491,177 @@
       updateSaveBar();
       sessionSaveForm();
     };
+  }
+
+  function divisionBoatIds(divisionId) {
+    return entrantData
+      .filter(e => e && e.division && String(e.division.id) === String(divisionId))
+      .map(e => String(e.boat && e.boat.id));
+  }
+
+  // After a per-division actualStart change, refresh the Elapsed/Late/Flags
+  // cells for every boat in that division. Reuses the same per-cell helpers
+  // the per-boat time inputs trigger.
+  function refreshDivisionRows(divisionId) {
+    for (const id of divisionBoatIds(divisionId)) {
+      const tr = document.querySelector('#entrants-tbody tr[data-boat-id="' + id + '"]');
+      if (!tr) continue;
+      updateElapsedCell(tr, id);
+      updateFlagsCell(tr, id);
+    }
+  }
+
+  // Bump a typed time value by one minute or one second, depending on the
+  // structure of the typed input. The granularity is decided purely by how
+  // many colons the user has typed — not by whether the time happens to
+  // parse cleanly:
+  //   "HH:MM"     →  minute mode (one colon, no trailing colon)
+  //   "HH:MM:"    →  SECOND mode, treated as "HH:MM:00"
+  //   "HH:MM:S"   →  second mode, treated as "HH:MM:0S"
+  //   "HH:MM:SS"  →  second mode
+  // The trailing-colon and short-second cases are common while the user is
+  // mid-type (e.g. just hit ':' to start the seconds segment); the previous
+  // rule mis-classified them as minute mode.
+  // Wraps modulo 24 h so the bumped value never goes negative or overflows.
+  function bumpTimeValue(raw, sign) {
+    if (!raw) return null;
+    const colonCount = (raw.match(/:/g) || []).length;
+    if (colonCount < 1) return null;
+    const dayS = 86400;
+    const pad = (n) => String(n).padStart(2, '0');
+    if (colonCount === 1) {
+      const m = raw.match(/^(\d{1,2}):(\d{1,2})$/);
+      if (!m) return null;
+      const total = (Number(m[1]) * 60 + Number(m[2])) * 60;
+      const next = (((total + sign * 60) % dayS) + dayS) % dayS;
+      return pad(Math.floor(next / 3600)) + ':' + pad(Math.floor((next % 3600) / 60));
+    }
+    // Two or more colons → seconds mode. Tolerate an empty seconds segment
+    // ("HH:MM:" — assume :00), a single-digit seconds segment ("HH:MM:S"
+    // — pad to :0S), or the standard "HH:MM:SS" with an optional ".sss"
+    // suffix.
+    const m = raw.match(/^(\d{1,2}):(\d{1,2}):(\d{0,2})(?:\.\d{1,3})?$/);
+    if (!m) return null;
+    const ssRaw = m[3] || '';
+    const ss = ssRaw === '' ? 0 : Number(ssRaw.length === 1 ? '0' + ssRaw : ssRaw);
+    const total = (Number(m[1]) * 60 + Number(m[2])) * 60 + ss;
+    const next = (((total + sign) % dayS) + dayS) % dayS;
+    return fmtElapsed(next);
+  }
+
+  // Time strings are considered equal if their parsed seconds-since-midnight
+  // match. Handles "HH:MM:SS" vs "HH:MM:SS.000" vs "H:MM" etc. Used for
+  // dirty detection where the same gun time can be expressed multiple ways.
+  function timeStringsEqual(a, b) {
+    const aEmpty = !a;
+    const bEmpty = !b;
+    if (aEmpty && bEmpty) return true;
+    if (aEmpty || bEmpty) return false;
+    const pa = parseTime(reformatTime(a) || a);
+    const pb = parseTime(reformatTime(b) || b);
+    if (pa == null || pb == null) return a === b;
+    return pa === pb;
+  }
+
+  function wireDivisionStartInputs() {
+    document.querySelectorAll('input.division-start').forEach(inp => {
+      inp.onkeydown = (ev) => {
+        const k = ev.key;
+        // Enter commits the value by blurring — onblur runs reformatTime
+        // (HH:MM: → HH:MM:00, HH:MM:S → HH:MM:0S), then refreshes the
+        // dependent cells.
+        if (k === 'Enter') {
+          ev.preventDefault();
+          try { inp.blur(); } catch (_) {}
+          return;
+        }
+        const isPlus = (k === '+' || k === '=');
+        const isMinus = (k === '-');
+        if (!isPlus && !isMinus) return;
+        const next = bumpTimeValue(inp.value, isPlus ? 1 : -1);
+        if (next == null) return;
+        ev.preventDefault();
+        inp.value = next;
+        try { inp.setSelectionRange(next.length, next.length); } catch (_) {}
+        inp.dispatchEvent(new Event('input'));
+      };
+      inp.oninput = () => {
+        const divId = inp.dataset.divId;
+        // Track every keystroke — the dirty check compares against the
+        // SailSys-current scheduled value (timeStringsEqual), so reverting
+        // back to scheduled correctly de-dirties without us having to
+        // delete entries here.
+        divisionStartsMap.set(String(divId), inp.value || null);
+        refreshDivisionRows(divId);
+        if (!inp.value) inp.classList.remove('invalid');
+        else if (reformatTime(inp.value)) inp.classList.remove('invalid');
+        else inp.classList.add('invalid');
+        updateSaveBar();
+        sessionSaveForm();
+      };
+      inp.onblur = () => {
+        const divId = inp.dataset.divId;
+        const canon = reformatTime(inp.value);
+        const sched = divisionScheduledStart(Number(divId));
+        if (canon) {
+          inp.value = canon;
+          // Once normalized, if the typed value equals scheduled we drop
+          // the entry so divisionStartsMap holds only real edits.
+          if (timeStringsEqual(canon, sched)) {
+            divisionStartsMap.delete(String(divId));
+          } else {
+            divisionStartsMap.set(String(divId), canon);
+          }
+          inp.classList.remove('invalid');
+        } else if (inp.value) {
+          inp.classList.add('invalid');
+        } else {
+          // User cleared the input — empty == no override, treat as not edited.
+          divisionStartsMap.delete(String(divId));
+        }
+        // Update the dirty marker on the input itself.
+        const stillDirty = divisionStartsMap.has(String(divId))
+          && !timeStringsEqual(divisionStartsMap.get(String(divId)), sched);
+        inp.classList.toggle('dirty', !!stillDirty);
+        refreshDivisionRows(divId);
+        updateSaveBar();
+        sessionSaveForm();
+      };
+    });
+    document.querySelectorAll('button.div-now-btn').forEach(btn => {
+      btn.onclick = () => {
+        const divId = btn.dataset.divId;
+        const now = localNow();
+        divisionStartsMap.set(String(divId), now);
+        const inp = document.querySelector('input.division-start[data-div-id="' + divId + '"]');
+        if (inp) {
+          inp.value = now;
+          inp.classList.remove('invalid');
+          inp.classList.add('dirty');
+        }
+        refreshDivisionRows(divId);
+        updateSaveBar();
+        sessionSaveForm();
+        // Log the NOW click in the session log with a div tag so the RO can
+        // see it among the per-boat NOW captures.
+        nowLog.push({ time: now, field: 'divStart-' + divId });
+        renderNowLog();
+        sessionSaveNowLog();
+      };
+    });
+  }
+
+  // True when any divisionStartsMap entry differs from SailSys's current
+  // scheduled start for that division. Non-pursuit-only — the map is empty
+  // for pursuit races.
+  function isDivisionStartsDirty() {
+    if (isPursuit) return false;
+    for (const [divIdStr, val] of divisionStartsMap) {
+      if (!val) continue;
+      const sched = divisionScheduledStart(Number(divIdStr));
+      if (!timeStringsEqual(val, sched)) return true;
+    }
+    return false;
   }
 
   function ctrlMsg(cls, text) {
@@ -1395,7 +1822,10 @@
     let anyError = false;
 
     // --- TCFs first (writes to SailSys) ---
-    if (dirtyTcf.size > 0) {
+    // Skip the whole block when the series doesn't use our handicap —
+    // there is no input that could populate dirtyTcf in that case, but be
+    // defensive in case sessionStorage from a different mode leaked in.
+    if (dirtyTcf.size > 0 && isOurHandicap) {
       if (!seriesIdForSave) {
         state.className = 'banner banner-err';
         state.textContent = 'Internal: seriesId not yet known. Reload and try again.';
@@ -1454,6 +1884,38 @@
         originalTimesJson = JSON.stringify(payload.times);
         originalOrderJson = JSON.stringify(payload.boatOrder);
         originalDutyBoatId = payload.dutyBoatId;
+      }
+    }
+
+    // --- Division starts (writes to SailSys — non-pursuit only) ---
+    // Push any edited per-division gun times directly to SailSys's
+    // divisionTiming via /api/races/{id}/division-starts. After a
+    // successful push the values become the new "scheduled" for the next
+    // load, so we clear the local edit map and re-render with the fresh
+    // status the handler echoed back.
+    if (!isPursuit && isDivisionStartsDirty()) {
+      const starts = {};
+      for (const [divIdStr, val] of divisionStartsMap) {
+        if (!val) continue;
+        const sched = divisionScheduledStart(Number(divIdStr));
+        const canon = reformatTime(val) || val;
+        if (!timeStringsEqual(canon, sched)) starts[divIdStr] = canon;
+      }
+      if (Object.keys(starts).length > 0) {
+        summary.textContent = 'Saving division starts to SailSys...';
+        const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/division-starts',
+          { starts });
+        if (!r.ok) {
+          messages.push('Division starts save failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+          anyError = true;
+        } else {
+          const n = Object.keys(starts).length;
+          messages.push('Saved ' + n + ' division start' + (n === 1 ? '' : 's') + ' to SailSys.');
+          divisionStartsMap.clear();
+          if (r.body && r.body.status) {
+            renderStatus(r.body.status, raceIdGlobal);
+          }
+        }
       }
     }
 
@@ -1520,6 +1982,10 @@
     }
     boatOrder = (saved && Array.isArray(saved.boatOrder)) ? saved.boatOrder.map(String) : [];
     dutyBoatId = (saved && saved.dutyBoatId) ? String(saved.dutyBoatId) : null;
+    // divisionStartsMap is in-memory only — populated either by user edits
+    // (this session) or by sessionRestoreForm from sessionStorage. Server
+    // JSON no longer carries it; SailSys's divisionTiming is the source.
+    divisionStartsMap = new Map();
     // Seed empty entries for any entrants we haven't seen yet so getTimes works.
     for (const e of entrantData) {
       const id = String(e.boat && e.boat.id);
@@ -1533,14 +1999,64 @@
   }
 
   // NOW log section is current-race-only — live timing isn't relevant when
-  // editing a past race's results. Hide the whole section on non-current
-  // races; on the current race, wire the standalone NOW button and seed the
-  // (possibly empty) list.
-  if (IS_CURRENT) {
-    document.getElementById('now-log-btn').onclick = logNowUnattached;
-    renderNowLog();
-  } else {
-    document.getElementById('now-log').style.display = 'none';
+  // editing a finalized race's results. Hidden by default; revealed below
+  // (after status loads and we know isCurrentRace) by updateNowLogSection.
+  document.getElementById('now-log').style.display = 'none';
+
+  function updateNowLogSection() {
+    const section = document.getElementById('now-log');
+    if (isCurrentRace) {
+      section.style.display = '';
+      document.getElementById('now-log-btn').onclick = logNowUnattached;
+      renderNowLog();
+    } else {
+      section.style.display = 'none';
+    }
+  }
+
+  // Compute isOurHandicap from the loaded entrants by checking whether any
+  // entrant carries a current handicap whose definition matches the
+  // configured handicapDefinitionId. SailSys's `handicap.currentHandicaps[]`
+  // entries variously use `definitionId` (flat int) or `definition.id`
+  // (nested object); both are checked.
+  function computeIsOurHandicap() {
+    if (configHandicapId == null) return false;
+    const want = Number(configHandicapId);
+    return entrantData.some(e => {
+      const list = e && e.handicap && e.handicap.currentHandicaps;
+      if (!Array.isArray(list)) return false;
+      return list.some(h => {
+        if (!h) return false;
+        if (h.definitionId != null) return Number(h.definitionId) === want;
+        if (h.definition != null) {
+          const idv = (typeof h.definition === 'object') ? h.definition.id : h.definition;
+          return Number(idv) === want;
+        }
+        return false;
+      });
+    });
+  }
+
+  // Compute isPursuit from the race status's divisionTiming. A race is
+  // pursuit iff every division's raceType is 0. Missing/unknown defaults
+  // to pursuit (matches the original MYC use case and keeps per-entrant
+  // affordances visible until we see otherwise).
+  function computeIsPursuit(status) {
+    if (!status || !Array.isArray(status.divisionTiming) || status.divisionTiming.length === 0) {
+      return true;
+    }
+    return status.divisionTiming.every(d => d && d.raceType === 0);
+  }
+
+  // SailSys finishTime is an ISO-ish local string like
+  // "2026-05-26T19:07:11.000". Extract the HH:MM:SS portion for the
+  // canonical local-storage form used by timesMap.
+  function parseSailsysFinishTime(s) {
+    if (!s) return null;
+    const m = String(s).match(/(?:^|T)(\d{1,2}):(\d{1,2}):(\d{1,2})/);
+    if (!m) return null;
+    const pad = (n) => String(n).padStart(2, '0');
+    return pad(Number(m[1])) + ':' + pad(Number(m[2])) + ':' + pad(Number(m[3]));
   }
 
   (async () => {
@@ -1560,18 +2076,23 @@
 
     state.textContent = 'Loading race ' + raceId + '…';
 
+    // Resolve auth + config first so activeCols() and the
+    // isOurHandicap/isPursuit gates can settle before the first render.
+    const [authData, cfg] = await Promise.all([awaitAuth(), getConfig()]);
+    if (cfg && cfg.sailsys) configHandicapId = cfg.sailsys.handicapDefinitionId;
+
     const fetches = [
       fetchJson('/api/races/' + encodeURIComponent(raceId) + '/status'),
-      fetchJson('/api/races/' + encodeURIComponent(raceId) + '/entrants')
+      fetchJson('/api/races/' + encodeURIComponent(raceId) + '/entrants'),
+      fetchJson('/api/races/' + encodeURIComponent(raceId) + '/times'),
+      // SailSys-computed results — best-effort. Empty/missing is fine;
+      // isResultsClean() handles it and columns fall back to local values.
+      fetchJson('/api/races/' + encodeURIComponent(raceId) + '/computed-results'),
+      // SailSys-owned per-boat came/finish — overlaid on top of local JSON
+      // below so SailSys is the source of truth for those fields.
+      fetchJson('/api/races/' + encodeURIComponent(raceId) + '/finishers')
     ];
-    if (IS_EDITABLE) {
-      fetches.push(fetchJson('/api/races/' + encodeURIComponent(raceId) + '/times'));
-      // Best-effort fetch of SailSys-computed results. Empty/missing is fine
-      // — isResultsClean() will return false and the columns will fall back
-      // to local computation.
-      fetches.push(fetchJson('/api/races/' + encodeURIComponent(raceId) + '/computed-results'));
-    }
-    const [statusR, entrantsR, timesR, resultsR] = await Promise.all(fetches);
+    const [statusR, entrantsR, timesR, resultsR, finishersR] = await Promise.all(fetches);
 
     if (statusR.status === 401 || entrantsR.status === 401) {
       state.className = 'banner banner-warn';
@@ -1597,32 +2118,64 @@
 
     entrantData = (entrantsR.body && Array.isArray(entrantsR.body.entrants))
       ? entrantsR.body.entrants : [];
+    isOurHandicap = computeIsOurHandicap();
 
-    if (IS_EDITABLE) {
-      // TODO: this load currently trusts the local JSON for came/finish too,
-      // but SailSys is the source of truth for those fields (they're written
-      // to /results/starters and /results/finishers on SAVE). We should also
-      // fetch GET /api/races/{raceId}/results from SailSys and overlay
-      // startedRace → came and finishTime → finish onto timesMap. The JSON
-      // should ultimately hold only the locally-captured actualStart times,
-      // dutyBoatId, and boatOrder.
-      //
-      // Server snapshot first — establishes the dirty baseline. Then overlay
-      // any unsaved edits from this tab's sessionStorage; those changes will
-      // correctly re-register as dirty against the server baseline.
-      snapshotTimes(timesR && timesR.ok ? timesR.body.times : null);
-      sessionRestoreForm();
-      // NOW log is current-race-only; don't restore/render on past races
-      // (the section is hidden in the script-load block above).
-      if (IS_CURRENT) {
-        sessionRestoreNowLog();
-        renderNowLog();
+    // Overlay SailSys finishers onto the local JSON BEFORE snapshotTimes so
+    // the SailSys-derived values are the dirty baseline (not "edits"). For
+    // each boat that SailSys knows about: startedRace → came (always trust
+    // SailSys, since it's a boolean with no missing-vs-false distinction);
+    // finishTime → finish only when SailSys has a value (else local JSON's
+    // finish remains, per the source-of-truth-with-local-fallback rule).
+    // A penalty entry with {averagePoints: true} marks the duty boat —
+    // SailSys is the authority on who that is when we load.
+    const localTimes = (timesR && timesR.ok && timesR.body.times) ? timesR.body.times : {};
+    const baseTimes = (timesR && timesR.ok && timesR.body.times) ? timesR.body.times : {};
+    let sailsysDutyBoatId = null;
+    if (finishersR && finishersR.ok && Array.isArray(finishersR.body.finishers)) {
+      for (const f of finishersR.body.finishers) {
+        const boatId = f && f.boatId != null ? String(f.boatId) : null;
+        if (!boatId) continue;
+        const sailFinish = parseSailsysFinishTime(f.finishTime);
+        const existing = baseTimes[boatId] || { came: false, actualStart: null, finish: null };
+        baseTimes[boatId] = {
+          came: !!f.startedRace,
+          actualStart: existing.actualStart || null,
+          finish: sailFinish || existing.finish || null
+        };
+        if (Array.isArray(f.penalties)
+            && f.penalties.some(p => p && p.averagePoints === true)) {
+          sailsysDutyBoatId = boatId;
+        }
       }
-      // Seed sailsysResults cache from the optional fetch. Empty if the race
-      // hasn't been processed yet — that's fine; isResultsClean() handles it.
-      if (resultsR && resultsR.ok && resultsR.body && resultsR.body.results) {
-        sailsysResults = parseSailsysResults(resultsR.body.results);
-      }
+    }
+    // Local-saved dutyBoatId loses to SailSys when SailSys says one — SailSys
+    // is the source of truth for the duty boat once it's been pushed. Local
+    // JSON's dutyBoatId still wins when SailSys has no AVG-flagged boat
+    // (e.g. a never-pushed in-progress edit).
+    const overlaidDutyBoatId = sailsysDutyBoatId
+      || (timesR && timesR.ok && timesR.body.dutyBoatId)
+      || null;
+    const overlaidSaved = {
+      times: baseTimes,
+      boatOrder: (timesR && timesR.ok && timesR.body.boatOrder) || [],
+      dutyBoatId: overlaidDutyBoatId,
+      divisionStarts: (timesR && timesR.ok && timesR.body.divisionStarts) || null
+    };
+
+    // Server snapshot (with SailSys overlay) first — establishes the dirty
+    // baseline. Then overlay any unsaved edits from this tab's
+    // sessionStorage; those changes will correctly re-register as dirty
+    // against the (now SailSys-anchored) baseline.
+    snapshotTimes(overlaidSaved);
+    sessionRestoreForm();
+    if (isCurrentRace) {
+      sessionRestoreNowLog();
+      renderNowLog();
+    }
+    // Seed sailsysResults cache from the optional fetch. Empty if the race
+    // hasn't been processed yet — that's fine; isResultsClean() handles it.
+    if (resultsR && resultsR.ok && resultsR.body && resultsR.body.results) {
+      sailsysResults = parseSailsysResults(resultsR.body.results);
     }
 
     state.className = 'banner banner-ok';
@@ -1633,8 +2186,24 @@
     document.getElementById('entrants-count').textContent = '(' + entrantData.length + ')';
     document.getElementById('race-entrants').style.display = '';
 
+    // Hide-DNC filter: editable-only; the Came column isn't shown in read-only
+    // mode so the filter has nothing to act on. Initialise from sessionStorage
+    // (restored by sessionRestoreForm above) and wire the checkbox.
+    if (IS_EDITABLE) {
+      const toggle = document.getElementById('hide-dnc-toggle');
+      const cb = document.getElementById('hide-dnc');
+      toggle.style.display = '';
+      cb.checked = hideDnc;
+      cb.onchange = () => {
+        hideDnc = cb.checked;
+        renderEntrants();
+        sessionSaveForm();
+      };
+    }
+
     renderEntrantsHead();
     renderEntrants();
+    updateNowLogSection();
 
     document.getElementById('save-btn').onclick = doSave;
     document.getElementById('reset-btn').onclick = doReset;

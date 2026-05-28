@@ -125,6 +125,27 @@ public class SailSysClient
     }
 
     /**
+     * GET /races/current?pageNumber=0&clubId={N} — paged list of current and
+     * upcoming races at the given club. Used when the user lands on the
+     * Races tab without a series filter; particularly important for race
+     * officers (adminLevel=1) who can't see /series/{id} details.
+     *
+     * <p>The response wraps a paged container: {@code data.items[]}. Each
+     * item carries a similar shape to the per-series races list (id, name,
+     * dateTime, seriesId, seriesName, resultStatus, visibility flags, etc.)
+     * but no {@code number}.
+     */
+    public JsonNode fetchCurrentRaces(String sessionToken, int clubId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/races/current?pageNumber=0&clubId=" + clubId, sessionToken)
+                .method(HttpMethod.GET),
+            "fetchCurrentRaces", null);
+        return root.path("data").path("items");
+    }
+
+    /**
      * GET /series/{seriesId}/races — list races in a series. Confirmed by HAR.
      * Returns the raw {@code data} node (a bare JSON array of race summaries).
      */
@@ -259,15 +280,12 @@ public class SailSysClient
     }
 
     /**
-     * GET /races/{raceId}/results/finishers — fetch the full per-boat results
-     * template for a race. Every entered boat is in the response, with the
-     * fields SailSys requires on a results PUT (skipper, boat, division,
-     * startTimeOffset, etc.). Mutate {@code startedRace}, {@code finishTime},
-     * {@code finishDate}, {@code penalties} per boat and PUT the array back.
-     *
-     * <p>The starters endpoint returns an identical shape; finishers is the
-     * superset (it also carries the finishTime), so a single fetch is enough
-     * to drive both subsequent PUTs.
+     * GET /races/{raceId}/results/finishers — fetch the per-boat results
+     * template for a race. Observed to return an empty array when the race
+     * has had all results wiped (no boat marked as a starter), even though
+     * the race still has entries. Prefer {@link #fetchRaceStarters} as the
+     * template source — it returns every entered boat in the same shape,
+     * including the ones with {@code startedRace=false}.
      */
     public JsonNode fetchRaceFinishers(String sessionToken, int raceId) throws Exception
     {
@@ -276,6 +294,25 @@ public class SailSysClient
             newRequest("/races/" + raceId + "/results/finishers", sessionToken)
                 .method(HttpMethod.GET),
             "fetchRaceFinishers", null);
+        return root.path("data");
+    }
+
+    /**
+     * GET /races/{raceId}/results/starters — full per-boat template. Used as
+     * the PUT-template source: every entered boat is in the response,
+     * regardless of whether {@code startedRace} is true or false (in which
+     * case SailSys typically attaches a DNC penalty automatically). Mutate
+     * {@code startedRace}, {@code finishTime}, {@code finishDate},
+     * {@code penalties} per boat and PUT the array back via
+     * {@link #putRaceStarters} / {@link #putRaceFinishers}.
+     */
+    public JsonNode fetchRaceStarters(String sessionToken, int raceId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/results/starters", sessionToken)
+                .method(HttpMethod.GET),
+            "fetchRaceStarters", null);
         return root.path("data");
     }
 

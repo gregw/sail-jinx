@@ -1,22 +1,5 @@
 
-We need to reconsider the work flow depending on the type of sailsys user that logs in:
 
-An admin (like greg@myc.org.au) can see series details and set handicaps. That is the user I have been testing with.
-A race officer (like raceofficer@myc.org.au) cannot see series details and cannot set TCFs. But they can process races and set finish times etc.
-
-Firstly, can you tell the difference between the two? Look in app.sailsys.com.au-9.har where I login as both types of user.  If you can't tell, then we can configure a list of admin users.
-
-For non-admin users, we cannot offer them the series tab as they do not have permission.
-Instead, they will have to go directly to the Races tab, where we should show the races listed in races page for them in sailsys.
-Thus that page needs two modes - navigated to from the series tab so it shows races for a series, otherwise it shows all the upcoming races
-(we may eventually need to option to show past races too).  If a series is shown as a filter, offer a clear [x] to revert to all races list.
-
-Once a race is selected, then do not offer the TCF column to non-admin users.
-
-Eventually, once we have the jinx handicap system implemented, we will need to add an extra step after processing,
-where the next handicaps are back calculated to new TCFs and pushed into sailsys - this will need an admin user to do it.
-So let's call this a "process handicaps" step.  Non admin users should be told to ask an admin user to do this.
-admin users should be offered the button to do this.
 
 
 
