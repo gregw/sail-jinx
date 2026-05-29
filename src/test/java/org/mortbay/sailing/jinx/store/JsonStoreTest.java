@@ -10,9 +10,11 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.AuditEntry;
 import org.mortbay.sailing.jinx.model.Boat;
+import org.mortbay.sailing.jinx.model.Calibration;
 import org.mortbay.sailing.jinx.model.FinishStatus;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceStatus;
@@ -178,6 +180,91 @@ class JsonStoreTest
         assertThat(read.divisionStarts(), aMapWithSize(2));
         assertThat(read.divisionStarts(), hasEntry(is("13779"), is("14:00:05")));
         assertThat(read.divisionStarts(), hasEntry(is("13780"), is("14:10:02")));
+    }
+
+    @Test
+    void seriesConfigIsNullWhenMissing(@TempDir Path tmp) throws IOException
+    {
+        JsonStore store = new JsonStore(tmp);
+        store.start();
+        assertThat(store.seriesConfig("5699"), nullValue());
+    }
+
+    @Test
+    void seriesConfigRoundTripsAcrossRestart(@TempDir Path tmp) throws IOException
+    {
+        JsonStore first = new JsonStore(tmp);
+        first.start();
+        first.putSeriesConfig("5699",
+            new JinxConfig.Algorithm(List.of(7, 5, 3, 1), 75, 4, "17:30",
+                -34.5678, 150.4321, true));
+
+        JsonStore reopened = new JsonStore(tmp);
+        reopened.start();
+        JinxConfig.Algorithm read = reopened.seriesConfig("5699");
+        assertThat(read.penaltyList(), contains(7, 5, 3, 1));
+        assertThat(read.idealRaceLength(), equalTo(75));
+        assertThat(read.dnfAllowance(), equalTo(4));
+        assertThat(read.earliestStart(), equalTo("17:30"));
+        assertThat(read.latitude(), equalTo(-34.5678));
+        assertThat(read.longitude(), equalTo(150.4321));
+        assertThat(read.limitBySunset(), is(true));
+    }
+
+    @Test
+    void pendingAdjustmentsIsEmptyWhenMissing(@TempDir Path tmp) throws IOException
+    {
+        JsonStore store = new JsonStore(tmp);
+        store.start();
+        assertThat(store.pendingAdjustments("race-1"), hasSize(0));
+    }
+
+    @Test
+    void pendingAdjustmentsRoundTripAcrossRestart(@TempDir Path tmp) throws IOException
+    {
+        JsonStore first = new JsonStore(tmp);
+        first.start();
+        first.putPendingAdjustments("race-7", List.of(
+            new Adjustment("12345", 1, 5.0, 1.71, 3.29, 1.0450, 1.0666),
+            new Adjustment("23456", 2, 4.0, 1.76, 2.24, 0.9340, 0.9485)));
+
+        JsonStore reopened = new JsonStore(tmp);
+        reopened.start();
+        List<Adjustment> read = reopened.pendingAdjustments("race-7");
+        assertThat(read, hasSize(2));
+        assertThat(read.get(0).boatId(), equalTo("12345"));
+        assertThat(read.get(0).newTcf(), equalTo(1.0666));
+        assertThat(read.get(1).boatId(), equalTo("23456"));
+        assertThat(read.get(1).netAdjustmentMinutes(), equalTo(2.24));
+    }
+
+    @Test
+    void calibrationIsNullWhenMissing(@TempDir Path tmp) throws IOException
+    {
+        JsonStore store = new JsonStore(tmp);
+        store.start();
+        assertThat(store.calibration(), nullValue());
+    }
+
+    @Test
+    void calibrationRoundTripsAcrossRestart(@TempDir Path tmp) throws IOException
+    {
+        JsonStore first = new JsonStore(tmp);
+        first.start();
+        Calibration cal = new Calibration(
+            6.107, 100.0, 0.79, 0L, 1.12, 21960L,
+            Instant.parse("2026-05-29T09:30:00Z"));
+        first.putCalibration(cal);
+
+        JsonStore reopened = new JsonStore(tmp);
+        reopened.start();
+        Calibration read = reopened.calibration();
+        assertThat(read.v0Knots(), equalTo(6.107));
+        assertThat(read.courseLengthNm(), equalTo(100.0));
+        assertThat(read.slowestTcf(), equalTo(0.79));
+        assertThat(read.fastestTcf(), equalTo(1.12));
+        assertThat(read.fastestStartOffsetSeconds(), equalTo(21960L));
+        assertThat(read.computedAt(), equalTo(Instant.parse("2026-05-29T09:30:00Z")));
     }
 
     @Test

@@ -15,8 +15,7 @@
     All series at the configured SailSys club. Every series is clickable —
     click one to load its races. Series whose default handicap matches the
     configured jinx handicap (MYC TCF, id 15 at MYC) get the full editing
-    workflow; others can be browsed and have their per-race results edited,
-    but TCFs are display-only and handicap processing is unavailable.
+    workflow and can be tuned with the [Configure] button.
   </p>
 
   <div id="series-state" class="banner banner-info">Loading…</div>
@@ -30,10 +29,48 @@
         <th>Races</th>
         <th>Divisions</th>
         <th>Default handicap</th>
+        <th>Configure</th>
       </tr>
     </thead>
     <tbody id="series-tbody"></tbody>
   </table>
+
+  <section id="configure-panel" style="display:none; margin-top: 1.5rem;">
+    <h2>Configure <span id="cfg-series-name"></span></h2>
+    <p class="lead" id="cfg-source"></p>
+    <div id="cfg-state"></div>
+    <div class="form-row" style="max-width: 32em;">
+      <label for="cfg-penalty-list">Penalty list</label>
+      <input id="cfg-penalty-list" type="text" placeholder="6, 4, 2">
+
+      <label for="cfg-ideal">Ideal race length (min)</label>
+      <input id="cfg-ideal" type="number" min="1" step="1">
+
+      <label for="cfg-dnf">DNF allowance (min)</label>
+      <input id="cfg-dnf" type="number" min="0" step="1">
+
+      <label for="cfg-earliest">Earliest start (HH:MM)</label>
+      <input id="cfg-earliest" type="time">
+
+      <label for="cfg-lat">Latitude</label>
+      <input id="cfg-lat" type="number" step="any" placeholder="-33.8000">
+
+      <label for="cfg-lng">Longitude</label>
+      <input id="cfg-lng" type="number" step="any" placeholder="151.2833">
+
+      <label for="cfg-limit-sunset">Limit by sunset</label>
+      <label class="vis-toggle" style="justify-self: start;">
+        <input id="cfg-limit-sunset" type="checkbox">
+        <span>Cap estimated race length so the slowest boat finishes before sunset</span>
+      </label>
+    </div>
+    <div style="margin-top: 0.6rem;">
+      <button id="cfg-save" class="primary">Save</button>
+      <button id="cfg-reset">Reset</button>
+      <button id="cfg-defaults">Restore defaults</button>
+      <button id="cfg-close" style="float: right;">Close</button>
+    </div>
+  </section>
 </main>
 
 <script src="/common.js"></script>
@@ -59,6 +96,19 @@
 
     const series = r.body.series || [];
     const requiredHandicapId = r.body.handicapDefinitionId;
+    const handicapDefs = r.body.handicapDefinitions || {};
+    // SailSys returns the catalogue as an array we flattened server-side into
+    // {"<id>": {shortName, fullName}}. Render `fullName (shortName)` when we
+    // have an entry, fall back to the bare id when we don't (unknown id, or
+    // catalogue fetch failed).
+    const handicapLabel = (id) => {
+      const def = handicapDefs[String(id)];
+      if (!def) return String(id);
+      const full = def.fullName || '';
+      const short = def.shortName || '';
+      if (full && short && full !== short) return `${full} (${short})`;
+      return full || short || String(id);
+    };
     if (!series.length) {
       state.className = 'banner banner-info';
       state.textContent = 'No series returned for club ' + r.body.clubId + '.';
@@ -71,29 +121,183 @@
     state.className = 'banner banner-ok';
     state.textContent =
       series.length + ' series at club ' + r.body.clubId +
-      ' — ' + eligibleCount + ' using handicap definition id ' + requiredHandicapId +
+      ' — ' + eligibleCount + ' using handicap ' + handicapLabel(requiredHandicapId) +
       ' (full editing). All series are clickable.';
     table.style.display = '';
 
     tbody.innerHTML = series.map(s => {
-      const ourHandicap = s.defaultHandicap === requiredHandicapId;
-      const title = ourHandicap
-        ? `title="Open races for ${esc(s.name).replace(/"/g, '&quot;')}"`
-        : `title="Default handicap ${esc(s.defaultHandicap)} differs from configured ${esc(requiredHandicapId)} — TCFs will be view-only"`;
-      const handicapCell = ourHandicap
-        ? esc(s.defaultHandicap)
-        : esc(s.defaultHandicap) + ' <span style="color:#888;">(view-only)</span>';
+      const handicapText = handicapLabel(s.defaultHandicap);
+      const title = `title="Open races for ${esc(s.name).replace(/"/g, '&quot;')}"`;
+      // Only series scored against the configured jinx handicap can be
+      // tuned — others have no Jinx algorithm to parameterise.
+      const cfgCell = (s.defaultHandicap === requiredHandicapId)
+        ? `<button class="cfg-btn" data-series-id="${esc(s.id)}" data-series-name="${esc(s.name).replace(/"/g, '&quot;')}">Configure</button>`
+        : '';
       return `
-        <tr class="clickable" onclick="location.href='/races.html?seriesId=${s.id}'" ${title}>
+        <tr class="clickable" data-series-id="${esc(s.id)}" ${title}>
           <td>${esc(s.id)}</td>
           <td>${esc(s.name)}</td>
           <td>${esc(statusLabel(s.status))}</td>
           <td>${esc(s.racesCount)}</td>
           <td>${esc(s.divisionsCount)}</td>
-          <td>${handicapCell}</td>
+          <td>${esc(handicapText)}</td>
+          <td class="cfg-cell">${cfgCell}</td>
         </tr>`;
     }).join('');
+
+    // Clicking a row navigates to its races — but clicks landing on the
+    // Configure button should open the configure panel instead. We bind to
+    // the row and let the button stop propagation.
+    tbody.querySelectorAll('tr').forEach(tr => {
+      tr.addEventListener('click', (ev) => {
+        if (ev.target.closest('.cfg-btn')) return;
+        const id = tr.getAttribute('data-series-id');
+        location.href = '/races.html?seriesId=' + id;
+      });
+    });
+    tbody.querySelectorAll('.cfg-btn').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openConfigurePanel(btn.getAttribute('data-series-id'), btn.getAttribute('data-series-name'));
+      });
+    });
   })();
+
+  // --- Configure panel ---
+
+  const cfgPanel    = document.getElementById('configure-panel');
+  const cfgName     = document.getElementById('cfg-series-name');
+  const cfgSource   = document.getElementById('cfg-source');
+  const cfgState    = document.getElementById('cfg-state');
+  const cfgPenalty  = document.getElementById('cfg-penalty-list');
+  const cfgIdeal    = document.getElementById('cfg-ideal');
+  const cfgDnf      = document.getElementById('cfg-dnf');
+  const cfgEarliest = document.getElementById('cfg-earliest');
+  const cfgLat      = document.getElementById('cfg-lat');
+  const cfgLng      = document.getElementById('cfg-lng');
+  const cfgLimit    = document.getElementById('cfg-limit-sunset');
+  const cfgSave     = document.getElementById('cfg-save');
+  const cfgReset    = document.getElementById('cfg-reset');
+  const cfgDefaults = document.getElementById('cfg-defaults');
+  const cfgClose    = document.getElementById('cfg-close');
+
+  // Holds the last successfully-loaded payload from /api/series/{id}/config
+  // so Reset and Restore defaults can fall back without a round-trip.
+  let cfgLoaded = { seriesId: null, loaded: null, defaults: null };
+
+  function setBanner(cls, text) {
+    cfgState.className = 'banner ' + cls;
+    cfgState.textContent = text;
+  }
+  function clearBanner() {
+    cfgState.className = '';
+    cfgState.textContent = '';
+  }
+
+  function fillForm(cfg) {
+    cfgPenalty.value  = Array.isArray(cfg.penaltyList) ? cfg.penaltyList.join(', ') : '';
+    cfgIdeal.value    = cfg.idealRaceLength ?? '';
+    cfgDnf.value      = cfg.dnfAllowance ?? '';
+    cfgEarliest.value = cfg.earliestStart || '';
+    cfgLat.value      = cfg.latitude ?? '';
+    cfgLng.value      = cfg.longitude ?? '';
+    cfgLimit.checked  = !!cfg.limitBySunset;
+  }
+
+  function readForm() {
+    // Penalty list is parsed from a comma/space-separated string of ints.
+    // Anything that doesn't parse as an integer is silently dropped, which
+    // matches the "trust the user, validate at boundaries" tradeoff — the
+    // server-side canonical constructor re-defaults to a safe value if the
+    // resulting list comes back empty.
+    const tokens = (cfgPenalty.value || '').split(/[,\s]+/).filter(t => t.length);
+    const penaltyList = tokens
+      .map(t => parseInt(t, 10))
+      .filter(n => !Number.isNaN(n));
+    // Lat/long: parseFloat on blank → NaN. Send null in that case so the
+    // server-side canonical constructor backfills the MYC default.
+    const lat = parseFloat(cfgLat.value);
+    const lng = parseFloat(cfgLng.value);
+    return {
+      penaltyList,
+      idealRaceLength: parseInt(cfgIdeal.value, 10) || 0,
+      dnfAllowance: parseInt(cfgDnf.value, 10) || 0,
+      earliestStart: cfgEarliest.value || '',
+      latitude: Number.isNaN(lat) ? null : lat,
+      longitude: Number.isNaN(lng) ? null : lng,
+      limitBySunset: cfgLimit.checked
+    };
+  }
+
+  async function openConfigurePanel(seriesId, seriesName) {
+    cfgName.textContent = seriesName + ' (id ' + seriesId + ')';
+    cfgPanel.style.display = '';
+    cfgSource.textContent = 'Loading…';
+    clearBanner();
+    [cfgPenalty, cfgIdeal, cfgDnf, cfgEarliest, cfgLat, cfgLng].forEach(i => i.value = '');
+    cfgLimit.checked = false;
+    cfgPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    const r = await fetchJson('/api/series/' + encodeURIComponent(seriesId) + '/config');
+    if (!r.ok) {
+      cfgSource.textContent = '';
+      setBanner('banner-err', 'Could not load config: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+      return;
+    }
+    cfgLoaded = {
+      seriesId,
+      loaded: r.body.config,
+      defaults: r.body.defaults
+    };
+    cfgSource.textContent = r.body.isCustom
+      ? 'Custom per-series configuration in store. Defaults from config.yaml are available via "Restore defaults".'
+      : 'No saved per-series configuration — showing config.yaml defaults. Edit and Save to override.';
+    fillForm(r.body.config);
+  }
+
+  cfgSave.addEventListener('click', async () => {
+    if (!cfgLoaded.seriesId) return;
+    const body = readForm();
+    clearBanner();
+    cfgSave.disabled = true;
+    try {
+      const r = await fetchJson('/api/series/' + encodeURIComponent(cfgLoaded.seriesId) + '/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!r.ok) {
+        setBanner('banner-err', 'Save failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+        return;
+      }
+      cfgLoaded.loaded = r.body.config;
+      cfgSource.textContent = 'Custom per-series configuration in store. Defaults from config.yaml are available via "Restore defaults".';
+      fillForm(r.body.config);
+      setBanner('banner-ok', 'Saved.');
+    } finally {
+      cfgSave.disabled = false;
+    }
+  });
+
+  cfgReset.addEventListener('click', () => {
+    if (cfgLoaded.loaded) {
+      fillForm(cfgLoaded.loaded);
+      clearBanner();
+    }
+  });
+
+  cfgDefaults.addEventListener('click', () => {
+    if (cfgLoaded.defaults) {
+      fillForm(cfgLoaded.defaults);
+      setBanner('banner-info', 'Defaults loaded into the form. Click Save to persist them as this series’s override, or Reset to revert to the last loaded values.');
+    }
+  });
+
+  cfgClose.addEventListener('click', () => {
+    cfgPanel.style.display = 'none';
+    clearBanner();
+    cfgLoaded = { seriesId: null, loaded: null, defaults: null };
+  });
 </script>
 </body>
 </html>

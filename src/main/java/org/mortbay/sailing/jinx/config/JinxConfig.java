@@ -66,11 +66,34 @@ public record JinxConfig(
         }
     }
 
+    /**
+     * Algorithm parameters used by the Jinx pursuit handicap engine. Defaults
+     * are tuned to the originating MYC Twilight use case; another club
+     * overrides via {@code config.yaml}, and a single series can override
+     * further via the Series Configure form (stored per-series in
+     * {@code data/store/series-config/{seriesId}.json}).
+     *
+     * <p>{@code latitude}/{@code longitude} default to MYC (Spit-mouth-ish);
+     * {@code limitBySunset} is the toggle for an upcoming feature that caps
+     * the target race length so the slowest boat is expected to finish before
+     * sunset on the race date.
+     *
+     * <p>TODO: when {@code limitBySunset} is wired into the engine, fetch
+     * sunset wall-clock for the race date via
+     * <pre>
+     *   GET https://api.sunrise-sunset.org/json?lat={lat}&lng={lng}&date={YYYY-MM-DD}&formatted=0
+     * </pre>
+     * The {@code results.sunset} field in the response is ISO-8601 UTC and
+     * can be converted to local time using {@link SailSys#timezone()}.
+     */
     public record Algorithm(
         @JsonProperty("penaltyList") List<Integer> penaltyList,
         @JsonProperty("idealRaceLength") int idealRaceLength,
         @JsonProperty("dnfAllowance") int dnfAllowance,
-        @JsonProperty("earliestStart") String earliestStart)
+        @JsonProperty("earliestStart") String earliestStart,
+        @JsonProperty("latitude") Double latitude,
+        @JsonProperty("longitude") Double longitude,
+        @JsonProperty("limitBySunset") boolean limitBySunset)
     {
         public Algorithm
         {
@@ -82,6 +105,10 @@ public record JinxConfig(
                 dnfAllowance = 5;
             if (earliestStart == null || earliestStart.isBlank())
                 earliestStart = "18:00";
+            if (latitude == null)
+                latitude = -33.8000;
+            if (longitude == null)
+                longitude = 151.2833;
         }
     }
 

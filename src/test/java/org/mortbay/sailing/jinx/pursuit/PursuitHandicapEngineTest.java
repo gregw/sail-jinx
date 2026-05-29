@@ -6,11 +6,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import org.junit.jupiter.api.Disabled;
+import java.time.Instant;
+
 import org.junit.jupiter.api.Test;
 import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.Boat;
+import org.mortbay.sailing.jinx.model.Calibration;
 import org.mortbay.sailing.jinx.model.FinishStatus;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceStatus;
@@ -23,19 +25,14 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasSize;
 
 /**
- * Test-first specification for the pursuit handicap algorithm
- * ({@code wiki/myc-twilight-handicap-v2.md}).
- *
- * <p>These tests are deliberately RED today — {@link PursuitHandicapEngine} is a
- * skeleton with {@code UnsupportedOperationException} bodies. The tests are
- * the executable spec the implementation has to satisfy. Each test maps to a
- * specific section of the algorithm document so the eventual implementer can
- * tick them off one by one.
+ * Executable specification for the pursuit handicap algorithm
+ * ({@code wiki/Jinx-Handicaps.md}). Each test maps to a specific section of
+ * the algorithm document.
  */
 class PursuitHandicapEngineTest
 {
     private static final JinxConfig.Algorithm DEFAULT_ALG = new JinxConfig.Algorithm(
-        List.of(5, 4, 3, 2, 1), 90, 5, "18:00");
+        List.of(5, 4, 3, 2, 1), 90, 5, "18:00", -33.8000, 151.2833, false);
 
     private static final double TOLERANCE = 0.01;
 
@@ -46,9 +43,6 @@ class PursuitHandicapEngineTest
      * the fastest boat starts last. Start times are rounded to the nearest minute.
      */
     @Test
-    // TODO: implement PursuitHandicapEngine.computeStartTimes per wiki §4
-    //   (τᵢ = t_target × TCF_med / TCFᵢ; Δtᵢ = τ_max - τᵢ; round to minute) then remove @Disabled.
-    @Disabled("Pending PursuitHandicapEngine.computeStartTimes implementation")
     void slowestBoatStartsFirstAtEarliestStart()
     {
         List<Boat> boats = List.of(
@@ -74,9 +68,6 @@ class PursuitHandicapEngineTest
      * boats is exactly zero — the penalty pool is fully redistributed.
      */
     @Test
-    // TODO: implement PursuitHandicapEngine.processResults so the penalty pool is fully
-    //   redistributed (wiki §6.4 — Σ Δsᵢ = 0 across participating boats) then remove @Disabled.
-    @Disabled("Pending PursuitHandicapEngine.processResults implementation")
     void netAdjustmentsSumToZero()
     {
         List<Boat> boats = workedExampleFleet();
@@ -98,9 +89,6 @@ class PursuitHandicapEngineTest
      * giving a net of approximately +3.29 minutes.
      */
     @Test
-    // TODO: implement processResults to match the wiki §6.5 worked example
-    //   (γ = 0.5, 1st place: +5 penalty, ~1.71 reward, +3.29 net) then remove @Disabled.
-    @Disabled("Pending PursuitHandicapEngine.processResults implementation")
     void firstPlaceAdjustmentMatchesWorkedExample()
     {
         List<Boat> boats = workedExampleFleet();
@@ -121,9 +109,6 @@ class PursuitHandicapEngineTest
      * Spec §5: DSQ boats are excluded from adjustments — their TCF is frozen.
      */
     @Test
-    // TODO: implement processResults so DSQ / DNC / DNS boats are excluded from
-    //   adjustments and their TCF is left unchanged (wiki §5) then remove @Disabled.
-    @Disabled("Pending PursuitHandicapEngine.processResults implementation")
     void dsqBoatTcfIsFrozen()
     {
         List<Boat> boats = List.of(
@@ -140,6 +125,126 @@ class PursuitHandicapEngineTest
 
         assertThat(b.oldTcf(), equalTo(b.newTcf()));
         assertThat(b.netAdjustmentMinutes(), closeTo(0.0, TOLERANCE));
+    }
+
+    /**
+     * Spec §5: DNF/RET boats share an effective elapsed time of the slowest
+     * finisher + dnfAllowance, so they receive identical rewards.
+     */
+    @Test
+    void dnfBoatsShareEqualReward()
+    {
+        List<Boat> boats = List.of(
+            new Boat("p1", "Pos1", "1", "d", "Div", 1.0),
+            new Boat("p2", "Pos2", "2", "d", "Div", 1.0),
+            new Boat("dnfA", "DnfA", "3", "d", "Div", 1.0),
+            new Boat("dnfB", "DnfB", "4", "d", "Div", 1.0));
+        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
+            90, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+        LocalTime start = LocalTime.of(18, 0);
+        Map<String, Result> results = Map.of(
+            "p1", fin("p1", start, start.plusMinutes(60)),
+            "p2", fin("p2", start, start.plusMinutes(80)),
+            "dnfA", new Result("dnfA", FinishStatus.DNF, start, null, null),
+            "dnfB", new Result("dnfB", FinishStatus.RET, start, null, null));
+
+        Map<String, Adjustment> byId = engine.processResults(boats, race, results).stream()
+            .collect(Collectors.toMap(Adjustment::boatId, a -> a));
+
+        // Both DNF/RET boats see the same elapsed-time treatment.
+        assertThat(byId.get("dnfA").rewardMinutes(),
+            closeTo(byId.get("dnfB").rewardMinutes(), TOLERANCE));
+        // Both should have no fixed penalty.
+        assertThat(byId.get("dnfA").penaltyMinutes(), closeTo(0.0, TOLERANCE));
+        assertThat(byId.get("dnfB").penaltyMinutes(), closeTo(0.0, TOLERANCE));
+    }
+
+    /**
+     * Spec §7: a positive Δs (penalty) raises TCF; a negative Δs (reward) lowers it.
+     * Direction-only check; exact magnitude is governed by the wiki §7 formula.
+     */
+    @Test
+    void positivePenaltyRaisesTcfAndRewardLowersIt()
+    {
+        List<Boat> boats = workedExampleFleet();
+        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
+            90, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+        Map<String, Result> results = workedExampleResults();
+
+        Map<String, Adjustment> byId = engine.processResults(boats, race, results).stream()
+            .collect(Collectors.toMap(Adjustment::boatId, a -> a));
+
+        // 1st place: penalty 5, reward ~1.71, net +3.29 → TCF goes up.
+        assertThat(byId.get("p1").newTcf() > byId.get("p1").oldTcf(), equalTo(true));
+        // DNF: penalty 0, reward ~2.03, net −2.03 → TCF goes down.
+        assertThat(byId.get("dnf").newTcf() < byId.get("dnf").oldTcf(), equalTo(true));
+    }
+
+    /**
+     * Calibration mode: newTcf is derived from V₀ and the race's actual course
+     * distance (median over finishers of {@code TCF × V₀ × elapsed/60}), not
+     * from the fleet-median TCF.
+     *
+     * <p>Worked example fleet: 7 finishers @ 85,90,…,115 min + 1 DNF, all
+     * TCF=1.0. With V₀ = 6.0 kn, median finish = 100 min ⇒ D_race = 10.0 nm.
+     * For boat p1 with net Δs ≈ +3.29 min:
+     * <pre>
+     *   newTcf = 1.0 / (1 − 1.0 × 3.29 × 6.0 / (60 × 10.0))
+     *          = 1.0 / (1 − 0.0329) ≈ 1.0340
+     * </pre>
+     * The {@code tcfMed}-based fallback formula would give ~1.0379, so this
+     * value is uniquely identifying the V₀-based path.
+     */
+    @Test
+    void newTcfUsesCalibrationVZeroWhenProvided()
+    {
+        Calibration cal = new Calibration(
+            6.0, 100.0, 0.79, 0L, 1.12, 22320L,
+            Instant.parse("2026-05-29T09:30:00Z"));
+        PursuitHandicapEngine calEngine = new PursuitHandicapEngine(DEFAULT_ALG, cal);
+
+        List<Boat> boats = workedExampleFleet();
+        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
+            90, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+        Map<String, Result> results = workedExampleResults();
+
+        Adjustment p1 = calEngine.processResults(boats, race, results).stream()
+            .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
+            .findFirst().orElseThrow();
+
+        assertThat(p1.newTcf(), closeTo(1.0340, 0.0005));
+    }
+
+    /**
+     * Direction-and-magnitude check across the V₀-based formula: positive Δs
+     * raises TCF, negative lowers it, and DSQ boats stay frozen.
+     */
+    @Test
+    void calibrationModeKeepsDsqFrozenAndPreservesDirection()
+    {
+        Calibration cal = new Calibration(
+            6.0, 100.0, 0.79, 0L, 1.12, 22320L,
+            Instant.parse("2026-05-29T09:30:00Z"));
+        PursuitHandicapEngine calEngine = new PursuitHandicapEngine(DEFAULT_ALG, cal);
+
+        List<Boat> boats = List.of(
+            new Boat("a", "A", "1", "d", "Div", 1.0),
+            new Boat("b", "B", "2", "d", "Div", 1.0),
+            new Boat("c", "C", "3", "d", "Div", 1.0));
+        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
+            60, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+        LocalTime start = LocalTime.of(18, 0);
+        Map<String, Result> results = Map.of(
+            "a", fin("a", start, start.plusMinutes(55)),
+            "b", fin("b", start, start.plusMinutes(65)),
+            "c", new Result("c", FinishStatus.DSQ, start, null, null));
+
+        Map<String, Adjustment> byId = calEngine.processResults(boats, race, results).stream()
+            .collect(Collectors.toMap(Adjustment::boatId, a -> a));
+
+        assertThat(byId.get("a").newTcf() > byId.get("a").oldTcf(), equalTo(true));
+        assertThat(byId.get("b").newTcf() < byId.get("b").oldTcf(), equalTo(true));
+        assertThat(byId.get("c").oldTcf(), equalTo(byId.get("c").newTcf()));
     }
 
     // --- Worked example fixture (§6.5) — 7 finishers + 1 DNF, all with TCF = 1.0

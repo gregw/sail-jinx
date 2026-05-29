@@ -241,7 +241,17 @@
     // determined (to apply the locked/current classes). Each call reads
     // from statusMap so partially-loaded rows continue to show "…"
     // placeholders for the cells that haven't arrived yet.
+    //
+    // Side-effect: stash the current visible-order race-id list in
+    // sessionStorage so race.html can render Previous/Next buttons that
+    // walk it. We update on every render so the order tracks the user's
+    // most recent sort choice; clicking through to a race always uses
+    // the order they were looking at when they clicked.
     function renderBody() {
+      const orderedIds = sortedRaces().map(r => String(r.id));
+      try {
+        sessionStorage.setItem('sail-jinx.raceList', JSON.stringify(orderedIds));
+      } catch (_) { /* private mode / quota — best effort */ }
       tbody.innerHTML = '';
       for (const race of sortedRaces()) {
         const idStr = String(race.id);

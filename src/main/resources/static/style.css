@@ -87,6 +87,20 @@ td.drag-handle:hover { color: #2255aa; background: #eaf1fc; }
 tr.dragging { opacity: 0.4; }
 tr.drag-over td { border-top: 2px solid #2255aa; }
 
+/* Jinx Adjustment column — right-aligned numeric value, with a hover
+   tooltip that shows the three-step calculation. The tooltip uses
+   white-space: pre so the padded labels and values stay column-aligned;
+   the parent .adjustment is positioned so the tooltip can anchor to it. */
+th.adjustment-cell, td.adjustment-cell { text-align: right; }
+.adjustment { position: relative; cursor: help; }
+.adjustment-tip {
+  display: none; position: absolute; bottom: calc(100% + 4px); right: 0;
+  background: #333; color: #fff; padding: 0.4rem 0.6rem; border-radius: 4px;
+  font-family: monospace; font-size: 0.85rem; white-space: pre;
+  z-index: 10; box-shadow: 0 2px 6px rgba(0,0,0,0.25); text-align: left;
+}
+.adjustment:hover .adjustment-tip { display: block; }
+
 /* Sortable column headers */
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { background: #e6e6e6; }
@@ -161,12 +175,13 @@ td.status-loading {
   transition: width 0.4s linear;
 }
 
-/* SAVE bar sticks just under the page nav so it stays visible while the RO
-   scrolls down a long entrants table. A yellow background mirrors the dirty
-   colour used on TCF inputs. */
+/* SAVE bar sits below the entrants table and sticks to the bottom of the
+   viewport while the RO is mid-table, so the buttons stay reachable without
+   scrolling all the way past the last row. A yellow background mirrors the
+   dirty colour used on TCF inputs. */
 #save-bar {
   position: sticky;
-  top: 0;
+  bottom: 0;
   z-index: 5;
   background: #fffbe0;
   border: 1px solid #d4a700;

@@ -187,6 +187,25 @@ public class SailSysClient
     }
 
     /**
+     * GET /series/{seriesId}/handicapDefinitions — system-wide catalogue of
+     * handicap definitions (PHS, MYC TCF, IRC, ORC, NZPHRF variants, ...).
+     * Each entry has {@code id, shortName, fullName} plus a number of behavioural
+     * flags we don't currently care about. The {@code seriesId} in the path is
+     * only there for authorisation context; the response is the same for any
+     * series at the same club. Used to translate {@code defaultHandicap}
+     * numeric IDs into readable names on the Series page.
+     */
+    public JsonNode fetchHandicapDefinitions(String sessionToken, int seriesId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/series/" + seriesId + "/handicapDefinitions", sessionToken)
+                .method(HttpMethod.GET),
+            "fetchHandicapDefinitions", null);
+        return root.path("data");
+    }
+
+    /**
      * PUT /series/{seriesId}/entries — list series entries.
      * TODO: model the response into typed Entry records and feed JsonStore.
      */

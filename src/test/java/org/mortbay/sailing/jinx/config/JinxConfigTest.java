@@ -9,8 +9,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.closeTo;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class JinxConfigTest
@@ -30,6 +32,9 @@ class JinxConfigTest
               idealRaceLength: 75
               dnfAllowance: 7
               earliestStart: "17:45"
+              latitude: -34.1234
+              longitude: 150.9876
+              limitBySunset: true
             server:
               port: 9090
             """);
@@ -42,6 +47,9 @@ class JinxConfigTest
         assertThat(config.algorithm().idealRaceLength(), equalTo(75));
         assertThat(config.algorithm().dnfAllowance(), equalTo(7));
         assertThat(config.algorithm().earliestStart(), equalTo("17:45"));
+        assertThat(config.algorithm().latitude(), closeTo(-34.1234, 1e-9));
+        assertThat(config.algorithm().longitude(), closeTo(150.9876, 1e-9));
+        assertThat(config.algorithm().limitBySunset(), is(true));
         assertThat(config.server().port(), equalTo(9090));
     }
 
@@ -68,6 +76,11 @@ class JinxConfigTest
         assertThat(config.algorithm().idealRaceLength(), equalTo(90));
         assertThat(config.algorithm().dnfAllowance(), equalTo(5));
         assertThat(config.algorithm().earliestStart(), equalTo("18:00"));
+        // Manly Yacht Club ground truth — defaults are tuned to the
+        // originating use case; another club overrides via config.yaml.
+        assertThat(config.algorithm().latitude(), closeTo(-33.8000, 1e-9));
+        assertThat(config.algorithm().longitude(), closeTo(151.2833, 1e-9));
+        assertThat(config.algorithm().limitBySunset(), is(false));
 
         // Server defaults
         assertThat(config.server().port(), equalTo(8080));

@@ -14,8 +14,11 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.mortbay.sailing.jinx.config.JinxConfig;
+import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.AuditEntry;
 import org.mortbay.sailing.jinx.model.Boat;
+import org.mortbay.sailing.jinx.model.Calibration;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceTimes;
 import org.mortbay.sailing.jinx.model.Result;
@@ -29,11 +32,14 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Layout under {@code <root>/store/}:
  * <pre>
- *   boats.json                — Map&lt;boatId, Boat&gt;
- *   races.json                — Map&lt;raceId, Race&gt;
- *   results/{raceId}.json     — Map&lt;boatId, Result&gt; per race
- *   race-times/{raceId}.json  — RaceTimes per race (RO-captured wall clock)
- *   audit.json                — List&lt;AuditEntry&gt;, append-only
+ *   boats.json                  — Map&lt;boatId, Boat&gt;
+ *   races.json                  — Map&lt;raceId, Race&gt;
+ *   results/{raceId}.json       — Map&lt;boatId, Result&gt; per race
+ *   race-times/{raceId}.json    — RaceTimes per race (RO-captured wall clock)
+ *   series-config/{seriesId}.json — per-series Jinx algorithm settings (overrides config.yaml)
+ *   pending-adjustments/{raceId}.json — Jinx-computed adjustments awaiting push to SailSys
+ *   calibration.json            — Calibration of SailSys' TCF → start-offset conversion
+ *   audit.json                  — List&lt;AuditEntry&gt;, append-only
  * </pre>
  *
  * <p>This is deliberately not a database. The dataset is small (one club, one
@@ -57,6 +63,9 @@ public class JsonStore
     private final Path racesFile;
     private final Path resultsDir;
     private final Path raceTimesDir;
+    private final Path seriesConfigDir;
+    private final Path pendingAdjustmentsDir;
+    private final Path calibrationFile;
     private final Path auditFile;
 
     private Map<String, Boat> boats;
@@ -70,6 +79,9 @@ public class JsonStore
         this.racesFile = storeDir.resolve("races.json");
         this.resultsDir = storeDir.resolve("results");
         this.raceTimesDir = storeDir.resolve("race-times");
+        this.seriesConfigDir = storeDir.resolve("series-config");
+        this.pendingAdjustmentsDir = storeDir.resolve("pending-adjustments");
+        this.calibrationFile = storeDir.resolve("calibration.json");
         this.auditFile = storeDir.resolve("audit.json");
     }
 
@@ -79,6 +91,8 @@ public class JsonStore
         Files.createDirectories(storeDir);
         Files.createDirectories(resultsDir);
         Files.createDirectories(raceTimesDir);
+        Files.createDirectories(seriesConfigDir);
+        Files.createDirectories(pendingAdjustmentsDir);
 
         boats = readMap(boatsFile, new TypeReference<>() { });
         races = readMap(racesFile, new TypeReference<>() { });
@@ -167,6 +181,71 @@ public class JsonStore
     {
         Path file = raceTimesDir.resolve(raceId + ".json");
         MAPPER.writeValue(file.toFile(), times);
+    }
+
+    // --- Series config (per-series Jinx algorithm overrides) ---
+
+    /**
+     * Returns the saved per-series algorithm config, or {@code null} if the
+     * series has never been configured. Callers should fall back to
+     * {@code JinxConfig.algorithm()} (the yaml defaults) in that case.
+     */
+    public synchronized JinxConfig.Algorithm seriesConfig(String seriesId) throws IOException
+    {
+        Path file = seriesConfigDir.resolve(seriesId + ".json");
+        if (!Files.exists(file))
+            return null;
+        return MAPPER.readValue(Files.readAllBytes(file), JinxConfig.Algorithm.class);
+    }
+
+    public synchronized void putSeriesConfig(String seriesId, JinxConfig.Algorithm cfg) throws IOException
+    {
+        Path file = seriesConfigDir.resolve(seriesId + ".json");
+        MAPPER.writeValue(file.toFile(), cfg);
+    }
+
+    // --- Pending adjustments (Jinx-computed, awaiting push to SailSys) ---
+
+    /**
+     * Returns the locally-saved adjustments for a race, or an empty list when none
+     * have been saved. Populated when the admin presses SAVE on the Process
+     * Handicaps panel; cleared once the adjustments are pushed to SailSys.
+     */
+    public synchronized List<Adjustment> pendingAdjustments(String raceId) throws IOException
+    {
+        Path file = pendingAdjustmentsDir.resolve(raceId + ".json");
+        if (!Files.exists(file))
+            return List.of();
+        return MAPPER.readValue(Files.readAllBytes(file),
+            new TypeReference<List<Adjustment>>() { });
+    }
+
+    public synchronized void putPendingAdjustments(String raceId, List<Adjustment> adjustments)
+        throws IOException
+    {
+        Path file = pendingAdjustmentsDir.resolve(raceId + ".json");
+        MAPPER.writeValue(file.toFile(), adjustments);
+    }
+
+    // --- Calibration (single, global — one SailSys instance per club) ---
+
+    /**
+     * Returns the saved calibration, or {@code null} if the SailSys conversion
+     * has never been probed. The {@link org.mortbay.sailing.jinx.pursuit.PursuitHandicapEngine}
+     * requires a calibration to convert {@code netAdjustmentMinutes} into a
+     * new TCF; the API layer surfaces a clear error when {@code calibration()}
+     * is {@code null} and the user attempts to run Process Handicaps.
+     */
+    public synchronized Calibration calibration() throws IOException
+    {
+        if (!Files.exists(calibrationFile))
+            return null;
+        return MAPPER.readValue(Files.readAllBytes(calibrationFile), Calibration.class);
+    }
+
+    public synchronized void putCalibration(Calibration cal) throws IOException
+    {
+        MAPPER.writeValue(calibrationFile.toFile(), cal);
     }
 
     // --- Audit ---
