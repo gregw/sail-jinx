@@ -34,10 +34,17 @@
   <section id="race-entrants" style="display:none;">
     <h2>Entrants
       <span id="entrants-count" style="font-weight: normal; color: #666; font-size: 0.85em;"></span>
+      <label id="handicap-selector-wrap" style="display:none; font-weight: normal; font-size: 0.85em; color: #555; margin-left: 1rem;">
+        Results by: <select id="handicap-selector"></select>
+      </label>
       <label id="hide-dnc-toggle" style="display:none; font-weight: normal; font-size: 0.85em; color: #555; margin-left: 1rem;">
         <input type="checkbox" id="hide-dnc"> Hide DNC
       </label>
+      <label id="show-sailsys-toggle" style="font-weight: normal; font-size: 0.85em; color: #555; margin-left: 1rem;">
+        <input type="checkbox" id="show-sailsys"> Show sailsys
+      </label>
     </h2>
+    <div id="tcf-mismatch-banner" class="banner banner-warn" style="display:none;"></div>
     <table id="entrants-table">
       <thead>
         <tr id="entrants-head"></tr>
@@ -96,6 +103,13 @@
   let boatOrder = [];               // ordered list of boatIds (drag order)
   const dirtyTcf = new Map();       // boatId -> edited TCF (Number)
   let dutyBoatId = null;            // boatId of selected duty boat, or null
+  // Per-boat manual flag overrides — see wiki §5.2 "Manual flag overrides".
+  // boatId(string) → { added: string[], removed: string[] }. Persisted in
+  // sessionStorage as part of the form payload and treated as a dirty
+  // signal by isAnyDirty(). The effective flag set displayed and used by
+  // recomputePlaces is (SailSys ∪ auto-from-times ∪ added) \ removed —
+  // see effectiveFlagsForEntrant() below.
+  let dirtyFlags = new Map();
 
   // Race classification — derived once the data lands and consulted by the
   // column / panel renderers below.
@@ -124,6 +138,7 @@
   let originalOrderJson = '';
   let originalDutyBoatId = null;    // for dirty detection on duty-boat changes
   let hideDnc = false;              // UI filter: when true, hide non-Came boats from the table
+  let showSailsys = false;          // UI toggle: when true, reveal the Sailsys Elapsed / Corrected columns
 
   // SailSys-computed results cache. Populated from /api/races/{id}/computed-results
   // on load and after Process Results. Shape: { boatId: {place, points, flags} }.
@@ -141,6 +156,17 @@
   let nextStartSaved = false;     // true once these adjustments have been
                                   // saved locally (so SAVE flips to "Saved.")
 
+  // Local per-race TCF snapshot — see wiki §6 "Local TCF history". When a
+  // snapshot exists, currentTcf() prefers it over the SailSys-supplied
+  // currentHandicaps[].value (so a past race keeps its historical TCFs
+  // even after SailSys overwrites for a later race). On the EARLIEST
+  // UNPROCESSED race in the series we also surface a Push/Reset banner
+  // when the snapshot diverges from SailSys.
+  let snapshotTcf = new Map();      // boatId(string) -> Number
+  let sailsysTcf = new Map();       // boatId(string) -> Number (from entrants)
+  let snapshotMeta = null;          // {savedAt, source, sourceRaceId} or null
+  let isEarliestUnprocessedRace = false;  // gates the mismatch banner
+
   // SailSys calibration (V₀) used by the engine to convert each boat's net
   // adjustment minutes into a new TCF. Loaded once on page load via
   // GET /api/calibration; Process Handicaps is gated on this being non-null
@@ -148,8 +174,20 @@
   // the admin Saves a fresh calibration.
   let currentCalibration = null;
 
+  // Club-wide handicap-definition catalogue, fetched once from
+  // GET /api/handicap-definitions. Maps stringified id → {shortName, fullName}.
+  // Used to label the SailSys-mode entries in the Handicap selector.
+  let handicapDefs = {};
+
+  // Which handicap drives the Place + Points columns and the local placeMap.
+  // In SailSys-authoritative mode this is a numeric handicapDefinitionId
+  // (matched against sailsysResults[id].byHandicap); in local mode it's the
+  // string 'scratch' | 'pursuit' | 'tcf'. Persisted per-race via
+  // SESSION_KEY('form'). null until the first populate.
+  let selectedHandicap = null;
+
   function isAnyDirty() {
-    return dirtyTcf.size > 0 || isTimesDirty();
+    return dirtyTcf.size > 0 || dirtyFlags.size > 0 || isTimesDirty();
   }
 
   // True when SailSys's computed results can be displayed as the
@@ -215,17 +253,24 @@
   //
   // OCS is conditional: in a pursuit race, OCS adds a 5 min penalty to
   // elapsed time on a boat that still finished — those boats DO get a
-  // place. In a fleet (non-pursuit) start, OCS means the boat crossed
-  // early and is disqualified from the result, so no place. The
-  // pursuit-vs-fleet branch lives in parseSailsysResults below where we
-  // know which mode the race is in.
+  // place. In a scratch start, OCS means the boat crossed early and is
+  // disqualified from the result, so no place. The pursuit-vs-scratch
+  // branch lives in parseSailsysResults below where we know which mode
+  // the race is in.
   const FLAGS_WITHOUT_PLACE_BASE = new Set([
     'DNC', 'DNF', 'DNS', 'DSQ', 'RET', 'ABD', 'AVG'
   ]);
 
   // Flatten the GET /races/{id}/results competitors tree into a per-boat map.
-  // calculations[0] is the first handicap definition (MYC TCF for our club);
-  // placings[0] is the overall division placing.
+  // calculations[] is one entry per handicap definition SailSys scored — we
+  // keep all of them keyed by handicapDefinitionId so the Handicap selector
+  // can swap views without re-fetching.
+  //
+  // SailSys exposes the **scratch / elapsed-time** scoring as a calc entry
+  // with {@code handicapDefinitionId == null}. We store that under the
+  // reserved key {@code 'scratch'} so it sits in the selector alongside
+  // the named handicaps (PHS, MYC TCF, etc.) without a synthetic local
+  // computation.
   //
   // Penalty handling: SailSys's standard penalties carry a
   // `definitionShortName` (DNC/DNF/DNS/DSQ/OCS/RET/ABD) that we use as the
@@ -234,11 +279,15 @@
   // and label it 'AVG'. A boat carrying any flag in the no-place set has
   // its place forced to null — SailSys's internal numeric rank for those
   // boats is an artefact of its sorting, not a displayable place. The set
-  // includes OCS only for fleet starts.
+  // includes OCS only for scratch starts.
   //
   // {@code elapsedTime} is captured here so the Elapsed column can use
   // SailSys's authoritative value in Mode A (it already accounts for
   // start-line penalties and any handicap adjustments SailSys applies).
+  //
+  // Per-boat record shape:
+  //   { flags, elapsedTime,
+  //     byHandicap: { 'scratch'|<handicapDefId>: { place, points, correctedTime } } }
   function parseSailsysResults(data) {
     const map = {};
     if (!data || !Array.isArray(data.competitors)) return map;
@@ -250,8 +299,6 @@
       for (const it of c.items) {
         const boatId = (it.boat && it.boat.id) || it.id;
         if (boatId == null) continue;
-        const calc = Array.isArray(it.calculations) ? it.calculations[0] : null;
-        const placing = calc && Array.isArray(calc.placings) ? calc.placings[0] : null;
         const penalties = Array.isArray(it.penalties) ? it.penalties : [];
         const flags = [];
         for (const p of penalties) {
@@ -263,12 +310,27 @@
           if (p.definitionShortName) flags.push(p.definitionShortName);
         }
         const hasNoPlaceFlag = flags.some(f => noPlaceFlags.has(f));
-        const place = hasNoPlaceFlag
-          ? null
-          : (placing && placing.place != null ? placing.place : null);
-        const points = (placing && placing.points != null) ? placing.points : null;
+        const byHandicap = {};
+        const calcs = Array.isArray(it.calculations) ? it.calculations : [];
+        for (const calc of calcs) {
+          if (!calc) continue;
+          const defId = calc.handicapDefinitionId;
+          const key = (defId == null) ? 'scratch' : String(defId);
+          const placing = Array.isArray(calc.placings) ? calc.placings[0] : null;
+          const place = hasNoPlaceFlag
+            ? null
+            : (placing && placing.place != null ? placing.place : null);
+          const points = (placing && placing.points != null) ? placing.points : null;
+          // SailSys puts correctedTime sometimes on the calc, sometimes on
+          // the first placing — accept either so the Sailsys/Corrected
+          // column populates regardless of which payload variant lands.
+          const correctedTime = calc.correctedTime
+            || (placing && placing.correctedTime)
+            || null;
+          byHandicap[key] = { place, points, correctedTime };
+        }
         const elapsedTime = it.elapsedTime || null;
-        map[String(boatId)] = { place, points, flags, elapsedTime };
+        map[String(boatId)] = { flags, elapsedTime, byHandicap };
       }
     }
     return map;
@@ -310,7 +372,13 @@
         dutyBoatId: dutyBoatId,
         divisionStarts: Array.from(divisionStartsMap.entries()),
         dirtyTcf: Array.from(dirtyTcf.entries()),
-        hideDnc: hideDnc
+        // Serialise dirtyFlags as [[boatId, {added, removed}], ...].
+        // added/removed are arrays so JSON survives the round-trip.
+        dirtyFlags: Array.from(dirtyFlags.entries())
+          .map(([id, ov]) => [id, { added: ov.added || [], removed: ov.removed || [] }]),
+        hideDnc: hideDnc,
+        showSailsys: showSailsys,
+        selectedHandicap: selectedHandicap
       }));
     } catch (_) { /* private mode or quota — silent best effort */ }
   }
@@ -334,6 +402,25 @@
         divisionStartsMap = new Map(p.divisionStarts.map(([k, v]) => [String(k), v]));
       }
       hideDnc = !!p.hideDnc;
+      showSailsys = !!p.showSailsys;
+      // selectedHandicap may be a string (local mode label) or a number
+      // (SailSys handicapDefinitionId). populateHandicapSelector validates
+      // the saved value against the currently-available options and falls
+      // back to the per-mode default if it no longer applies.
+      if (p.selectedHandicap !== undefined) selectedHandicap = p.selectedHandicap;
+      // Manual flag overrides — restore as a Map so size + lookups work.
+      // Skip entries that are empty (both added and removed empty arrays)
+      // since they shouldn't have been persisted in the first place.
+      if (Array.isArray(p.dirtyFlags)) {
+        dirtyFlags = new Map();
+        for (const [id, ov] of p.dirtyFlags) {
+          const added = Array.isArray(ov && ov.added) ? ov.added : [];
+          const removed = Array.isArray(ov && ov.removed) ? ov.removed : [];
+          if (added.length || removed.length) {
+            dirtyFlags.set(String(id), { added, removed });
+          }
+        }
+      }
       // Only restore dirty TCF state when the race is current AND we manage
       // the handicap. Past races / foreign-handicap series have no editable
       // TCF input, so reviving the dirt would permanently mark the page
@@ -375,7 +462,10 @@
 
   function currentTcf(e) {
     const id = e.boat && e.boat.id;
-    return dirtyTcf.has(id) ? dirtyTcf.get(id) : originalTcf(e);
+    if (dirtyTcf.has(id)) return dirtyTcf.get(id);
+    const k = String(id);
+    if (snapshotTcf.has(k)) return snapshotTcf.get(k);
+    return originalTcf(e);
   }
 
   // All internal time math is in seconds-since-midnight (integer). The RO
@@ -393,7 +483,21 @@
     if (secs == null || secs < 0) return '';
     const h = Math.floor(secs / 3600);
     const mi = Math.floor((secs % 3600) / 60);
-    const s = secs % 60;
+    const s = Math.floor(secs % 60);
+    const pad = (n) => String(n).padStart(2, '0');
+    return pad(h) + ':' + pad(mi) + ':' + pad(s);
+  }
+
+  // Like fmtElapsed but for a time-of-day (seconds-since-midnight). Used by
+  // the Jinx Finish column to show scored_finish_time as HH:MM:SS so it can
+  // be compared against the Actual Finish input directly. Wraps at 24h
+  // (modulo) so a value > 86400 still renders sensibly.
+  function fmtTimeOfDay(secs) {
+    if (secs == null || !Number.isFinite(secs)) return '';
+    const total = Math.floor(((secs % 86400) + 86400) % 86400);
+    const h = Math.floor(total / 3600);
+    const mi = Math.floor((total % 3600) / 60);
+    const s = total % 60;
     const pad = (n) => String(n).padStart(2, '0');
     return pad(h) + ':' + pad(mi) + ':' + pad(s);
   }
@@ -472,10 +576,10 @@
   }
 
   // The actualStart time for an entrant — pursuit races stagger per boat
-  // (held on timesMap[boatId].actualStart); non-pursuit races share one gun
+  // (held on timesMap[boatId].actualStart); scratch starts share one gun
   // time per division (held on divisionStartsMap when the user has captured
   // it locally, else on SailSys's currentStatus.divisionTiming.startTimeLocal
-  // — for fleet races SailSys treats that field AS the gun time, so once
+  // — for scratch starts SailSys treats that field AS the gun time, so once
   // saved it IS the actual). Returns null when nothing is available.
   function actualStartFor(entrant) {
     if (isPursuit) {
@@ -551,8 +655,10 @@
   //          came/start/finish-driven flags because those fields are forced
   //          empty for the duty boat.
   //   DNC  — did not come. came=false (and not duty).
-  //   DNS  — came but no actualStart recorded.
-  //   DNF  — came, has actualStart, but no finish.
+  //   DNS  — came but neither started nor finished. A captured finish is
+  //          taken as proof the boat raced; missing actualStart is a
+  //          start-line bookkeeping gap, not a non-start.
+  //   DNF  — came, has no finish, and either started or has no start record.
   //   OCS  — actualStart earlier than scheduled start. Added IN ADDITION to
   //          any other flag (per spec: "no matter what other flags it might
   //          get (it doesn't need a finish time to get it)").
@@ -569,17 +675,37 @@
     const actualStr = actualStartFor(entrant);
     if (!t || !t.came) {
       flags.push('DNC');
-    } else if (!actualStr) {
-      flags.push('DNS');
     } else if (!t.finish) {
-      flags.push('DNF');
+      // Came + no finish defaults to DNF (if we have an actual start) or
+      // DNS (no actual start). Suppress the DNS default when an external
+      // status flag (SailSys or manual add, minus manual removal) has
+      // already classified the boat as having raced / withdrawn: a boat
+      // marked DNF / RET / DSQ / ABD did start, so DNS would contradict
+      // the existing flag. Checked here (not via effectiveFlagsForEntrant)
+      // to avoid recursion — that helper itself calls flagsForEntrant.
+      const sidStr = String(id);
+      const ssFlags = (sailsysResults[sidStr] && sailsysResults[sidStr].flags) || [];
+      const ov = dirtyFlags.get(sidStr);
+      const added = (ov && ov.added) || [];
+      const removed = new Set((ov && ov.removed) || []);
+      const externalSet = new Set();
+      for (const f of ssFlags) if (!removed.has(f)) externalSet.add(f);
+      for (const f of added) externalSet.add(f);
+      const startedFlags = ['DNF', 'RET', 'DSQ', 'ABD'];
+      const alreadyClassified = startedFlags.some(f => externalSet.has(f));
+      if (!alreadyClassified) {
+        flags.push(actualStr ? 'DNF' : 'DNS');
+      }
     }
+    // came AND has finish → no DNS/DNF flag, regardless of whether actual
+    // start was captured. See wiki §5.1: a missing actualStart is treated
+    // as "use allocated" rather than "didn't start".
 
     // OCS layers on top of any of the above for pursuit races, where each
     // boat has its own actualStart that we can compare against the boat's
-    // staggered allocated start. For fleet (non-pursuit) starts every boat
-    // shares one division gun time, so an "OCS" call is per-boat RO
-    // judgement (not derivable from times) — don't auto-flag it.
+    // staggered allocated start. For scratch starts every boat shares one
+    // division gun time, so an "OCS" call is per-boat RO judgement (not
+    // derivable from times) — don't auto-flag it.
     if (isPursuit && actualStr) {
       const actual = parseTime(actualStr);
       const sched = parseScheduledSeconds(scheduledStartFor(entrant));
@@ -588,10 +714,159 @@
     return flags;
   }
 
-  // OCS is the only auto-flag that affects placing. AVG/DNC/DNS/DNF are
-  // handled by excluding the boat from the placed set in recomputePlaces().
-  function penaltySecondsForEntrant(entrant) {
-    return flagsForEntrant(entrant).includes('OCS') ? 5 * 60 : 0;
+  // Canonical set of flags the editor knows about, in display order. Any
+  // SailSys-supplied flag outside this list is preserved (shown after the
+  // known flags) but isn't offered as a checkbox in the popover — the RO
+  // can still see it, just not toggle it from here.
+  const KNOWN_FLAGS = ['DNC', 'DNS', 'DNF', 'DSQ', 'AVG', 'OCS',
+                       'RET', 'ABD', 'RDG', 'BFD', 'ZFP', 'SCP'];
+
+  // Effective flag set = (SailSys ∪ auto-from-times ∪ override.added)
+  //                       \ override.removed.
+  // Returned in KNOWN_FLAGS order, with any unknown SailSys flags
+  // appended at the end (uniqued, insertion order). This is the single
+  // source of truth used by the Flags column display, recomputePlaces'
+  // EXCLUDED check, isOcsForEntrant, and anywhere else that asks "what
+  // flags does this boat have right now".
+  function effectiveFlagsForEntrant(entrant) {
+    const id = String(entrant && entrant.boat && entrant.boat.id);
+    const set = new Set();
+    for (const f of flagsForEntrant(entrant)) set.add(f);
+    const ss = sailsysResults[id] && sailsysResults[id].flags;
+    if (Array.isArray(ss)) for (const f of ss) set.add(f);
+    const override = dirtyFlags.get(id);
+    if (override) {
+      for (const f of override.added || []) set.add(f);
+      for (const f of override.removed || []) set.delete(f);
+    }
+    const known = KNOWN_FLAGS.filter(f => set.has(f));
+    const unknown = Array.from(set).filter(f => !KNOWN_FLAGS.includes(f));
+    return known.concat(unknown);
+  }
+
+  // === Canonical scoring + handicap helpers (wiki §5.1) =====================
+  //
+  // Order of declaration mirrors the formula sheet — each step only depends
+  // on values from earlier steps. No circular reference because
+  // `effective_start` only consults the external OCS_FLAGGED signal, not
+  // the formula-derived `OCS`.
+  //
+  // All helpers return seconds (or null when a needed input is missing).
+  // Higher-level callers (recomputePlaces, Elapsed column, doProcessHandicaps)
+  // sit on top.
+
+  const OCS_PENALTY_SECONDS = 5 * 60;
+
+  function allocatedStartSeconds(entrant) {
+    return parseScheduledSeconds(scheduledStartFor(entrant));
+  }
+
+  function actualStartSeconds(entrant) {
+    const s = actualStartFor(entrant);
+    return s ? parseTime(s) : null;
+  }
+
+  // External OCS signal (SailSys flag, OR a manual override from
+  // dirtyFlags). Distinct from the formula-derived OCS so the two can be
+  // combined without a circular reference. Reads the SailSys flag and
+  // the manual override directly — does NOT use effectiveFlagsForEntrant
+  // (which itself depends on effective_start via flagsForEntrant for the
+  // auto-OCS clause). Auto-OCS doesn't feed in here because that path
+  // already requires actualStart to be present, which is sufficient
+  // input for effective_start without needing to consult flags.
+  function isOcsFlagged(entrant) {
+    const id = String(entrant && entrant.boat && entrant.boat.id);
+    const ss = sailsysResults[id] && sailsysResults[id].flags;
+    const ssOcs = Array.isArray(ss) && ss.includes('OCS');
+    const ov = dirtyFlags.get(id);
+    const addedOcs = !!(ov && (ov.added || []).includes('OCS'));
+    const removedOcs = !!(ov && (ov.removed || []).includes('OCS'));
+    return (ssOcs || addedOcs) && !removedOcs;
+  }
+
+  // effective_start:
+  //   - actual captured     → actual_start
+  //   - no actual, flagged  → allocated_start − 1s  (formula nudge)
+  //   - no actual, no flag  → allocated_start       (no nudge)
+  function effectiveStartSeconds(entrant) {
+    const a = actualStartSeconds(entrant);
+    if (a != null) return a;
+    const s = allocatedStartSeconds(entrant);
+    if (s == null) return null;
+    return isOcsFlagged(entrant) ? (s - 1) : s;
+  }
+
+  // Signed late/early (sailing convention): positive `late` = boat crossed
+  // AFTER allocated, positive `early` = boat crossed BEFORE allocated.
+  // Returns null when allocated_start can't be resolved.
+  function lateSecondsForEntrant(entrant) {
+    const e = effectiveStartSeconds(entrant);
+    const s = allocatedStartSeconds(entrant);
+    if (e == null || s == null) return null;
+    return e - s;
+  }
+  function earlySecondsForEntrant(entrant) {
+    const l = lateSecondsForEntrant(entrant);
+    return l == null ? null : -l;
+  }
+
+  // OCS = whatever effectiveFlagsForEntrant says. That union already
+  // covers SailSys flags, manual override (added/removed), AND the
+  // formula-derived OCS in flagsForEntrant (which fires when actual <
+  // scheduled in a pursuit race). Centralising here means a manual
+  // "remove OCS" override correctly suppresses the formula-derived OCS
+  // for the boat even when actualStart is < scheduled.
+  function isOcsForEntrant(entrant) {
+    return effectiveFlagsForEntrant(entrant).includes('OCS');
+  }
+
+  // All local-time helpers return whole seconds (Math.round) so the value
+  // used for place sorting matches the HH:MM:SS that the cell renders —
+  // otherwise a sub-second TCF×elapsed difference could put two boats in
+  // different places even though they display the same time.
+
+  // Place-sort key, also the value shown in the Scored Finish column.
+  //   non-OCS:              finish
+  //   pursuit OCS:          finish + early + OCS_PENALTY  (early is per-boat)
+  //   scratch start OCS:    finish + OCS_PENALTY          (no per-boat early)
+  // Always defined as long as we have a finish time; scratch start OCS
+  // used to return NaN (no place) but the Scored columns must always
+  // display the local calc, so it gets the penalty-only flavour. Place
+  // ranking still excludes scratch start OCS via recomputePlaces' EXCLUDED
+  // set, so the change is display-only.
+  function scoredFinishSecondsForEntrant(entrant) {
+    const t = getTimes(entrant && entrant.boat && entrant.boat.id);
+    const f = t ? parseTime(t.finish) : null;
+    if (f == null) return null;
+    if (!isOcsForEntrant(entrant)) return Math.round(f);
+    if (!isPursuit) return Math.round(f + OCS_PENALTY_SECONDS);
+    const e = earlySecondsForEntrant(entrant);
+    return Math.round(f + (e == null ? 0 : e) + OCS_PENALTY_SECONDS);
+  }
+
+  function scoredElapsedSecondsForEntrant(entrant) {
+    const sf = scoredFinishSecondsForEntrant(entrant);
+    const s = allocatedStartSeconds(entrant);
+    if (sf == null || s == null) return null;
+    return Math.round(sf - s);
+  }
+
+  // Handicap-engine input: pure sailing time using effective_start. Late
+  // starts SHORTEN this (wiki §5.1) — a boat that started 30 s late is
+  // treated by the engine as having sailed 30 s less.
+  function handicapElapsedSecondsForEntrant(entrant) {
+    const t = getTimes(entrant && entrant.boat && entrant.boat.id);
+    const f = t ? parseTime(t.finish) : null;
+    const e = effectiveStartSeconds(entrant);
+    if (f == null || e == null) return null;
+    return Math.round(f - e);
+  }
+
+  function correctedSecondsForEntrant(entrant) {
+    const se = scoredElapsedSecondsForEntrant(entrant);
+    if (se == null) return null;
+    const tcf = currentTcf(entrant);
+    return Math.round(se * (isNaN(tcf) ? 1.0 : tcf));
   }
 
   // Format a signed minutes value (e.g. 3.283) as "+M:SS" or "-M:SS". Used
@@ -625,38 +900,77 @@
     return 'FIN';
   }
 
-  // Elapsed minutes for a finisher, using the ALLOCATED start (matches
-  // SailSys's elapsedTime and the Elapsed column's local mode). Returns
-  // null when either timestamp is missing or unparseable.
+  // Elapsed minutes used by the Jinx handicap engine (wiki §5.1):
+  // handicap_elapsed_time / 60. This is `finish − effective_start`, so:
+  //   - actual_start captured → finish − actual (late starts shorten,
+  //     early starts lengthen — pure sailing-time view);
+  //   - no actual, OCS-flagged → finish − (allocated − 1s);
+  //   - no actual, unflagged → finish − allocated.
   function elapsedMinutesForEntrant(entrant) {
-    const a = parseScheduledSeconds(scheduledStartFor(entrant));
-    const t = getTimes(entrant.boat && entrant.boat.id);
-    const f = t ? parseTime(t.finish) : null;
-    if (a == null || f == null) return null;
-    const secs = (f - a) + penaltySecondsForEntrant(entrant);
-    return secs / 60.0;
+    const secs = handicapElapsedSecondsForEntrant(entrant);
+    return secs == null ? null : secs / 60.0;
   }
 
   // Place + points are derived from the captured times. Recomputed once per
   // render via recomputePlaces() so cell `get`s are cheap map lookups.
   let placeMap = new Map();     // boatId -> 1-based place (finish order)
 
+  // Compute the local placeMap using whichever sort key the Handicap
+  // selector currently says (per wiki §5.1):
+  //   `pursuit` → scored_finish_time
+  //   `scratch` → scored_elapsed_time
+  //   `tcf`     → corrected_time = TCF × scored_elapsed_time
+  //
+  // Always-excluded flags: AVG, DNC, DNS, DNF. For scratch starts OCS is
+  // also excluded — boats over early in a scratch start are out of the
+  // result entirely (no place), regardless of the displayed Scored values.
+  //
+  // When the selector currently holds a SailSys numeric handicap id, mode
+  // isn't a string so we fall back to scratch (the synthetic Scratch
+  // option always uses placeMap, and doProcessHandicaps reads it as a
+  // last resort).
   function recomputePlaces() {
     placeMap = new Map();
     if (!IS_EDITABLE) return;
-    const EXCLUDED = new Set(['AVG', 'DNC', 'DNS', 'DNF']);
-    const finishers = [];
+    const EXCLUDED = isPursuit
+      ? new Set(['AVG', 'DNC', 'DNS', 'DNF'])
+      : new Set(['AVG', 'DNC', 'DNS', 'DNF', 'OCS']);
+    let mode = selectedHandicap;
+    if (typeof mode !== 'string') mode = 'scratch';
+    // Bucket finishers by division id so each division is ranked on its
+    // own — three divisions → three boats placed 1st (assuming no ties).
+    // Entrants missing a division id all share one synthetic bucket so
+    // they're still ranked together rather than silently dropped.
+    const byDivision = new Map();
     for (const e of entrantData) {
       const id = String(e.boat && e.boat.id);
-      const flags = flagsForEntrant(e);
-      if (flags.some(f => EXCLUDED.has(f))) continue;
-      const t = getTimes(id);
-      const f = parseTime(t.finish);
-      if (f == null) continue;
-      finishers.push({ id, fAdj: f + penaltySecondsForEntrant(e) });
+      if (effectiveFlagsForEntrant(e).some(f => EXCLUDED.has(f))) continue;
+      let key;
+      if (mode === 'pursuit')      key = scoredFinishSecondsForEntrant(e);
+      else if (mode === 'tcf')     key = correctedSecondsForEntrant(e);
+      else /* scratch (default) */ key = scoredElapsedSecondsForEntrant(e);
+      if (key == null || !Number.isFinite(key)) continue;
+      const divKey = String((e.division && e.division.id) != null ? e.division.id : '');
+      if (!byDivision.has(divKey)) byDivision.set(divKey, []);
+      byDivision.get(divKey).push({ id, key });
     }
-    finishers.sort((a, b) => a.fAdj - b.fAdj);
-    finishers.forEach((x, i) => placeMap.set(x.id, i + 1));
+    // Sort each division then assign places with tie handling: boats whose
+    // sort keys are equal share the same place; the next distinct key jumps
+    // to (index+1), not (sharedPlace+1). E.g. three boats tied at 5th →
+    // next boat is 8th (no 6th or 7th). Keys are already integer seconds
+    // (the helpers Math.round their output), so equality is exact.
+    for (const finishers of byDivision.values()) {
+      finishers.sort((a, b) => a.key - b.key);
+      let currentPlace = 0;
+      let lastKey = null;
+      finishers.forEach((x, i) => {
+        if (lastKey === null || x.key !== lastKey) {
+          currentPlace = i + 1;
+          lastKey = x.key;
+        }
+        placeMap.set(x.id, currentPlace);
+      });
+    }
   }
 
   // Columns. `get` returns a sort-friendly value; `render` (optional) returns
@@ -690,7 +1004,7 @@
           + ' data-original="' + esc(fmt(orig)) + '"'
           + ' value="' + esc(fmt(cur)) + '">';
       }},
-    { key: 'start',    label: 'Allocated', get: e => e.startTimeLocal || '' },
+    { key: 'start',    label: 'Allocated<br/>Start', get: e => e.startTimeLocal || '' },
     { key: 'came',     label: 'Came',
       editableOnly: true, sortable: false,
       get: e => getTimes(e.boat && e.boat.id).came ? 1 : 0,
@@ -703,7 +1017,7 @@
         return '<input type="checkbox" class="came-input" data-boat-id="' + esc(id) + '"'
           + checked + disabled + '>';
       }},
-    { key: 'actualStart', label: 'Start',
+    { key: 'actualStart', label: 'Actual<br/>Start',
       editableOnly: true,
       get: e => getTimes(e.boat && e.boat.id).actualStart || '',
       render: (e) => {
@@ -719,7 +1033,7 @@
           + ' value="' + esc(t.actualStart || '') + '"' + disabled + '>'
           + nowBtn;
       }},
-    { key: 'finish',  label: 'Finish',
+    { key: 'finish',  label: 'Actual<br/>Finish',
       get: e => {
         if (IS_EDITABLE) return getTimes(e.boat && e.boat.id).finish || '';
         return e.finishTimeLocal || '';
@@ -745,80 +1059,106 @@
     // actualStart. The `get` returns a Number so sorting is numeric; render
     // formats as M:SS (with leading minus when early).
     { key: 'late', label: 'Late', editableOnly: true,
+      cellClass: 'num-cell',
       get: e => {
         const s = lateSeconds(e);
         return s == null ? NaN : s;
       },
       render: e => esc(fmtLate(lateSeconds(e)))
     },
-    { key: 'elapsed', label: 'Elapsed',
+    // Jinx columns — always show the locally-computed value (no SailSys
+    // mode switch) so a developer can eyeball our computation against
+    // SailSys's side-by-side. Whenever the boat has a finish time the
+    // helpers produce a finite value (scratch start OCS now resolves to
+    // finish + OCS_PENALTY); only a missing finish blanks the cell.
+    { key: 'scoredFinish', label: 'Scored<br/>Finish',
+      get: e => {
+        const sf = scoredFinishSecondsForEntrant(e);
+        return (sf == null || !Number.isFinite(sf)) ? NaN : sf;
+      },
+      render: e => {
+        const sf = scoredFinishSecondsForEntrant(e);
+        if (sf == null || !Number.isFinite(sf)) return '';
+        return esc(fmtTimeOfDay(sf));
+      }},
+    { key: 'scoredElapsed', label: 'Scored<br/>Elapsed',
+      get: e => {
+        const se = scoredElapsedSecondsForEntrant(e);
+        return (se == null || !Number.isFinite(se)) ? NaN : se;
+      },
+      render: e => {
+        const se = scoredElapsedSecondsForEntrant(e);
+        if (se == null || !Number.isFinite(se)) return '';
+        return esc(fmtElapsed(se));
+      }},
+    { key: 'scoredCorrected', label: 'Scored<br/>Corrected',
+      get: e => {
+        const c = correctedSecondsForEntrant(e);
+        return (c == null || !Number.isFinite(c)) ? NaN : c;
+      },
+      render: e => {
+        const c = correctedSecondsForEntrant(e);
+        if (c == null || !Number.isFinite(c)) return '';
+        return esc(fmtElapsed(c));
+      }},
+    // Sailsys columns — show whatever SailSys returned, never the local
+    // computation. Blank when SailSys has no value for this boat
+    // (DNC / RET / etc.).
+    { key: 'elapsed', label: 'Sailsys<br/>Elapsed',
       get: e => {
         const id = String(e.boat && e.boat.id);
-        if (isResultsClean()) {
-          // Mode A: SailSys is the authoritative source. SailSys's
-          // elapsedTime already accounts for penalties (OCS +5 min in
-          // pursuit) and any handicap adjustments. If SailSys has no
-          // elapsed for this boat (DNC, RET, etc.) the cell stays blank.
-          const r = sailsysResults[id];
-          return (r && r.elapsedTime) ? r.elapsedTime : '';
-        }
-        // Mode B: local computation. Elapsed always uses the ALLOCATED
-        // start (the SailSys-computed staggered start for pursuit, or the
-        // division's gun time for fleet), not the captured actual start —
-        // this matches SailSys's own elapsedTime semantics in Mode A, and
-        // keeps Elapsed independent of how late the actual gun went off
-        // relative to the allocated time. The Late column separately
-        // displays the (actual − allocated) difference.
-        const a = parseScheduledSeconds(scheduledStartFor(e));
-        const t = getTimes(e.boat && e.boat.id);
-        const f = parseTime(t.finish);
-        if (a != null && f != null) {
-          return fmtElapsed((f - a) + penaltySecondsForEntrant(e));
-        }
-        return '';
+        const r = sailsysResults[id];
+        return (r && r.elapsedTime) ? r.elapsedTime : '';
       }},
-    // Flags: SailSys-authoritative when results are clean (processed AND no
-    // local edits pending). When dirty/unprocessed, fall back to local auto-
-    // computed flags. Manual flags (DSQ etc.) UI hooks are still future work.
-    { key: 'flags', label: 'Flags', sortable: false, get: e => {
+    { key: 'corrected', label: 'Sailsys<br/>Corrected',
+      get: e => {
         const id = String(e.boat && e.boat.id);
-        if (isResultsClean() && sailsysResults[id]) {
-          const f = sailsysResults[id].flags || [];
-          return f.length ? f.join(', ') : '';
-        }
-        const flags = flagsForEntrant(e);
+        const r = sailsysResults[id];
+        const bh = r && r.byHandicap && r.byHandicap[String(selectedHandicap)];
+        return (bh && bh.correctedTime) ? bh.correctedTime : '';
+      }},
+    // Flags: shows the effective set (SailSys ∪ auto-from-times ∪
+    // manual-added, minus manual-removed). Clicking the cell opens a
+    // popover where the RO can add / remove flags — see wireFlagPopover.
+    // The cellClass tags the <td> so the cell is recognisable for the
+    // click handler and gets the editor-affordance hover style.
+    { key: 'flags', label: 'Flags', sortable: false,
+      cellClass: IS_EDITABLE ? 'flag-cell' : '',
+      get: e => {
+        const flags = effectiveFlagsForEntrant(e);
         return flags.length ? flags.join(', ') : '';
       } },
     { key: 'place', label: 'Place',
       get: e => {
         const id = String(e.boat && e.boat.id);
+        // In SailSys mode look up byHandicap[selectedHandicap] (the key
+        // is the same string 'scratch' OR a stringified numeric id) and
+        // use it whenever the entry exists. Local mode and the "no
+        // SailSys scratch returned" fallback drop through to placeMap.
         if (isResultsClean()) {
-          // Results processed + no edits → SailSys is the complete
-          // source of truth. If SailSys has no place for this boat
-          // (RET, DNC, DSQ, AVG, etc.), the cell stays blank. No local
-          // fallback — local placeMap is only meaningful when SailSys
-          // hasn't yet processed (or when we have unpushed edits that
-          // make the SailSys state stale).
-          return (sailsysResults[id] && sailsysResults[id].place != null)
-            ? sailsysResults[id].place
-            : '';
+          const r = sailsysResults[id];
+          const bh = r && r.byHandicap
+            && r.byHandicap[String(selectedHandicap)];
+          if (bh && bh.place != null) return bh.place;
         }
-        // Results not processed, or local edits in flight: places come
-        // from the local computation. recomputePlaces excludes
-        // AVG/DNC/DNS/DNF boats and any boat without a parseable finish
-        // time, so the table only shows places for boats that have
-        // actually finished.
         const p = placeMap.get(id);
         return p == null ? '' : p;
       }},
-    // Points: ONLY shown when SailSys has computed them AND the local state
-    // matches what was pushed (no dirty edits). Anything else would be a lie —
-    // either provisional/stale, or never authoritative locally.
+    // Points: in SailSys mode + a SailSys-supplied handicap (including
+    // scratch when SailSys returns it as a calc with id=null), take
+    // points from SailSys. Otherwise mirror the place number (low-point
+    // scoring); blank when no place.
     { key: 'points', label: 'Points',
       get: e => {
-        if (!isResultsClean()) return '';
-        const r = sailsysResults[String(e.boat && e.boat.id)];
-        return (r && r.points != null) ? r.points : '';
+        const id = String(e.boat && e.boat.id);
+        if (isResultsClean()) {
+          const r = sailsysResults[id];
+          const bh = r && r.byHandicap
+            && r.byHandicap[String(selectedHandicap)];
+          if (bh && bh.points != null) return bh.points;
+        }
+        const p = placeMap.get(id);
+        return p == null ? '' : p;
       }},
     // Adjustment: signed Δs (penalty − reward) for this boat in M:SS, as
     // produced by the Jinx algorithm. The next race's start-time
@@ -896,6 +1236,9 @@
       // adjustments — populated by the Process Handicaps button or
       // restored on load from /api/races/{id}/pending-handicaps.
       if (c.key === 'nextStart' && nextStartAdjustments.size === 0) return false;
+      // Sailsys Elapsed / Corrected are noisy debug columns — hidden by
+      // default; the "Show sailsys" toggle reveals them.
+      if ((c.key === 'elapsed' || c.key === 'corrected') && !showSailsys) return false;
       return true;
     });
   }
@@ -919,7 +1262,7 @@
   // already primary just flips its direction. Capped at MAX_SORT_DEPTH
   // levels — beyond that the stack would be more noise than signal.
   let sortStack = [];
-  const MAX_SORT_DEPTH = 4;
+  const MAX_SORT_DEPTH = 2;
 
   function compareValues(a, b) {
     // Empty values (null, undefined, '') always sort to the end regardless of
@@ -994,9 +1337,116 @@
     return rows;
   }
 
+  // SailSys handicap definitions whose name marks them as the scratch /
+  // elapsed view — we skip these when picking the default in SailSys mode.
+  const SCRATCH_NAME_RE = /^(scratch|elapsed)$/i;
+
+  // Prefer fullName because multiple SailSys handicap definitions can
+  // share the same shortName (e.g. several "PHS" variants), so the short
+  // form would render an ambiguous selector.
+  function handicapLabelFor(defId) {
+    const def = handicapDefs[String(defId)];
+    if (!def) return String(defId);
+    return def.fullName || def.shortName || String(defId);
+  }
+
+  function isScratchHandicap(defId) {
+    const def = handicapDefs[String(defId)];
+    if (!def) return false;
+    return SCRATCH_NAME_RE.test(def.shortName || '')
+        || SCRATCH_NAME_RE.test(def.fullName || '');
+  }
+
+  // Recompute the Handicap-selector options for the current mode and race
+  // type. Called from page-load, after results arrive, and whenever
+  // dirty-state flips (which can swap SailSys ↔ local modes).
+  //
+  // SailSys mode (isResultsClean): one option per handicap SailSys scored
+  // — calculations[] entries with handicapDefinitionId become numeric
+  // options; the entry with handicapDefinitionId == null becomes the
+  // 'scratch' string option (always shown first). If SailSys didn't emit
+  // a scratch entry for some reason, we still offer 'scratch' as a
+  // fallback computed from the local placeMap.
+  // Default = first non-scratch (i.e. the first real SailSys handicap).
+  //
+  // Local mode (anything edited / not yet processed): three local-only
+  // options in order Scratch, TCF, then Pursuit when the race is pursuit-
+  // format. Default = the LAST option (Pursuit when offered, else TCF).
+  function populateHandicapSelector() {
+    const sel = document.getElementById('handicap-selector');
+    const wrap = document.getElementById('handicap-selector-wrap');
+    if (!sel || !wrap) return;
+    let options = [];
+    if (isResultsClean()) {
+      // Always position Scratch first. SailSys typically returns it as
+      // a calc with handicapDefinitionId=null (stored under the 'scratch'
+      // key); if absent we still offer it as a local-computed fallback.
+      options.push({ value: 'scratch', label: 'Scratch', isScratch: true });
+      const seen = new Set(['scratch']);
+      for (const id in sailsysResults) {
+        const bh = sailsysResults[id] && sailsysResults[id].byHandicap;
+        if (!bh) continue;
+        for (const key of Object.keys(bh)) {
+          if (seen.has(key)) continue;
+          seen.add(key);
+          options.push({
+            value: Number(key),
+            label: handicapLabelFor(key),
+            isScratch: isScratchHandicap(key)
+          });
+        }
+      }
+    } else {
+      // Local mode. Labels describe the column the place is sorted on —
+      // Elapsed (scored_elapsed_time), Corrected (TCF × elapsed), Finish
+      // (scored_finish_time, pursuit only). Internal `value` keys are
+      // unchanged so the rest of the code (recomputePlaces' mode switch,
+      // sessionStorage persistence) keeps working.
+      options.push({ value: 'scratch', label: 'Elapsed' });
+      options.push({ value: 'tcf', label: 'Corrected' });
+      if (isPursuit) options.push({ value: 'pursuit', label: 'Finish' });
+    }
+    if (options.length === 0) {
+      wrap.style.display = 'none';
+      return;
+    }
+    // Decide the default: SailSys → first non-scratch (else first); Local
+    // → last option (Pursuit when offered, else TCF).
+    let defaultValue;
+    if (isResultsClean()) {
+      const nonScratch = options.find(o => !o.isScratch);
+      defaultValue = (nonScratch || options[0]).value;
+    } else {
+      defaultValue = options[options.length - 1].value;
+    }
+    // Coerce a persisted-string SailSys id back into a number so equality
+    // comparisons against the numeric option values work.
+    if (isResultsClean() && typeof selectedHandicap === 'string'
+        && /^\d+$/.test(selectedHandicap)) {
+      selectedHandicap = Number(selectedHandicap);
+    }
+    const validValues = new Set(options.map(o => String(o.value)));
+    if (selectedHandicap == null || !validValues.has(String(selectedHandicap))) {
+      selectedHandicap = defaultValue;
+    }
+    sel.innerHTML = options.map(o =>
+      '<option value="' + esc(String(o.value)) + '"'
+      + (String(o.value) === String(selectedHandicap) ? ' selected' : '')
+      + '>' + esc(o.label) + '</option>').join('');
+    wrap.style.display = '';
+    sel.onchange = () => {
+      const raw = sel.value;
+      selectedHandicap = (raw === 'scratch' || raw === 'pursuit' || raw === 'tcf')
+        ? raw : Number(raw);
+      sessionSaveForm();
+      renderEntrants();
+    };
+  }
+
   function renderEntrants() {
     const tbody = document.getElementById('entrants-tbody');
     const cols = activeCols();
+    populateHandicapSelector();
     recomputePlaces();
     const rows = orderedEntrants();
     tbody.innerHTML = rows.map(e => {
@@ -1019,7 +1469,115 @@
       wireTimeInputs();
       wireDrag();
       wireEntrantsKeyHandlers();
+      wireFlagCells();
     }
+  }
+
+  // Click-to-edit flag editor. The Flags column cells get a click handler
+  // that opens a popover anchored to the cell with one checkbox per
+  // KNOWN_FLAGS entry. Auto-derived flags (from flagsForEntrant) appear
+  // checked + disabled; SailSys-supplied flags appear checked + italic;
+  // user toggles freely add/remove flags from dirtyFlags[boatId]. Closing
+  // (click outside or Esc) re-renders and fires updateSaveBar so the
+  // Save bar appears and the Handicap selector swaps to local mode.
+  function wireFlagCells() {
+    document.querySelectorAll('td.flag-cell').forEach(td => {
+      td.onclick = () => {
+        const tr = td.closest('tr');
+        if (!tr) return;
+        const boatId = tr.dataset.boatId;
+        const e = entrantData.find(x => String(x.boat && x.boat.id) === String(boatId));
+        if (!e) return;
+        openFlagPopover(td, e);
+      };
+    });
+  }
+
+  let openPopoverCleanup = null;   // call to dismiss the currently-open popover
+
+  function openFlagPopover(anchorCell, entrant) {
+    if (openPopoverCleanup) openPopoverCleanup();
+    const id = String(entrant.boat && entrant.boat.id);
+    const autoSet = new Set(flagsForEntrant(entrant));
+    const ssArr = sailsysResults[id] && sailsysResults[id].flags;
+    const ssSet = new Set(Array.isArray(ssArr) ? ssArr : []);
+    const overrideBaseline = new Set([...autoSet, ...ssSet]);
+    const effective = new Set(effectiveFlagsForEntrant(entrant));
+
+    const pop = document.createElement('div');
+    pop.className = 'flag-popover';
+    pop.innerHTML = '<div class="flag-popover-title">Flags</div>'
+      + KNOWN_FLAGS.map(f => {
+          const isAuto = autoSet.has(f);
+          const isSailsys = !isAuto && ssSet.has(f);
+          const checked = effective.has(f) ? ' checked' : '';
+          const disabled = isAuto ? ' disabled' : '';
+          const cls = isAuto ? ' flag-auto' : (isSailsys ? ' flag-sailsys' : '');
+          const title = isAuto
+            ? ' title="auto-derived from captured times — edit the times to change it"'
+            : (isSailsys ? ' title="from SailSys"' : '');
+          return '<label class="flag-row' + cls + '"' + title + '>'
+            + '<input type="checkbox" data-flag="' + esc(f) + '"'
+              + checked + disabled + '> ' + esc(f) + '</label>';
+        }).join('');
+
+    // Anchor to the cell. Position is computed relative to viewport, then
+    // converted to document-absolute so the popover stays put on scroll.
+    const rect = anchorCell.getBoundingClientRect();
+    pop.style.position = 'absolute';
+    pop.style.left = (window.scrollX + rect.left) + 'px';
+    pop.style.top  = (window.scrollY + rect.bottom + 2) + 'px';
+    document.body.appendChild(pop);
+
+    pop.querySelectorAll('input[type="checkbox"]').forEach(inp => {
+      inp.onchange = () => {
+        const f = inp.dataset.flag;
+        const ov = dirtyFlags.get(id) || { added: [], removed: [] };
+        // Normalise toward minimal representation:
+        //   checked && !baseline  → added += f, removed -= f
+        //   !checked && baseline  → removed += f, added -= f
+        //   checked && baseline   → cancel any removed.includes(f)
+        //   !checked && !baseline → cancel any added.includes(f)
+        const baseline = overrideBaseline.has(f);
+        let added = (ov.added || []).filter(x => x !== f);
+        let removed = (ov.removed || []).filter(x => x !== f);
+        if (inp.checked && !baseline) added.push(f);
+        if (!inp.checked && baseline) removed.push(f);
+        if (added.length === 0 && removed.length === 0) {
+          dirtyFlags.delete(id);
+        } else {
+          dirtyFlags.set(id, { added, removed });
+        }
+        sessionSaveForm();
+        // Re-render so Place/Points + the cell text reflect the new
+        // effective set; updateSaveBar picks up the dirt and re-fires
+        // the dirty-flip swap path if needed.
+        renderEntrantsHead();
+        renderEntrants();
+        updateSaveBar();
+      };
+    });
+
+    // Dismiss on outside-click or Escape. Use mousedown to fire before
+    // the next focus shift — and skip clicks inside the popover itself.
+    const onDocMouseDown = (ev) => {
+      if (pop.contains(ev.target)) return;
+      cleanup();
+    };
+    const onKey = (ev) => { if (ev.key === 'Escape') cleanup(); };
+    function cleanup() {
+      if (pop.parentNode) pop.parentNode.removeChild(pop);
+      document.removeEventListener('mousedown', onDocMouseDown, true);
+      document.removeEventListener('keydown', onKey, true);
+      openPopoverCleanup = null;
+    }
+    // Wire on the next microtask so the click that opened us doesn't
+    // immediately close it.
+    setTimeout(() => {
+      document.addEventListener('mousedown', onDocMouseDown, true);
+      document.addEventListener('keydown', onKey, true);
+    }, 0);
+    openPopoverCleanup = cleanup;
   }
 
   function wireTcfInputs() {
@@ -1040,6 +1598,12 @@
         else inp.classList.remove('invalid');
         updateSaveBar();
         sessionSaveForm();
+      };
+      // On blur/Enter, re-render so a TCF-mode ranking reflects the new
+      // value. Using onchange (not oninput) keeps the keystroke path
+      // cheap and avoids stealing focus from the field being edited.
+      inp.onchange = () => {
+        if (selectedHandicap === 'tcf') renderEntrants();
       };
     });
   }
@@ -1486,6 +2050,8 @@
         || isDivisionStartsDirty();
   }
 
+  let lastDirtyState = false;
+
   function updateSaveBar() {
     const bar = document.getElementById('save-bar');
     const summary = document.getElementById('save-summary');
@@ -1501,11 +2067,35 @@
       bar.style.display = 'none';
       summary.textContent = '';
     }
+    // Any local edit invalidates the computed Jinx adjustments — they were
+    // derived from the pre-edit results, so saving or displaying them now
+    // would be misleading. Drop them and re-render so the column and the
+    // Save Handicaps button vanish until Process Handicaps is re-run.
+    clearAdjustmentsOnEdit();
     // Mirror the dirtiness change into the status-grid Results source row
     // so it tracks the SAVE bar — flips to "Local — pending push" the
     // moment editing starts, back to "SailSys (authoritative)" once the
     // dirt clears.
     updateResultsSource();
+    // Dirty/clean flip → the Handicap selector switches between the
+    // SailSys-supplied handicaps and the local Scratch/TCF/Pursuit set.
+    // Re-render so the new options + Place/Points columns show up
+    // immediately rather than waiting for the next render trigger.
+    const nowDirty = isAnyDirty();
+    if (nowDirty !== lastDirtyState) {
+      lastDirtyState = nowDirty;
+      renderEntrants();
+    }
+  }
+
+  function clearAdjustmentsOnEdit() {
+    if (nextStartAdjustments.size === 0) return;
+    if (!isAnyDirty()) return;
+    nextStartAdjustments.clear();
+    nextStartSaved = false;
+    renderEntrantsHead();
+    renderEntrants();
+    renderControls();
   }
 
   function updateResultsSource() {
@@ -1520,7 +2110,6 @@
   function renderEntrantsHead() {
     const head = document.getElementById('entrants-head');
     const cols = activeCols();
-    const multi = sortStack.length > 1;
     head.innerHTML = cols.map(c => {
       const sortable = c.sortable !== false;
       const myKey = sortKeyForCol(c);
@@ -1528,11 +2117,12 @@
       if (sortable) {
         const idx = sortStack.findIndex(s => s.key === myKey);
         if (idx >= 0) {
-          const arrow = sortStack[idx].dir > 0 ? '▲' : '▼';
-          // Show 1/2/3 subscripts only when multiple keys are active, so
-          // single-column sorts stay visually quiet.
-          const subscript = multi ? '<sub>' + (idx + 1) + '</sub>' : '';
-          marker = '<span class="sort-marker">' + arrow + subscript + '</span>';
+          // Primary sort: solid triangle (▲/▼). Secondary: outline (△/▽).
+          // Capped at MAX_SORT_DEPTH (=2) so only those two ever render.
+          const up   = idx === 0 ? '▲' : '△';
+          const down = idx === 0 ? '▼' : '▽';
+          const arrow = sortStack[idx].dir > 0 ? up : down;
+          marker = '<span class="sort-marker">' + arrow + '</span>';
         }
       }
       // Column may carry a cellClass — apply it to the <th> too so the
@@ -1543,7 +2133,9 @@
       if (sortable) classes.push('sortable');
       if (c.cellClass) classes.push(c.cellClass);
       const cls = classes.length ? ' class="' + classes.join(' ') + '"' : '';
-      return '<th' + cls + ' data-key="' + myKey + '">' + esc(c.label) + marker + '</th>';
+      // c.label may carry literal "<br/>" for multi-line headers — emitted
+      // raw, since labels are hard-coded by us. Never use user data here.
+      return '<th' + cls + ' data-key="' + myKey + '">' + c.label + marker + '</th>';
     }).join('');
     head.querySelectorAll('th.sortable').forEach(th => {
       th.onclick = () => applySortClick(th.dataset.key);
@@ -1641,11 +2233,13 @@
     const rows = [
       ['Date',             esc(fmtDate(status && status.dateTime))],
       ['Series',           esc(status && status.seriesName ? status.seriesName + ' (id ' + status.seriesId + ')' : '')],
+      ['Race type',        esc(computeRaceTypeLabel(status))],
       ['Entrants visibility', status ? vis(status.raceEntrantVisibility, 'entrants-visibility') : '']
     ];
     // "Start times visibility" is a pursuit-only concept — it controls the
-    // publication of the staggered per-boat start sheet. Fleet races don't
-    // have a per-boat start sheet, so the row is meaningless and is hidden.
+    // publication of the staggered per-boat start sheet. Scratch starts
+    // don't have a per-boat start sheet, so the row is meaningless and is
+    // hidden.
     if (isPursuit) {
       rows.push(['Start times visibility',
         status ? vis(status.handicapAndStartTimeVisibility, 'start-times-visibility') : '']);
@@ -1744,7 +2338,7 @@
     // out from under boats that are already racing.
     // Hidden for non-pursuit races: start-time processing on SailSys is
     // the pursuit-staggering pipeline, not a concept that applies to
-    // fleet starts.
+    // scratch starts.
     const startTimesPublished = (s.handicapAndStartTimeVisibility ?? 0) === 1;
     const anyCame = Array.from(timesMap.values()).some(t => t && t.came);
     const showCourseRow = isPursuit && !startTimesPublished && !anyCame;
@@ -1762,14 +2356,17 @@
 
     // Process Handicaps — back-calculate next-race TCFs from this race's
     // results via the Jinx algorithm. The result lands in the Next Start
-    // column of the entrants table and is held locally; the admin SAVE
-    // button persists it to disk. Pushing back to SailSys is a separate
-    // step (not yet implemented). Race-officer accounts see a note
-    // directing them to an admin. Only shown once SailSys has finished
-    // its own result processing — there's nothing to back-calculate from
-    // before then. Also gated on isOurHandicap: when the series uses a
-    // different default handicap, this app has no business computing
-    // replacements for it.
+    // column of the entrants table and is held locally. Available on ANY
+    // pursuit race (admin OR race officer) once SailSys has finished
+    // result processing — this lets any user sanity-check / calibrate the
+    // algorithm against series that aren't scored against MYC TCF.
+    //
+    // Save Handicaps is the destructive operation (writes TCFs back to
+    // SailSys), so it's gated on BOTH admin AND isOurHandicap: non-admins
+    // can still review the projected adjustments locally but can't push
+    // them, and only series configured against the MYC TCF handicap-
+    // definition (config.yaml's handicapDefinitionId) accept the back-
+    // calculated TCFs. The hint text below explains which gate is closed.
     const admin = (typeof isAdmin === 'function') && isAdmin();
     const resultsReady = !!s.lastProcessedTime && !s.requiresResultCalculation;
     const haveAdjustments = nextStartAdjustments.size > 0;
@@ -1781,19 +2378,23 @@
     // TCFs.
     const haveCalibration = currentCalibration && currentCalibration.v0Knots > 0;
     const procDisabled = haveCalibration ? '' : ' disabled';
-    const procHint = haveCalibration
-      ? `Compute next-race TCFs from this race's results (V₀ = ${currentCalibration.v0Knots.toFixed(3)} kn).`
-      : 'Calibrate SailSys first — Process Handicaps needs V₀.';
-    const handicapsHtml = (resultsReady && isOurHandicap)
-      ? (admin
-          ? `<div class="controls-row">
-               <button id="ctrl-handicaps" class="primary" type="button"${procDisabled}>Process Handicaps</button>
-               <button id="ctrl-save-handicaps" type="button"${saveDisabled}>${esc(saveLabel)}</button>
-               <span style="color:#888;">${esc(procHint)}</span>
-             </div>`
-          : `<div class="controls-row">
-               <span style="color:#555;">Next-race handicaps need to be processed by an admin user.</span>
-             </div>`)
+    const v0Note = haveCalibration ? ` (V₀ = ${currentCalibration.v0Knots.toFixed(3)} kn)` : '';
+    const procHint = !haveCalibration
+      ? 'Calibrate SailSys first — Process Handicaps needs V₀.'
+      : (admin && isOurHandicap)
+        ? `Compute next-race TCFs from this race's results${v0Note}.`
+        : !isOurHandicap
+          ? `Compute Jinx adjustments for review only — this series isn't scored against MYC TCF, so Save is disabled${v0Note}.`
+          : `Compute Jinx adjustments for review only — Save to SailSys requires an admin login${v0Note}.`;
+    const saveButtonHtml = (admin && isOurHandicap)
+      ? `<button id="ctrl-save-handicaps" type="button"${saveDisabled}>${esc(saveLabel)}</button>`
+      : '';
+    const handicapsHtml = (resultsReady && isPursuit)
+      ? `<div class="controls-row">
+           <button id="ctrl-handicaps" class="primary" type="button"${procDisabled}>Process Handicaps</button>
+           ${saveButtonHtml}
+           <span style="color:#888;">${esc(procHint)}</span>
+         </div>`
       : '';
 
     // Calibrate — admin probe to discover how SailSys converts (courseLength,
@@ -2045,6 +2646,69 @@
     el.style.display = '';
   }
 
+  // Mismatch banner — shows above the entrants table when the local TCF
+  // snapshot diverges from SailSys and this race is the earliest unprocessed
+  // one in the series. Two buttons: Push (POST /push-handicaps + reload) and
+  // Reset (DELETE /tcf-snapshot + reload). Hidden when snapshot matches or
+  // when we're not on the gating race.
+  function snapshotDiffersFromSailsys() {
+    const ids = new Set([...snapshotTcf.keys(), ...sailsysTcf.keys()]);
+    for (const id of ids) {
+      const a = snapshotTcf.has(id) ? snapshotTcf.get(id) : null;
+      const b = sailsysTcf.has(id)  ? sailsysTcf.get(id)  : null;
+      if (a == null || b == null) return true;
+      if (Math.abs(a - b) > 1e-6) return true;
+    }
+    return false;
+  }
+
+  function renderTcfMismatchBanner() {
+    const el = document.getElementById('tcf-mismatch-banner');
+    if (!el) return;
+    const hasSnapshot = snapshotTcf.size > 0;
+    const show = isEarliestUnprocessedRace && hasSnapshot && snapshotDiffersFromSailsys();
+    if (!show) { el.style.display = 'none'; return; }
+    const m = snapshotMeta || {};
+    const srcLabel = m.source === 'PROCESS_HANDICAPS'
+      ? ('Process Handicaps on race ' + (m.sourceRaceId || '?'))
+      : (m.source === 'MANUAL_EDIT' ? 'Manual edit' : 'Local snapshot');
+    const when = m.savedAt ? new Date(m.savedAt).toLocaleString() : '';
+    const admin = (typeof isAdmin === 'function') && isAdmin();
+    el.innerHTML =
+      '<strong>Local TCFs differ from SailSys.</strong> '
+      + 'Source: ' + esc(srcLabel) + (when ? ', saved ' + esc(when) : '') + '. '
+      + (admin
+        ? '<button id="tcf-push-btn" class="primary" type="button" style="margin-left:0.6rem;">Push to SailSys</button>'
+          + '<button id="tcf-reset-btn" type="button" style="margin-left:0.4rem;">Reset to SailSys</button>'
+        : '<em>Sign in as an admin to push or reset.</em>');
+    el.style.display = '';
+    if (admin) {
+      document.getElementById('tcf-push-btn').addEventListener('click', doPushHandicaps);
+      document.getElementById('tcf-reset-btn').addEventListener('click', doResetSnapshot);
+    }
+  }
+
+  async function doPushHandicaps() {
+    if (!confirm('Push local TCFs for this race to SailSys?')) return;
+    const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/push-handicaps', {});
+    if (!r.ok) {
+      alert('Push failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+      return;
+    }
+    location.reload();
+  }
+
+  async function doResetSnapshot() {
+    if (!confirm('Discard the local TCF snapshot for this race and revert to SailSys values?')) return;
+    const r = await fetchJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/tcf-snapshot',
+      { method: 'DELETE' });
+    if (!r.ok) {
+      alert('Reset failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+      return;
+    }
+    location.reload();
+  }
+
   async function doVisibility(endpoint, published) {
     setControlsDisabled(true);
     ctrlMsg('banner-info', (published ? 'Publishing' : 'Unpublishing') + '…');
@@ -2125,8 +2789,15 @@
       ctrlMsg('banner-warn', 'No entrants loaded yet.');
       return;
     }
+    // Make sure placeMap reflects the current entrant state — doProcessHandicaps
+    // can be triggered before any render pass has called recomputePlaces (e.g.,
+    // immediately after loading a SailSys-authoritative race).
+    recomputePlaces();
     // Build the boat snapshot. Boats with no usable TCF or no finish
-    // status get DNC (engine excludes them with frozen TCF).
+    // status get DNC (engine excludes them with frozen TCF). For FIN
+    // boats we also send finishPosition: in SailSys mode, the place under
+    // the selected handicap; in local mode, the placeMap result (also
+    // driven by the selected handicap).
     const boats = entrantData.map(e => {
       const id = e.boat && e.boat.id;
       const tcf = currentTcf(e);
@@ -2135,6 +2806,16 @@
       if (status === 'FIN') {
         const mins = elapsedMinutesForEntrant(e);
         if (mins != null) out.elapsedMinutes = mins;
+        const idStr = String(id);
+        let pos = null;
+        if (isResultsClean()) {
+          const r = sailsysResults[idStr];
+          const bh = r && r.byHandicap
+            && r.byHandicap[String(selectedHandicap)];
+          if (bh && bh.place != null) pos = bh.place;
+        }
+        if (pos == null) pos = placeMap.get(idStr);
+        if (pos != null) out.finishPosition = pos;
       }
       return out;
     });
@@ -2183,8 +2864,11 @@
       + 'Press Save Handicaps to persist locally.');
   }
 
-  // Save Handicaps — persist the currently-displayed adjustments to the
-  // local store. Pushing back to SailSys is a separate (future) step.
+  // Save Handicaps — persist the currently-displayed adjustments locally
+  // AND write the next race's TCF snapshot (server-side) from
+  // Adjustment.newTcf. The push to SailSys happens later, via the Push
+  // button on the next race's mismatch banner. seriesId is required so
+  // the server can locate race N+1 in this series.
   async function doSaveHandicaps() {
     if (nextStartAdjustments.size === 0) {
       ctrlMsg('banner-warn', 'Nothing to save — run Process Handicaps first.');
@@ -2195,7 +2879,7 @@
     ctrlMsg('banner-info', 'Saving ' + adjustments.length + ' handicap adjustment'
       + (adjustments.length === 1 ? '' : 's') + '…');
     const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/save-handicaps',
-      { adjustments });
+      { adjustments, seriesId: seriesIdForSave });
     setControlsDisabled(false);
     if (!r.ok) {
       ctrlMsg('banner-err', 'Save failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
@@ -2203,9 +2887,13 @@
     }
     nextStartSaved = true;
     renderControls();
+    const nextRaceMsg = (r.body && r.body.nextRaceId)
+      ? (' Next-race TCFs queued for race ' + r.body.nextRaceId + ' — review and Push from that race\'s page.')
+      : (r.body && r.body.nextRaceSnapshotError
+          ? (' (Could not queue next-race TCFs: ' + r.body.nextRaceSnapshotError + ')')
+          : '');
     ctrlMsg('banner-ok', 'Saved ' + adjustments.length + ' handicap adjustment'
-      + (adjustments.length === 1 ? '' : 's') + ' locally. '
-      + 'Pushing to SailSys is a future step.');
+      + (adjustments.length === 1 ? '' : 's') + ' locally.' + nextRaceMsg);
   }
 
   // (courseLength=100nm, startTime=10:00) and read back the per-boat
@@ -2257,9 +2945,13 @@
     }
     const d = cal.derivation;
     if (!d || typeof d.v0Knots !== 'number') {
-      ctrlMsg('banner-warn',
-        'Calibration probe finished but produced no usable TCF spread '
-        + '(need at least two distinct TCFs with valid start offsets).');
+      // Derivation failed — fall back to the raw per-boat table so the user
+      // can see what SailSys actually returned (offsets all 0, only one
+      // boat with a valid offset, no entrants, etc.). Better than a
+      // dead-end warning.
+      renderCalibrationFallback(cal,
+        'Could not derive V₀ from this probe. Showing raw per-boat data — '
+        + 'check whether SailSys actually staggered the starts.');
       return;
     }
     const dt = d.deltaSeconds;
@@ -2312,6 +3004,59 @@
     if (saveBtn) saveBtn.onclick = () => doSaveCalibration(payload);
     const cancelBtn = document.getElementById('ctrl-cancel-calibration');
     if (cancelBtn) cancelBtn.onclick = () => ctrlMsg('', '');
+  }
+
+  // Fallback path: render the per-boat per-division table so a failed V₀
+  // derivation isn't a dead end — the admin can read the offsets and
+  // diagnose why (all zero, single boat, etc.).
+  function renderCalibrationFallback(cal, banner) {
+    const parts = [];
+    parts.push('<strong>' + esc(banner) + '</strong>');
+    const divisions = Array.isArray(cal.divisions) ? cal.divisions : [];
+    if (divisions.length === 0) {
+      parts.push('<div style="margin-top:0.4rem;color:#555;">'
+        + '(SailSys returned no division data.)</div>');
+    }
+    for (const div of divisions) {
+      parts.push('<div style="margin-top:0.6rem;"><u>'
+        + esc(div.divisionName || ('Division ' + div.divisionId))
+        + '</u> (' + div.entrants.length + ' boats)</div>');
+      parts.push('<table style="border-collapse:collapse;margin:0.25rem 0;">'
+        + '<thead><tr>'
+        + '<th style="text-align:left;padding:2px 8px;">Sail#</th>'
+        + '<th style="text-align:left;padding:2px 8px;">Name</th>'
+        + '<th style="text-align:right;padding:2px 8px;">TCF</th>'
+        + '<th style="text-align:left;padding:2px 8px;">Start</th>'
+        + '<th style="text-align:right;padding:2px 8px;">Offset (s)</th>'
+        + '<th style="text-align:right;padding:2px 8px;">Offset (M:SS)</th>'
+        + '</tr></thead><tbody>');
+      for (const e of div.entrants) {
+        const sched = String(e.startTimeLocal || '');
+        // Accept HH:MM with optional seconds — SailSys returns minute-only
+        // startTimeLocal in some responses, and we'd rather display "16:06"
+        // than the raw ISO string.
+        const m = sched.match(/(?:^|[T\s])(\d{1,2}:\d{2}(?::\d{1,2})?)/);
+        const hms = m ? m[1] : sched;
+        const offS = (typeof e.startOffsetSeconds === 'number' && e.startOffsetSeconds >= 0)
+          ? e.startOffsetSeconds : null;
+        const offMs = offS == null
+          ? ''
+          : Math.floor(offS / 60) + ':' + String(offS % 60).padStart(2, '0');
+        parts.push('<tr>'
+          + '<td style="padding:2px 8px;">' + esc(e.sailNumber) + '</td>'
+          + '<td style="padding:2px 8px;">' + esc(e.name) + '</td>'
+          + '<td style="padding:2px 8px;text-align:right;font-family:monospace;">'
+            + (typeof e.tcf === 'number' ? e.tcf.toFixed(4) : esc(e.tcf)) + '</td>'
+          + '<td style="padding:2px 8px;font-family:monospace;">' + esc(hms) + '</td>'
+          + '<td style="padding:2px 8px;text-align:right;font-family:monospace;">'
+            + (offS == null ? '' : offS) + '</td>'
+          + '<td style="padding:2px 8px;text-align:right;font-family:monospace;">'
+            + esc(offMs) + '</td>'
+          + '</tr>');
+      }
+      parts.push('</tbody></table>');
+    }
+    ctrlMsgHtml('banner-warn', parts.join(''));
   }
 
   async function doSaveCalibration(payload) {
@@ -2426,28 +3171,20 @@
       }
       summary.textContent = 'Saving ' + updates.length + ' TCF update'
         + (updates.length === 1 ? '' : 's') + '...';
-      const r = await postJson('/api/series/' + encodeURIComponent(seriesIdForSave) + '/tcfs',
-        { updates });
+      // Bulk: writes a local snapshot (source=MANUAL_EDIT) then immediately
+      // pushes to SailSys in one PUT /races/{id}/handicaps — replaces the
+      // old per-boat loop. seriesId rides along so the server doesn't have
+      // to round-trip to look it up.
+      const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/save-tcfs',
+        { updates, seriesId: seriesIdForSave });
       if (!r.ok) {
         messages.push('TCF save failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
         anyError = true;
       } else {
-        const results = (r.body && r.body.results) || [];
-        const failed = results.filter(x => !x.ok);
-        if (failed.length === 0) {
-          messages.push('Saved ' + results.length + ' TCF update'
-            + (results.length === 1 ? '' : 's') + ' to SailSys.');
-          dirtyTcf.clear();
-        } else {
-          messages.push('Saved ' + (results.length - failed.length) + '/' + results.length
-            + ' TCF updates. Failed boats: '
-            + failed.map(f => f.boatId + ' (' + (f.error || 'unknown') + ')').join(', '));
-          anyError = true;
-          const failedIds = new Set(failed.map(f => f.boatId));
-          for (const id of Array.from(dirtyTcf.keys())) {
-            if (!failedIds.has(id)) dirtyTcf.delete(id);
-          }
-        }
+        const saved = (r.body && r.body.saved) || updates.length;
+        messages.push('Saved ' + saved + ' TCF update'
+          + (saved === 1 ? '' : 's') + ' to SailSys.');
+        dirtyTcf.clear();
       }
     }
 
@@ -2666,20 +3403,40 @@
   }
 
   // Compute isPursuit from the race status. The discriminator is the
-  // TOP-LEVEL status.raceType (observed: 1 = Pursuit, 0 = Fleet; verified
-  // across HAR captures of races known by their SailSys-UI labels).
+  // TOP-LEVEL status.raceType (observed: 1 = Pursuit, 0 = Scratch start;
+  // verified across HAR captures of races known by their SailSys-UI labels).
+  // SailSys's own UI labels the 0 case "Fleet"; we use "scratch start".
   //
   // An earlier version read divisionTiming[].raceType — that field is
-  // always 0 regardless of race type, so the check always reported
-  // pursuit and Fleet races inherited the wrong UI (per-entrant Start
-  // column, Late column, "Start times visibility" status row).
+  // always 0 regardless of race type, so the check always reported pursuit
+  // and scratch starts inherited the wrong UI (per-entrant Start column,
+  // Late column, "Start times visibility" status row).
   //
   // Missing/unknown defaults to pursuit, so the initial paint (before
-  // status arrives) shows the per-entrant affordances rather than
-  // briefly flashing the fleet UI.
+  // status arrives) shows the per-entrant affordances rather than briefly
+  // flashing the scratch-start UI.
   function computeIsPursuit(status) {
     if (!status || status.raceType == null) return true;
     return status.raceType === 1;
+  }
+
+  // Human-readable race-type label for the status grid. Maps the SailSys
+  // raceType + shortened-course flag to the local naming the club uses:
+  //   raceType=0                    → "Scratch start"
+  //   raceType=1, shortened=false   → "Pursuit"
+  //   raceType=1, shortened=true    → "Pursuit TCF"
+  // The shortened flag is per-division — any division marked shortened
+  // promotes the whole race to Pursuit TCF. SailSys exposes it as
+  // `shortenedCourse` on /results (per HAR) and (per the wiki) as
+  // `isShortened` on /status; we check both so this works regardless of
+  // which payload populated divisionTiming[].
+  function computeRaceTypeLabel(status) {
+    if (!status || status.raceType == null) return '';
+    if (status.raceType === 0) return 'Scratch start';
+    if (status.raceType !== 1) return '';
+    const dts = Array.isArray(status.divisionTiming) ? status.divisionTiming : [];
+    const shortened = dts.some(d => d && (d.shortenedCourse === true || d.isShortened === true));
+    return shortened ? 'Pursuit TCF' : 'Pursuit';
   }
 
   // SailSys finishTime is an ISO-ish local string like
@@ -2732,12 +3489,21 @@
       fetchJson('/api/races/' + encodeURIComponent(raceId) + '/pending-handicaps'),
       // Saved SailSys calibration (V₀). Required for Process Handicaps; if
       // missing the button is disabled with a hint to run Calibrate first.
-      fetchJson('/api/calibration')
+      fetchJson('/api/calibration'),
+      // Club-wide handicap-definition catalogue. Used to label the SailSys
+      // entries in the Handicap selector.
+      fetchJson('/api/handicap-definitions'),
+      // Local TCF snapshot — wiki §6. Overlays SailSys's currentHandicaps
+      // values once loaded; mismatch banner uses this to decide whether to
+      // offer Push/Reset.
+      fetchJson('/api/races/' + encodeURIComponent(raceId) + '/tcf-snapshot')
     ];
-    const [statusR, entrantsR, timesR, resultsR, finishersR, pendingR, calibrationR]
+    const [statusR, entrantsR, timesR, resultsR, finishersR, pendingR, calibrationR, handicapsR, snapshotR]
       = await Promise.all(fetches);
     currentCalibration = (calibrationR && calibrationR.ok && calibrationR.body)
       ? calibrationR.body.calibration : null;
+    handicapDefs = (handicapsR && handicapsR.ok && handicapsR.body)
+      ? (handicapsR.body.handicapDefinitions || {}) : {};
 
     if (statusR.status === 401 || entrantsR.status === 401) {
       state.className = 'banner banner-warn';
@@ -2764,6 +3530,47 @@
     entrantData = (entrantsR.body && Array.isArray(entrantsR.body.entrants))
       ? entrantsR.body.entrants : [];
     isOurHandicap = computeIsOurHandicap();
+
+    // Capture SailSys's TCF per boat for the mismatch banner diff. Read
+    // from the configured handicap row, not currentHandicaps[0] — boats
+    // with multiple handicaps may not list ours first.
+    sailsysTcf = new Map();
+    for (const e of entrantData) {
+      const id = e.boat && e.boat.id;
+      if (id == null) continue;
+      const list = (e.handicap && Array.isArray(e.handicap.currentHandicaps))
+        ? e.handicap.currentHandicaps : [];
+      let v = null;
+      for (const h of list) {
+        const defId = h && h.definition && h.definition.id;
+        if (configHandicapId == null || defId === configHandicapId) {
+          v = Number(h.value);
+          break;
+        }
+      }
+      if (v == null && list.length > 0) v = Number(list[0].value);
+      if (v != null && !isNaN(v)) sailsysTcf.set(String(id), v);
+    }
+
+    // Overlay the local snapshot (if any) onto currentTcf() and prepare
+    // banner copy. snapshotMeta carries savedAt/source/sourceRaceId for
+    // the human-readable banner text below.
+    snapshotTcf = new Map();
+    snapshotMeta = null;
+    if (snapshotR && snapshotR.ok && snapshotR.body && snapshotR.body.snapshot) {
+      const snap = snapshotR.body.snapshot;
+      snapshotMeta = {
+        savedAt: snap.savedAt || null,
+        source: snap.source || null,
+        sourceRaceId: snap.sourceRaceId || null
+      };
+      if (Array.isArray(snap.tcfs)) {
+        for (const t of snap.tcfs) {
+          if (t && t.boatId != null && t.value != null)
+            snapshotTcf.set(String(t.boatId), Number(t.value));
+        }
+      }
+    }
 
     // Restore any locally-saved Jinx handicap adjustments. Sets the Next
     // Start column up before the first render so the column appears
@@ -2844,6 +3651,17 @@
     if (resultsR && resultsR.ok && resultsR.body && resultsR.body.results) {
       sailsysResults = parseSailsysResults(resultsR.body.results);
     }
+    // If the race already has results, default the entrants table sort to
+    // Division (primary) + Place (secondary), both ascending. Each division
+    // produces its own 1st / 2nd / 3rd in recomputePlaces, so grouping by
+    // division before place gives the natural per-division podium view.
+    // The manual-drag fallback only matters for races still in progress
+    // where there are no places to sort by. Division column may be hidden
+    // (only one division on the race) — the sort comparator still honours
+    // sortStack entries regardless, so this is safe.
+    if (sortStack.length === 0 && Object.keys(sailsysResults).length > 0) {
+      sortStack = [{ key: 'division', dir: 1 }, { key: 'place', dir: 1 }];
+    }
 
     state.className = 'banner banner-ok';
     state.textContent = entrantData.length + ' entrants loaded'
@@ -2852,6 +3670,19 @@
           : ' — click a column header to sort.');
     document.getElementById('entrants-count').textContent = '(' + entrantData.length + ')';
     document.getElementById('race-entrants').style.display = '';
+
+    // Resolve the series's earliest-unprocessed race so the mismatch banner
+    // only fires on the right page. Fired here (post-status) because we need
+    // seriesIdForSave, which renderStatus populates. Failure is non-fatal —
+    // banner just stays hidden.
+    if (seriesIdForSave) {
+      try {
+        const curR = await fetchJson('/api/series/' + encodeURIComponent(seriesIdForSave) + '/current-race');
+        isEarliestUnprocessedRace = !!(curR && curR.ok && curR.body
+          && String(curR.body.raceId) === String(raceIdGlobal));
+      } catch (e) { isEarliestUnprocessedRace = false; }
+    }
+    renderTcfMismatchBanner();
 
     // Hide-DNC filter: editable-only; the Came column isn't shown in read-only
     // mode so the filter has nothing to act on. Initialise from sessionStorage
@@ -2863,6 +3694,20 @@
       cb.checked = hideDnc;
       cb.onchange = () => {
         hideDnc = cb.checked;
+        renderEntrants();
+        sessionSaveForm();
+      };
+    }
+    // Show-sailsys toggle: always available (read-only too) because the
+    // Sailsys Elapsed / Corrected columns are diagnostic and useful even
+    // when nothing is being edited. Re-renders both head and body since
+    // the column set changes.
+    {
+      const cb = document.getElementById('show-sailsys');
+      cb.checked = showSailsys;
+      cb.onchange = () => {
+        showSailsys = cb.checked;
+        renderEntrantsHead();
         renderEntrants();
         sessionSaveForm();
       };
