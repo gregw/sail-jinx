@@ -58,8 +58,15 @@ a { color: #2255aa; }
 
 /* Tables */
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-th { text-align: left; padding: 4px 8px; background: #f0f0f0; border-bottom: 2px solid #ccc; }
+th { text-align: left; padding: 4px 8px; background: #f0f0f0; border-bottom: 2px solid #ccc; vertical-align: bottom; }
 td { padding: 4px 8px; border-bottom: 1px solid #eee; }
+/* Zebra striping for readability — even rows get a subtle gray. The
+   :not() guards ensure hover, current-race highlighting, and the drag
+   ghost still win on rows that match those states (otherwise the stripe
+   rule's specificity would clobber them). */
+tbody tr:nth-child(even):not(:hover):not(.current-race):not(.dragging) td {
+  background: #f5f5f5;
+}
 tr:hover td { background: #f9f9f9; }
 
 /* The entrants table shrinks to its content rather than filling the page —
@@ -87,6 +94,10 @@ td.drag-handle:hover { color: #2255aa; background: #eaf1fc; }
 tr.dragging { opacity: 0.4; }
 tr.drag-over td { border-top: 2px solid #2255aa; }
 
+/* Right-aligned numeric columns (e.g. Late). Applied via a column's
+   cellClass so the <th> and <td> both align. */
+th.num-cell, td.num-cell { text-align: right; }
+
 /* Jinx Adjustment column — right-aligned numeric value, with a hover
    tooltip that shows the three-step calculation. The tooltip uses
    white-space: pre so the padded labels and values stay column-aligned;
@@ -100,6 +111,41 @@ th.adjustment-cell, td.adjustment-cell { text-align: right; }
   z-index: 10; box-shadow: 0 2px 6px rgba(0,0,0,0.25); text-align: left;
 }
 .adjustment:hover .adjustment-tip { display: block; }
+
+/* Flags column — clickable cell with an editable-affordance hover hint and
+   a popover that lists every KNOWN_FLAGS checkbox. Auto-derived flags
+   appear disabled (greyed); SailSys-supplied flags are italic to mark
+   them apart from manual overrides. */
+td.flag-cell { cursor: pointer; }
+td.flag-cell:hover { background: #fff7d6; }
+td.flag-cell:hover::after {
+  content: ' \270E';   /* pencil — hints clickability without taking layout space */
+  color: #888;
+  font-size: 0.9em;
+  margin-left: 0.3em;
+}
+.flag-popover {
+  background: #fff;
+  border: 1px solid #888;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  padding: 0.4rem 0.6rem;
+  font-family: monospace;
+  font-size: 0.85rem;
+  z-index: 100;
+  min-width: 7em;
+}
+.flag-popover-title {
+  font-weight: bold;
+  color: #555;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 0.2rem;
+  margin-bottom: 0.25rem;
+}
+.flag-popover .flag-row { display: block; padding: 1px 0; cursor: pointer; }
+.flag-popover .flag-row:hover { background: #f5f5f5; }
+.flag-popover .flag-auto    { color: #888; cursor: not-allowed; }
+.flag-popover .flag-sailsys { font-style: italic; }
 
 /* Sortable column headers */
 th.sortable { cursor: pointer; user-select: none; }

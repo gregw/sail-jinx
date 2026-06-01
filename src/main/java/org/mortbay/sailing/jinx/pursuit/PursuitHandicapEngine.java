@@ -91,7 +91,10 @@ public class PursuitHandicapEngine implements HandicapEngine
         int tTarget = race.targetElapsedMinutes() != null ? race.targetElapsedMinutes() : 90;
 
         // §5: classify by FinishStatus and assign effective elapsed time.
-        record Entry(Boat boat, double elapsedMinutes) {}
+        // Carry through any per-result finishPosition so the engine can
+        // assign penalties by official place rather than by raw-elapsed
+        // sort. Position-less finishers fall back to elapsed-sort.
+        record Entry(Boat boat, double elapsedMinutes, Integer position) {}
         List<Entry> finishers = new ArrayList<>();
         List<Boat> dnfRet = new ArrayList<>();
         List<Boat> excluded = new ArrayList<>();
@@ -111,30 +114,46 @@ public class PursuitHandicapEngine implements HandicapEngine
                     if (d == null)
                         excluded.add(b);
                     else
-                        finishers.add(new Entry(b, d.toMillis() / 60_000.0));
+                        finishers.add(new Entry(b,
+                            d.toMillis() / 60_000.0,
+                            r.finishPosition()));
                 }
                 case DNF, RET -> dnfRet.add(b);
                 default -> excluded.add(b); // DSQ, DNC, DNS
             }
         }
-        finishers.sort(Comparator.comparingDouble(Entry::elapsedMinutes));
+        // Sort key: finishPosition when supplied, else elapsed-time order.
+        // A finishPosition of null is pushed to the end so position-bearing
+        // finishers always sort before position-less ones — keeps the
+        // mixed-supply case sane though we don't expect it in production.
+        finishers.sort((a, c) -> {
+            Integer ap = a.position(), cp = c.position();
+            if (ap != null && cp != null) return Integer.compare(ap, cp);
+            if (ap != null) return -1;
+            if (cp != null) return 1;
+            return Double.compare(a.elapsedMinutes(), c.elapsedMinutes());
+        });
 
         double slowestFinisher = finishers.isEmpty()
             ? tTarget
-            : finishers.get(finishers.size() - 1).elapsedMinutes();
+            : finishers.stream().mapToDouble(Entry::elapsedMinutes).max().orElse(tTarget);
         double dnfElapsed = slowestFinisher + config.dnfAllowance();
 
-        // Participating boats: finishers first (in finish order), then DNF/RET.
+        // Participating boats: finishers (in finish order), then DNF/RET.
+        // Penalty draws from penaltyList by sorted position — when official
+        // positions were supplied, that's the official finish order; else
+        // elapsed-sort order.
         record Participant(Boat boat, Integer position, double elapsed, double penalty) {}
         List<Participant> participants = new ArrayList<>();
         for (int i = 0; i < finishers.size(); i++)
         {
-            int position = i + 1;
-            double penalty = (i < config.penaltyList().size())
-                ? config.penaltyList().get(i)
+            Entry e = finishers.get(i);
+            int position = (e.position() != null) ? e.position() : (i + 1);
+            int penaltyIdx = position - 1;
+            double penalty = (penaltyIdx >= 0 && penaltyIdx < config.penaltyList().size())
+                ? config.penaltyList().get(penaltyIdx)
                 : 0.0;
-            participants.add(new Participant(
-                finishers.get(i).boat(), position, finishers.get(i).elapsedMinutes(), penalty));
+            participants.add(new Participant(e.boat(), position, e.elapsedMinutes(), penalty));
         }
         for (Boat b : dnfRet)
             participants.add(new Participant(b, null, dnfElapsed, 0.0));
@@ -142,13 +161,56 @@ public class PursuitHandicapEngine implements HandicapEngine
         // §6.1 — penalty pool actually awarded.
         double pool = participants.stream().mapToDouble(Participant::penalty).sum();
 
-        // §6.3 — γ exponent and weighted rewards.
+        // §6.2 — winner_factor scales the fastest-finisher's reward by race
+        //   length. The penalty pool is no longer flat-distributed by
+        //   elapsed^γ: in a long race the winner already absorbed the
+        //   penalty through the long elapsed time, so the give-back to 1st
+        //   place ramps from 0.5 × even-share (median ≤ 2/3 × ideal) down
+        //   to 0 (median ≥ ideal):
+        //     ratio = median_elapsed / idealRaceLength
+        //     winner_factor = clamp(1.5 × (1 − ratio), 0, 0.5)
+        //   The remaining pool is then distributed among the non-winners
+        //   weighted by (e_i − e_winner)^γ — close-behind boats get tiny
+        //   shares, the back of the fleet gets the most.
+        double medianElapsed = participants.isEmpty()
+            ? 0.0
+            : median(participants.stream().map(Participant::elapsed).toList());
+        double ratio = medianElapsed / config.idealRaceLength();
+        double winnerFactor = Math.max(0.0, Math.min(0.5, 1.5 * (1.0 - ratio)));
+
+        // §6.3 — γ exponent shapes the gap-weighted redistribution.
         double gamma = (double) tTarget / (tTarget + config.idealRaceLength());
+
+        // Identify the winner — boat with finishPosition == 1 when supplied,
+        // else min-elapsed. The winner's elapsed anchors the gap formula:
+        // gapᵢ = max(0, eᵢ − eWinner) so an OCS boat (smaller raw elapsed
+        // than the official 1st place) gets gap clamped to 0 and no reward
+        // from the redistribution. Ties for 1st split rWinnerEach.
+        Participant winner = participants.stream()
+            .filter(p -> p.position() != null && p.position() == 1)
+            .findFirst()
+            .orElse(participants.stream()
+                .min(Comparator.comparingDouble(Participant::elapsed))
+                .orElse(null));
+        double eWinner = (winner != null) ? winner.elapsed() : 0.0;
+        int numWinners = 0;
+        for (Participant p : participants)
+            if (p.elapsed() == eWinner) numWinners++;
+
+        double rWinnerEach = (participants.isEmpty())
+            ? 0.0
+            : winnerFactor * pool / participants.size();
+        double remaining = pool - rWinnerEach * numWinners;
+
+        // Gap-weighted weights for the non-winners (winners get 0 here).
+        // Negative gaps (an OCS-like boat finishing physically earlier than
+        // the official winner) clamp to 0 — they don't deserve a reward.
         double[] weights = new double[participants.size()];
         double weightSum = 0.0;
         for (int i = 0; i < participants.size(); i++)
         {
-            weights[i] = Math.pow(participants.get(i).elapsed(), gamma);
+            double gap = participants.get(i).elapsed() - eWinner;
+            weights[i] = (gap > 0) ? Math.pow(gap, gamma) : 0.0;
             weightSum += weights[i];
         }
 
@@ -193,10 +255,22 @@ public class PursuitHandicapEngine implements HandicapEngine
         }
 
         List<Adjustment> adjustments = new ArrayList<>(boats.size());
+        // Degenerate case: every participant tied at e_winner ⇒ weightSum=0.
+        // Distribute `remaining` evenly across the non-winners so the pool
+        // doesn't silently vanish.
+        int numNonWinners = participants.size() - numWinners;
+        double evenSplitNonWinner = (weightSum == 0.0 && numNonWinners > 0)
+            ? remaining / numNonWinners : 0.0;
         for (int i = 0; i < participants.size(); i++)
         {
             Participant p = participants.get(i);
-            double reward = weightSum > 0 ? pool * weights[i] / weightSum : 0.0;
+            double reward;
+            if (p.elapsed() == eWinner)
+                reward = rWinnerEach;
+            else if (weightSum > 0)
+                reward = remaining * weights[i] / weightSum;
+            else
+                reward = evenSplitNonWinner;
             double net = p.penalty() - reward;
             double oldTcf = p.boat().currentTcf();
             double denom = 1.0 - net * oldTcf / tMinutesPerUnitTcf;

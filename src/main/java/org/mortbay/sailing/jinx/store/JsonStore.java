@@ -20,6 +20,7 @@ import org.mortbay.sailing.jinx.model.AuditEntry;
 import org.mortbay.sailing.jinx.model.Boat;
 import org.mortbay.sailing.jinx.model.Calibration;
 import org.mortbay.sailing.jinx.model.Race;
+import org.mortbay.sailing.jinx.model.RaceTcfSnapshot;
 import org.mortbay.sailing.jinx.model.RaceTimes;
 import org.mortbay.sailing.jinx.model.Result;
 import org.slf4j.Logger;
@@ -38,6 +39,7 @@ import org.slf4j.LoggerFactory;
  *   race-times/{raceId}.json    — RaceTimes per race (RO-captured wall clock)
  *   series-config/{seriesId}.json — per-series Jinx algorithm settings (overrides config.yaml)
  *   pending-adjustments/{raceId}.json — Jinx-computed adjustments awaiting push to SailSys
+ *   race-tcfs/{raceId}.json     — local snapshot of the TCFs in effect for this race (season-long history)
  *   calibration.json            — Calibration of SailSys' TCF → start-offset conversion
  *   audit.json                  — List&lt;AuditEntry&gt;, append-only
  * </pre>
@@ -65,6 +67,7 @@ public class JsonStore
     private final Path raceTimesDir;
     private final Path seriesConfigDir;
     private final Path pendingAdjustmentsDir;
+    private final Path raceTcfsDir;
     private final Path calibrationFile;
     private final Path auditFile;
 
@@ -81,6 +84,7 @@ public class JsonStore
         this.raceTimesDir = storeDir.resolve("race-times");
         this.seriesConfigDir = storeDir.resolve("series-config");
         this.pendingAdjustmentsDir = storeDir.resolve("pending-adjustments");
+        this.raceTcfsDir = storeDir.resolve("race-tcfs");
         this.calibrationFile = storeDir.resolve("calibration.json");
         this.auditFile = storeDir.resolve("audit.json");
     }
@@ -93,6 +97,7 @@ public class JsonStore
         Files.createDirectories(raceTimesDir);
         Files.createDirectories(seriesConfigDir);
         Files.createDirectories(pendingAdjustmentsDir);
+        Files.createDirectories(raceTcfsDir);
 
         boats = readMap(boatsFile, new TypeReference<>() { });
         races = readMap(racesFile, new TypeReference<>() { });
@@ -225,6 +230,35 @@ public class JsonStore
     {
         Path file = pendingAdjustmentsDir.resolve(raceId + ".json");
         MAPPER.writeValue(file.toFile(), adjustments);
+    }
+
+    // --- Race TCF snapshots (per race, local season-long history) ---
+
+    /**
+     * Returns the locally-saved TCF snapshot for a race, or {@code null} when
+     * no snapshot exists. The snapshot is written by Save Handicaps (which
+     * populates the *next* race's snapshot from {@link Adjustment#newTcf()})
+     * and by manual TCF edits in the entrants table.
+     */
+    public synchronized RaceTcfSnapshot raceTcfs(String raceId) throws IOException
+    {
+        Path file = raceTcfsDir.resolve(raceId + ".json");
+        if (!Files.exists(file))
+            return null;
+        return MAPPER.readValue(Files.readAllBytes(file), RaceTcfSnapshot.class);
+    }
+
+    public synchronized void putRaceTcfs(String raceId, RaceTcfSnapshot snapshot) throws IOException
+    {
+        Path file = raceTcfsDir.resolve(raceId + ".json");
+        MAPPER.writeValue(file.toFile(), snapshot);
+    }
+
+    /** Returns true when a snapshot existed and was removed. */
+    public synchronized boolean deleteRaceTcfs(String raceId) throws IOException
+    {
+        Path file = raceTcfsDir.resolve(raceId + ".json");
+        return Files.deleteIfExists(file);
     }
 
     // --- Calibration (single, global — one SailSys instance per club) ---

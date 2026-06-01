@@ -159,6 +159,22 @@ public class SailSysClient
     }
 
     /**
+     * GET /series/{seriesId} — rich series-detail payload. Carries the
+     * top-level {@code raceType} directly, so pursuit-vs-scratch can be
+     * decided without a per-race status round-trip. <strong>Admin-only</strong>
+     * — race officers (adminLevel=1) get 403 here; callers must be ready to
+     * fall back to the race-list + status path (see {@link #fetchSeriesRaces}).
+     */
+    public JsonNode fetchSeriesDetail(String sessionToken, int seriesId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/series/" + seriesId, sessionToken).method(HttpMethod.GET),
+            "fetchSeriesDetail", null);
+        return root.path("data");
+    }
+
+    /**
      * GET /races/{raceId}/status — rich race metadata: entry counts, visibility
      * flags, processing status. Used to render the status columns on the
      * races page.
@@ -455,6 +471,29 @@ public class SailSysClient
                 .method(HttpMethod.PUT)
                 .body(new StringRequestContent("application/json", body)),
             "updateHandicap", body);
+        return root.path("data");
+    }
+
+    /**
+     * PUT /races/{raceId}/handicaps — bulk update of every entrant's TCFs in a
+     * single round-trip. Body is the full entrants array (as returned by
+     * {@link #fetchRaceEntrants}), with each row's
+     * {@code handicap.currentHandicaps[].value} overwritten to the desired TCF.
+     * Every nested field (boat, division, skipper, spinnakerType, …) must be
+     * echoed back verbatim — SailSys validates the row shape, not just the
+     * TCF value. Callers should fetch entrants, mutate the TCF nodes in-place,
+     * and pass the mutated array straight back.
+     */
+    public JsonNode updateRaceHandicaps(String sessionToken, int raceId,
+                                        JsonNode entrantsArray) throws Exception
+    {
+        requireToken(sessionToken);
+        String body = MAPPER.writeValueAsString(entrantsArray);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/handicaps", sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", body)),
+            "updateRaceHandicaps", "[" + (entrantsArray.isArray() ? entrantsArray.size() : 0) + " entrants]");
         return root.path("data");
     }
 

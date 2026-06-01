@@ -15,7 +15,9 @@
     All series at the configured SailSys club. Every series is clickable —
     click one to load its races. Series whose default handicap matches the
     configured jinx handicap (MYC TCF, id 15 at MYC) get the full editing
-    workflow and can be tuned with the [Configure] button.
+    workflow including writing TCFs back. Other <em>pursuit</em> series can
+    also be [Configure]d and have Process Handicaps run for calibration /
+    check purposes — only saving back to SailSys is gated.
   </p>
 
   <div id="series-state" class="banner banner-info">Loading…</div>
@@ -97,6 +99,12 @@
     const series = r.body.series || [];
     const requiredHandicapId = r.body.handicapDefinitionId;
     const handicapDefs = r.body.handicapDefinitions || {};
+    // Pursuit detection is lazy. The table renders immediately; for each
+    // series row we then fire /api/series/{id}/is-pursuit in parallel and
+    // add the Configure button to that row when the response arrives.
+    // (Series that match the configured handicap get Configure straight
+    // away — they're MYC TCF and so always tunable.)
+    const pursuitSeriesIds = new Set();
     // SailSys returns the catalogue as an array we flattened server-side into
     // {"<id>": {shortName, fullName}}. Render `fullName (shortName)` when we
     // have an entry, fall back to the bare id when we don't (unknown id, or
@@ -122,17 +130,20 @@
     state.textContent =
       series.length + ' series at club ' + r.body.clubId +
       ' — ' + eligibleCount + ' using handicap ' + handicapLabel(requiredHandicapId) +
-      ' (full editing). All series are clickable.';
+      ' (full editing). Pursuit detection in progress…';
     table.style.display = '';
+
+    const cfgBtnFor = (s) =>
+      `<button class="cfg-btn" data-series-id="${esc(s.id)}" data-series-name="${esc(s.name).replace(/"/g, '&quot;')}">Configure</button>`;
 
     tbody.innerHTML = series.map(s => {
       const handicapText = handicapLabel(s.defaultHandicap);
       const title = `title="Open races for ${esc(s.name).replace(/"/g, '&quot;')}"`;
-      // Only series scored against the configured jinx handicap can be
-      // tuned — others have no Jinx algorithm to parameterise.
-      const cfgCell = (s.defaultHandicap === requiredHandicapId)
-        ? `<button class="cfg-btn" data-series-id="${esc(s.id)}" data-series-name="${esc(s.name).replace(/"/g, '&quot;')}">Configure</button>`
-        : '';
+      // MYC TCF series always get Configure immediately — they're known
+      // pursuit / known scope. For other series the cell starts empty and
+      // we fill it in if the per-series pursuit probe comes back true.
+      const isOurHandicap = s.defaultHandicap === requiredHandicapId;
+      const cfgCell = isOurHandicap ? cfgBtnFor(s) : '';
       return `
         <tr class="clickable" data-series-id="${esc(s.id)}" ${title}>
           <td>${esc(s.id)}</td>
@@ -141,9 +152,48 @@
           <td>${esc(s.racesCount)}</td>
           <td>${esc(s.divisionsCount)}</td>
           <td>${esc(handicapText)}</td>
-          <td class="cfg-cell">${cfgCell}</td>
+          <td class="cfg-cell" data-series-id="${esc(s.id)}">${cfgCell}</td>
         </tr>`;
     }).join('');
+
+    // Fire pursuit probes in parallel for the non-MYC-TCF series. Each
+    // arrival updates its row's Configure cell independently — the table
+    // doesn't have to wait for the slowest series.
+    const toProbe = series.filter(s => s.defaultHandicap !== requiredHandicapId);
+    let probeRemaining = toProbe.length;
+    let probePursuitCount = 0;
+    const updateStateText = () => {
+      const done = toProbe.length - probeRemaining;
+      const inflight = probeRemaining > 0 ? ` (${done}/${toProbe.length} probed)` : '';
+      state.textContent =
+        series.length + ' series at club ' + r.body.clubId +
+        ' — ' + eligibleCount + ' using handicap ' + handicapLabel(requiredHandicapId) +
+        ' (full editing); ' + probePursuitCount + ' other pursuit series configurable'
+        + inflight + '.';
+    };
+    updateStateText();
+    for (const s of toProbe) {
+      fetchJson('/api/series/' + encodeURIComponent(s.id) + '/is-pursuit')
+        .then(pr => {
+          probeRemaining--;
+          if (pr && pr.ok && pr.body && pr.body.isPursuit) {
+            probePursuitCount++;
+            pursuitSeriesIds.add(Number(s.id));
+            const cell = tbody.querySelector(`.cfg-cell[data-series-id="${CSS.escape(String(s.id))}"]`);
+            if (cell) {
+              cell.innerHTML = cfgBtnFor(s);
+              const btn = cell.querySelector('.cfg-btn');
+              if (btn) btn.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                openConfigurePanel(btn.getAttribute('data-series-id'),
+                                    btn.getAttribute('data-series-name'));
+              });
+            }
+          }
+          updateStateText();
+        })
+        .catch(() => { probeRemaining--; updateStateText(); });
+    }
 
     // Clicking a row navigates to its races — but clicks landing on the
     // Configure button should open the configure panel instead. We bind to
