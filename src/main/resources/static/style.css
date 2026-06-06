@@ -5,7 +5,7 @@ h2 { margin-top: 1.5rem; margin-bottom: 0.5rem; border-bottom: 1px solid #ccc; p
 button { font-family: monospace; padding: 3px 10px; cursor: pointer; }
 button.primary { background: #2255aa; color: #fff; border: 1px solid #1d4790; padding: 5px 16px; font-weight: bold; }
 button.primary:hover:not(:disabled) { background: #1d4790; }
-button:disabled { opacity: 0.6; cursor: wait; }
+button:disabled { opacity: 0.6; cursor: default; }
 
 /* TCF input — sized for exactly "0.0000" in monospace. The number spinner is
    suppressed so the box doesn't need extra room for it; 0.0001-step typing is
@@ -179,7 +179,7 @@ th.sortable .sort-marker { color: #888; margin-left: 0.3em; font-size: 0.85em; }
 /* Inline publish/unpublish tickboxes in the status grid */
 .vis-toggle { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
 .vis-toggle input[type=checkbox] { cursor: pointer; }
-.vis-toggle input[type=checkbox]:disabled { cursor: wait; }
+.vis-toggle input[type=checkbox]:disabled { cursor: default; }
 
 /* Skeleton placeholder used while status cells on the Races page are
    awaiting their /api/races/{id}/status fetch. Faded text with a subtle

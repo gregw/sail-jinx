@@ -427,6 +427,57 @@ public class SailSysClient
     }
 
     /**
+     * GET /races/{raceId}/results/penalties/complete — race-scoped catalogue
+     * of penalty definitions (DNC, DNF, DNS, DSQ, ABD, AVG, ...). The
+     * companion PUT (below) takes a body referencing two of these by full
+     * object — typically the DNF entry as {@code nonFinisherPenalty} and
+     * the DNC entry as {@code nonStartersPenalty}.
+     */
+    public JsonNode fetchRacePenaltiesComplete(String sessionToken, int raceId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/results/penalties/complete", sessionToken)
+                .method(HttpMethod.GET),
+            "fetchRacePenaltiesComplete", null);
+        return root.path("data");
+    }
+
+    /**
+     * PUT /races/{raceId}/results/penalties/complete — the actual "process
+     * results" trigger used by SailSys's own UI. Unlike {@code /check}
+     * (which is a no-op on a published race), this works regardless of
+     * publish state: the race transitions to {@code resultStatus=1}
+     * (Hidden, pending recalc) briefly, then SailSys recalculates and
+     * restores the original publish state (Final/Provisional) on its own.
+     *
+     * <p>Body shape (verified via HAR):
+     * <pre>{@code
+     *   {
+     *     "nonFinisherPenalty": {<full DNF penalty entry from GET above>},
+     *     "nonStartersPenalty": {<full DNC penalty entry from GET above>}
+     *   }
+     * }</pre>
+     *
+     * <p>The two entries tell SailSys which penalties to apply by default
+     * to non-finishers and non-starters during the recalc.
+     *
+     * <p>Returns the updated race status; callers should poll
+     * {@link #fetchRaceStatus} until {@code requiresResultCalculation} is
+     * false before reading {@link #fetchRaceResults}.
+     */
+    public JsonNode putRacePenaltiesComplete(String sessionToken, int raceId, JsonNode body) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/results/penalties/complete", sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", body.toString())),
+            "putRacePenaltiesComplete", null);
+        return root.path("data");
+    }
+
+    /**
      * PUT /races/{raceId}/results/status/{N}?notify=false — publish or
      * un-publish the computed results. The path {@code N} maps to the
      * user-visible state, not directly to the {@code resultStatus} field on

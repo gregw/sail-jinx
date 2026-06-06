@@ -23,11 +23,30 @@ public record RaceTcfSnapshot(
     Instant savedAt,
     Source source,
     String sourceRaceId,
+    Integer sourceRaceNumber,
     List<TcfEntry> tcfs)
 {
     public enum Source { PROCESS_HANDICAPS, MANUAL_EDIT }
 
+    /**
+     * A boat's TCF in this snapshot. {@code value} is always quantised to
+     * 4 decimal places using truncation (SailSys's observed behaviour:
+     * pushing {@code 0.9287868} to its bulk-handicap endpoint stores
+     * {@code 0.9287}, not {@code 0.9288}). Storing full-precision doubles
+     * would make the snapshot perpetually diverge from what SailSys echoes
+     * back, so the mismatch banner would never clear. The compact
+     * constructor enforces this on every construction path: Process
+     * Handicaps (engine's full-precision newTcf), manual edit (UI's
+     * 4-decimal input), and JSON deserialisation (legacy on-disk files
+     * with full-precision values get truncated on read).
+     */
     public record TcfEntry(String boatId, double value, int spinnakerType)
     {
+        public TcfEntry
+        {
+            value = java.math.BigDecimal.valueOf(value)
+                .setScale(4, java.math.RoundingMode.DOWN)
+                .doubleValue();
+        }
     }
 }

@@ -1,1 +1,9 @@
 
+The handicaps adjustments are now being saved to sailsys, but that is happening automatically when the race is viewed.
+Saves to sailsys should not be automatic.
+When a race is loaded and it is noticed that the local handicaps for that race are different from the sailsys handicaps, then
+the SAVE/RESET panel should be displayed. It should have a message saying why depending on the circumstances:
+ + if we have just navigated to the current race, then the message is about how there are unsaved handicaps adjustments that need to be saved.
+ + if we on a race before the current race, the message should say that historic TLCs are being displayed and that they should only
+   be saved if the race is to be reprocessed.
+As a further safeguard the [process results] button should not disabled if the race data is dirty (not saved).

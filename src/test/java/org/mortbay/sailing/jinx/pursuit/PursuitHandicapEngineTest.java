@@ -84,14 +84,20 @@ class PursuitHandicapEngineTest
     }
 
     /**
-     * Spec §6.4 long-race rule. The worked-example fleet has median elapsed
-     * ≈102.5 min, idealRaceLength = 90, so {@code ratio = 102.5/90 > 1}
-     * ⇒ {@code winner_factor = 0}. The 1st-place finisher's penalty stands
-     * with no give-back, and the entire penalty pool is redistributed to the
-     * boats that finished behind, weighted by their gap from the winner.
+     * Spec §6.3: every participating boat picks up reward proportional to
+     * its own elapsed^γ — no special "winner anchor" treatment. The
+     * 1st-place finisher gets a small share because their elapsed is the
+     * smallest; the back of the fleet picks up larger shares because
+     * their elapsed (or DNF effective elapsed) is larger.
+     *
+     * <p>Worked-example fleet @ tTarget=90, ideal=90, gamma=0.5:
+     * weights = √elapsed = √[85,90,95,100,105,110,115,120(dnf)]
+     *         ≈ [9.220, 9.487, 9.747, 10.000, 10.247, 10.488, 10.724, 10.954]
+     * Σweights ≈ 80.867; pool = 5+4+3+2+1 = 15.
+     * p1 reward = 15 × 9.220 / 80.867 ≈ 1.711.
      */
     @Test
-    void longRaceWinnerGetsZeroRedistribution()
+    void winnerRewardScalesWithOwnElapsed()
     {
         List<Boat> boats = workedExampleFleet();
         Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
@@ -103,43 +109,8 @@ class PursuitHandicapEngineTest
             .findFirst().orElseThrow();
 
         assertThat(first.penaltyMinutes(), closeTo(5.0, TOLERANCE));
-        assertThat(first.rewardMinutes(), closeTo(0.0, TOLERANCE));
-        assertThat(first.netAdjustmentMinutes(), closeTo(5.0, TOLERANCE));
-    }
-
-    /**
-     * Spec §6.4 short-race rule. When the actual median elapsed time is well
-     * below {@code idealRaceLength}, the winner is allotted
-     * {@code winner_factor × P / N}, where {@code winner_factor} ramps from 0
-     * (at median = ideal) up to 0.5 (at median ≤ 2/3 × ideal). For
-     * {@code idealRaceLength = 90} and a fleet finishing under 60 min,
-     * {@code wf = 0.5}, so a 1st-place reward is {@code 0.5 × 15 / 8 ≈ 0.9375}.
-     */
-    @Test
-    void shortRaceWinnerGetsHalfOfEvenShare()
-    {
-        List<Boat> boats = workedExampleFleet();
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            60, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
-        // Tight finishers under 60 min so median < 2/3 × 90 → wf saturates at 0.5.
-        LocalTime start = LocalTime.of(18, 0);
-        Map<String, Result> results = Map.of(
-            "p1", fin("p1", start, start.plusMinutes(40)),
-            "p2", fin("p2", start, start.plusMinutes(45)),
-            "p3", fin("p3", start, start.plusMinutes(50)),
-            "p4", fin("p4", start, start.plusMinutes(55)),
-            "p5", fin("p5", start, start.plusMinutes(58)),
-            "p6", fin("p6", start, start.plusMinutes(59)),
-            "p7", fin("p7", start, start.plusMinutes(60)),
-            "dnf", new Result("dnf", FinishStatus.DNF, start, null, null));
-
-        Adjustment first = engine.processResults(boats, race, results).stream()
-            .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
-            .findFirst().orElseThrow();
-
-        // wf × P / N = 0.5 × 15 / 8 = 0.9375
-        assertThat(first.rewardMinutes(), closeTo(0.9375, TOLERANCE));
-        assertThat(first.netAdjustmentMinutes(), closeTo(5.0 - 0.9375, TOLERANCE));
+        assertThat(first.rewardMinutes(), closeTo(1.711, TOLERANCE));
+        assertThat(first.netAdjustmentMinutes(), closeTo(3.289, TOLERANCE));
     }
 
     /**
@@ -225,11 +196,12 @@ class PursuitHandicapEngineTest
      * <p>Worked example fleet: 7 finishers @ 85,90,…,115 min + 1 DNF, all
      * TCF=1.0. With V₀ = 6.0 kn, median over finishers' inferred
      * D_i = TCF × V₀ × E/60 (i.e. 8.5,9.0,9.5,10.0,10.5,11.0,11.5) is
-     * 10.0 nm. The median elapsed (102.5 min) is above idealRaceLength=90,
-     * so winner_factor=0 ⇒ p1 keeps the full +5 min penalty:
+     * 10.0 nm. p1 gets reward ≈ 1.711 (see {@link #winnerRewardScalesWithOwnElapsed}),
+     * so net = 5 − 1.711 = 3.289:
      * <pre>
-     *   newTcf = 1.0 / (1 − 1.0 × 5.0 × 6.0 / (60 × 10.0))
-     *          = 1.0 / (1 − 0.05) ≈ 1.0526
+     *   tMinutesPerUnitTcf = 60 × 10.0 / 6.0 = 100
+     *   newTcf = 1.0 / (1 − 3.289 × 1.0 / 100)
+     *          = 1.0 / (1 − 0.03289) ≈ 1.0340
      * </pre>
      */
     @Test
@@ -249,7 +221,7 @@ class PursuitHandicapEngineTest
             .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
             .findFirst().orElseThrow();
 
-        assertThat(p1.newTcf(), closeTo(1.0526, 0.0005));
+        assertThat(p1.newTcf(), closeTo(1.0340, 0.0005));
     }
 
     /**
@@ -318,40 +290,6 @@ class PursuitHandicapEngineTest
         assertThat(byId.get("ocs").penaltyMinutes(),   closeTo(3.0, TOLERANCE));
     }
 
-    /**
-     * Spec §6.3: when finishPosition is supplied, the boat with position 1 is
-     * the "winner" for gap-based redistribution. An OCS boat with shorter raw
-     * elapsed must NOT become the winner; its gap is clamped to 0 (it sailed
-     * "ahead of" the winner only because of the early start), so it earns no
-     * share of the redistributed pool.
-     */
-    @Test
-    void winnerForGapIsFirstPlaceNotMinElapsed()
-    {
-        List<Boat> boats = List.of(
-            new Boat("first",  "First",  "1", "d", "Div", 1.0),
-            new Boat("ocs",    "OcsBoat", "2", "d", "Div", 1.0),
-            new Boat("back",   "Back",   "3", "d", "Div", 1.0));
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            60, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
-        LocalTime start = LocalTime.of(18, 0);
-        // OCS boat sailed 40 min (shortest), official 1st was 50, back was 70.
-        // Short race (median = 50 = 0.556 × ideal=90, winnerFactor saturates
-        // at 0.5). 3 finishers ⇒ pool = 5+4+3 = 12. reward_winner = 0.5 × 12 / 3 = 2.0.
-        Map<String, Result> results = Map.of(
-            "first", new Result("first", FinishStatus.FIN, start, start.plusMinutes(50), null, 1),
-            "ocs",   new Result("ocs",   FinishStatus.FIN, start, start.plusMinutes(40), null, 3),
-            "back",  new Result("back",  FinishStatus.FIN, start, start.plusMinutes(70), null, 2));
-
-        Map<String, Adjustment> byId = engine.processResults(boats, race, results).stream()
-            .collect(Collectors.toMap(Adjustment::boatId, a -> a));
-
-        // First-place boat is the winner: gets winner_factor × P/N reward.
-        assertThat(byId.get("first").rewardMinutes(), closeTo(2.0, TOLERANCE));
-        // OCS boat had shorter raw elapsed than 1st but is not the winner;
-        // its gap clamps to 0 → zero reward from the gap distribution.
-        assertThat(byId.get("ocs").rewardMinutes(), closeTo(0.0, TOLERANCE));
-    }
 
     // --- Worked example fixture (§6.5) — 7 finishers + 1 DNF, all with TCF = 1.0
     // so τᵢ is uniform and elapsed times alone drive the rankings. ---

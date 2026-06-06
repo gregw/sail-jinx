@@ -161,56 +161,23 @@ public class PursuitHandicapEngine implements HandicapEngine
         // §6.1 — penalty pool actually awarded.
         double pool = participants.stream().mapToDouble(Participant::penalty).sum();
 
-        // §6.2 — winner_factor scales the fastest-finisher's reward by race
-        //   length. The penalty pool is no longer flat-distributed by
-        //   elapsed^γ: in a long race the winner already absorbed the
-        //   penalty through the long elapsed time, so the give-back to 1st
-        //   place ramps from 0.5 × even-share (median ≤ 2/3 × ideal) down
-        //   to 0 (median ≥ ideal):
-        //     ratio = median_elapsed / idealRaceLength
-        //     winner_factor = clamp(1.5 × (1 − ratio), 0, 0.5)
-        //   The remaining pool is then distributed among the non-winners
-        //   weighted by (e_i − e_winner)^γ — close-behind boats get tiny
-        //   shares, the back of the fleet gets the most.
-        double medianElapsed = participants.isEmpty()
-            ? 0.0
-            : median(participants.stream().map(Participant::elapsed).toList());
-        double ratio = medianElapsed / config.idealRaceLength();
-        double winnerFactor = Math.max(0.0, Math.min(0.5, 1.5 * (1.0 - ratio)));
-
-        // §6.3 — γ exponent shapes the gap-weighted redistribution.
+        // §6.3 — γ exponent and weighted rewards. Every participating boat
+        // is weighted by its own elapsed^γ — boats that spent longer on
+        // the course pick up a larger share of the pool. No "winner"
+        // anchor: in pursuit the position-1 boat is the SLOWEST in
+        // elapsed terms (it got the biggest head start), so an
+        // (elapsed − e_winner) gap formula would invert the intended
+        // behaviour and concentrate the pool on a single boat. The
+        // simple elapsed^γ weighting works for both scratch (fastest
+        // = smallest elapsed = smallest share) and pursuit (front of
+        // fleet = smallest elapsed = smallest share, by definition of
+        // how pursuit start offsets are computed).
         double gamma = (double) tTarget / (tTarget + config.idealRaceLength());
-
-        // Identify the winner — boat with finishPosition == 1 when supplied,
-        // else min-elapsed. The winner's elapsed anchors the gap formula:
-        // gapᵢ = max(0, eᵢ − eWinner) so an OCS boat (smaller raw elapsed
-        // than the official 1st place) gets gap clamped to 0 and no reward
-        // from the redistribution. Ties for 1st split rWinnerEach.
-        Participant winner = participants.stream()
-            .filter(p -> p.position() != null && p.position() == 1)
-            .findFirst()
-            .orElse(participants.stream()
-                .min(Comparator.comparingDouble(Participant::elapsed))
-                .orElse(null));
-        double eWinner = (winner != null) ? winner.elapsed() : 0.0;
-        int numWinners = 0;
-        for (Participant p : participants)
-            if (p.elapsed() == eWinner) numWinners++;
-
-        double rWinnerEach = (participants.isEmpty())
-            ? 0.0
-            : winnerFactor * pool / participants.size();
-        double remaining = pool - rWinnerEach * numWinners;
-
-        // Gap-weighted weights for the non-winners (winners get 0 here).
-        // Negative gaps (an OCS-like boat finishing physically earlier than
-        // the official winner) clamp to 0 — they don't deserve a reward.
         double[] weights = new double[participants.size()];
         double weightSum = 0.0;
         for (int i = 0; i < participants.size(); i++)
         {
-            double gap = participants.get(i).elapsed() - eWinner;
-            weights[i] = (gap > 0) ? Math.pow(gap, gamma) : 0.0;
+            weights[i] = Math.pow(participants.get(i).elapsed(), gamma);
             weightSum += weights[i];
         }
 
@@ -255,22 +222,10 @@ public class PursuitHandicapEngine implements HandicapEngine
         }
 
         List<Adjustment> adjustments = new ArrayList<>(boats.size());
-        // Degenerate case: every participant tied at e_winner ⇒ weightSum=0.
-        // Distribute `remaining` evenly across the non-winners so the pool
-        // doesn't silently vanish.
-        int numNonWinners = participants.size() - numWinners;
-        double evenSplitNonWinner = (weightSum == 0.0 && numNonWinners > 0)
-            ? remaining / numNonWinners : 0.0;
         for (int i = 0; i < participants.size(); i++)
         {
             Participant p = participants.get(i);
-            double reward;
-            if (p.elapsed() == eWinner)
-                reward = rWinnerEach;
-            else if (weightSum > 0)
-                reward = remaining * weights[i] / weightSum;
-            else
-                reward = evenSplitNonWinner;
+            double reward = weightSum > 0 ? pool * weights[i] / weightSum : 0.0;
             double net = p.penalty() - reward;
             double oldTcf = p.boat().currentTcf();
             double denom = 1.0 - net * oldTcf / tMinutesPerUnitTcf;

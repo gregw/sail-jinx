@@ -159,13 +159,12 @@
   // Local per-race TCF snapshot — see wiki §6 "Local TCF history". When a
   // snapshot exists, currentTcf() prefers it over the SailSys-supplied
   // currentHandicaps[].value (so a past race keeps its historical TCFs
-  // even after SailSys overwrites for a later race). On the EARLIEST
-  // UNPROCESSED race in the series we also surface a Push/Reset banner
+  // even after SailSys overwrites for a later race). On a race that hasn't
+  // been processed yet (isCurrentRace) we also surface a Push/Reset banner
   // when the snapshot diverges from SailSys.
   let snapshotTcf = new Map();      // boatId(string) -> Number
   let sailsysTcf = new Map();       // boatId(string) -> Number (from entrants)
-  let snapshotMeta = null;          // {savedAt, source, sourceRaceId} or null
-  let isEarliestUnprocessedRace = false;  // gates the mismatch banner
+  let snapshotMeta = null;          // {savedAt, source, sourceRaceId, sourceRaceNumber} or null
 
   // SailSys calibration (V₀) used by the engine to convert each boat's net
   // adjustment minutes into a new TCF. Loaded once on page load via
@@ -2085,6 +2084,10 @@
     if (nowDirty !== lastDirtyState) {
       lastDirtyState = nowDirty;
       renderEntrants();
+      // The controls panel gates Process Handicaps on isAnyDirty() — repaint
+      // it so the button flips between enabled and "SAVE the pending edits
+      // first" as the user edits and saves.
+      renderControls();
     }
   }
 
@@ -2375,40 +2378,46 @@
     // Gate Process Handicaps on a saved calibration: the engine projects
     // TCFs using V₀, so without a calibration we have nothing to compute
     // with. Surface that explicitly rather than silently producing wrong
-    // TCFs.
+    // TCFs. Also gate on dirty state — running Process Handicaps over
+    // un-saved local edits would compute against state SailSys hasn't seen,
+    // and the resulting next-race TCFs would be quietly inconsistent.
     const haveCalibration = currentCalibration && currentCalibration.v0Knots > 0;
-    const procDisabled = haveCalibration ? '' : ' disabled';
+    const dirtyForHandicaps = isAnyDirty();
+    const procDisabled = (!haveCalibration || dirtyForHandicaps) ? ' disabled' : '';
     const v0Note = haveCalibration ? ` (V₀ = ${currentCalibration.v0Knots.toFixed(3)} kn)` : '';
     const procHint = !haveCalibration
       ? 'Calibrate SailSys first — Process Handicaps needs V₀.'
-      : (admin && isOurHandicap)
-        ? `Compute next-race TCFs from this race's results${v0Note}.`
-        : !isOurHandicap
-          ? `Compute Jinx adjustments for review only — this series isn't scored against MYC TCF, so Save is disabled${v0Note}.`
-          : `Compute Jinx adjustments for review only — Save to SailSys requires an admin login${v0Note}.`;
+      : dirtyForHandicaps
+        ? 'SAVE the pending edits first, then Process Handicaps.'
+        : (admin && isOurHandicap)
+          ? `Compute next-race TCFs from this race's results${v0Note}.`
+          : !isOurHandicap
+            ? `Compute Jinx adjustments for review only — this series isn't scored against MYC TCF, so Save is disabled${v0Note}.`
+            : `Compute Jinx adjustments for review only — Save to SailSys requires an admin login${v0Note}.`;
     const saveButtonHtml = (admin && isOurHandicap)
       ? `<button id="ctrl-save-handicaps" type="button"${saveDisabled}>${esc(saveLabel)}</button>`
       : '';
-    const handicapsHtml = (resultsReady && isPursuit)
-      ? `<div class="controls-row">
-           <button id="ctrl-handicaps" class="primary" type="button"${procDisabled}>Process Handicaps</button>
-           ${saveButtonHtml}
-           <span style="color:#888;">${esc(procHint)}</span>
-         </div>`
-      : '';
 
-    // Calibrate — admin probe to discover how SailSys converts (courseLength,
-    // TCF) into per-boat start-time offsets. Pursuit + our-handicap only:
-    // for non-pursuit races SailSys doesn't stagger, and for other-handicap
-    // series we have no use for the formula. Runs in the background and
-    // refreshes the page state when done.
-    const calibrateHtml = (admin && isPursuit && isOurHandicap)
-      ? `<div class="controls-row">
+      // Calibrate — admin probe to discover how SailSys converts (courseLength,
+      // TCF) into per-boat start-time offsets. Pursuit + our-handicap only:
+      // for non-pursuit races SailSys doesn't stagger, and for other-handicap
+      // series we have no use for the formula. Runs in the background and
+      // refreshes the page state when done.
+      const calibrateHtml = (admin && isPursuit && isOurHandicap)
+          ? `<div class="controls-row">
            <button id="ctrl-calibrate" type="button"
                    title="Probe SailSys's TCF → start-offset formula (admin only, ~1-2 min)">
              Calibrate
            </button>
            <span style="color:#888;">Discover SailSys's TCF→start-offset formula. Mutates start times briefly, then restores.</span>
+         </div>`
+          : '';
+
+    const handicapsHtml = (resultsReady && isPursuit)
+      ? `<div class="controls-row">
+           <button id="ctrl-handicaps" class="primary" type="button"${procDisabled}>Process Handicaps</button>
+           ${saveButtonHtml}
+           <span style="color:#888;">${esc(procHint)}</span>
          </div>`
       : '';
 
@@ -2427,7 +2436,7 @@
         <label>Duty boat:
           <select id="ctrl-duty-boat">` + dutyOptions.join('') + `</select>
         </label>
-      </div>` + handicapsHtml + calibrateHtml;
+      </div>` + calibrateHtml + handicapsHtml ;
     const procBtn = document.getElementById('ctrl-process');
     if (procBtn) procBtn.onclick = doProcess;
     const calBtn = document.getElementById('ctrl-calibrate');
@@ -2652,12 +2661,18 @@
   // Reset (DELETE /tcf-snapshot + reload). Hidden when snapshot matches or
   // when we're not on the gating race.
   function snapshotDiffersFromSailsys() {
-    const ids = new Set([...snapshotTcf.keys(), ...sailsysTcf.keys()]);
-    for (const id of ids) {
-      const a = snapshotTcf.has(id) ? snapshotTcf.get(id) : null;
-      const b = sailsysTcf.has(id)  ? sailsysTcf.get(id)  : null;
-      if (a == null || b == null) return true;
-      if (Math.abs(a - b) > 1e-6) return true;
+    // Iterate the snapshot only — it represents "what we want SailSys to
+    // have for these boats". Boats present in sailsysTcf but absent from
+    // the snapshot are either DNC for the source race (PROCESS_HANDICAPS
+    // skips them) or unrelated entries; either way the snapshot makes no
+    // claim about them, so they must NOT count as a divergence (otherwise
+    // the banner sticks forever after a successful push). A snapshot boat
+    // that no longer appears in this race's sailsys entrants is also
+    // skipped — we can't push a TCF for a boat that isn't entered.
+    for (const [id, snapVal] of snapshotTcf) {
+      const sailVal = sailsysTcf.get(id);
+      if (sailVal == null) continue;
+      if (Math.abs(snapVal - sailVal) > 1e-6) return true;
     }
     return false;
   }
@@ -2666,21 +2681,34 @@
     const el = document.getElementById('tcf-mismatch-banner');
     if (!el) return;
     const hasSnapshot = snapshotTcf.size > 0;
-    const show = isEarliestUnprocessedRace && hasSnapshot && snapshotDiffersFromSailsys();
+    const show = hasSnapshot && snapshotDiffersFromSailsys();
     if (!show) { el.style.display = 'none'; return; }
     const m = snapshotMeta || {};
-    const srcLabel = m.source === 'PROCESS_HANDICAPS'
-      ? ('Process Handicaps on race ' + (m.sourceRaceId || '?'))
-      : (m.source === 'MANUAL_EDIT' ? 'Manual edit' : 'Local snapshot');
-    const when = m.savedAt ? new Date(m.savedAt).toLocaleString() : '';
     const admin = (typeof isAdmin === 'function') && isAdmin();
-    el.innerHTML =
-      '<strong>Local TCFs differ from SailSys.</strong> '
-      + 'Source: ' + esc(srcLabel) + (when ? ', saved ' + esc(when) : '') + '. '
-      + (admin
-        ? '<button id="tcf-push-btn" class="primary" type="button" style="margin-left:0.6rem;">Push to SailSys</button>'
-          + '<button id="tcf-reset-btn" type="button" style="margin-left:0.4rem;">Reset to SailSys</button>'
-        : '<em>Sign in as an admin to push or reset.</em>');
+    // Branch on snapshot source. A PROCESS_HANDICAPS snapshot is the
+    // expected output of Save Handicaps on the previous race — we name
+    // that race so the admin knows what they're looking at. Anything
+    // else (MANUAL_EDIT, or an unknown provenance) gets the generic
+    // "Local Handicaps differ" message.
+    let lead;
+    if (m.source === 'PROCESS_HANDICAPS') {
+      const sourceRace = (m.sourceRaceNumber != null)
+        ? ('race ' + m.sourceRaceNumber)
+        : (m.sourceRaceId ? ('race ' + m.sourceRaceId) : 'the previous race');
+      lead = '<strong>Adjusted Handicaps after ' + esc(sourceRace) + ' are displayed.</strong> '
+        + 'Press SAVE to use them in this race, else press RESET to revert to '
+        + 'the TCFs currently in SailSys.';
+    } else {
+      lead = '<strong>Local Handicaps are different from SailSys.</strong> '
+        + 'Press SAVE to use them in this race, else press RESET to revert to '
+        + 'the TCFs currently in SailSys.';
+    }
+    const adminButtons = '<button id="tcf-push-btn" class="primary" type="button" style="margin-left:0.6rem;">SAVE</button>'
+      + '<button id="tcf-reset-btn" type="button" style="margin-left:0.4rem;">RESET</button>';
+    const nonAdminButtons = '<button class="primary" type="button" disabled style="margin-left:0.6rem;" title="Admin sign-in required">SAVE</button>'
+      + '<button type="button" disabled style="margin-left:0.4rem;" title="Admin sign-in required">RESET</button>'
+      + ' <em style="color:#666;">Sign in as an admin to save or reset.</em>';
+    el.innerHTML = lead + (admin ? adminButtons : nonAdminButtons);
     el.style.display = '';
     if (admin) {
       document.getElementById('tcf-push-btn').addEventListener('click', doPushHandicaps);
@@ -2855,13 +2883,16 @@
     renderEntrantsHead();
     renderEntrants();
     renderControls();
-    const tMsg = r.body.targetElapsedMinutes
-      ? (' (target elapsed ' + r.body.targetElapsedMinutes + ' min)')
-      : '';
+    const ideal = r.body.config && r.body.config.idealRaceLength;
+    const tMsg = (r.body.targetElapsedMinutes && ideal)
+      ? (' (mean elapsed ' + r.body.targetElapsedMinutes + ' min vs ideal ' + ideal + ' min)')
+      : (r.body.targetElapsedMinutes
+          ? (' (mean elapsed ' + r.body.targetElapsedMinutes + ' min)')
+          : '');
     ctrlMsg('banner-ok',
-      'Computed ' + list.length + ' Jinx adjustment' + (list.length === 1 ? '' : 's')
-      + tMsg + '. Hover the Next Start column for the breakdown. '
-      + 'Press Save Handicaps to persist locally.');
+      'Computed ' + list.length + ' handicap adjustment' + (list.length === 1 ? '' : 's')
+      + tMsg + '. Hover the [Adjustment] column for the breakdown. '
+      + 'Press [Save Handicaps] to persist locally.');
   }
 
   // Save Handicaps — persist the currently-displayed adjustments locally
@@ -3171,10 +3202,11 @@
       }
       summary.textContent = 'Saving ' + updates.length + ' TCF update'
         + (updates.length === 1 ? '' : 's') + '...';
-      // Bulk: writes a local snapshot (source=MANUAL_EDIT) then immediately
-      // pushes to SailSys in one PUT /races/{id}/handicaps — replaces the
-      // old per-boat loop. seriesId rides along so the server doesn't have
-      // to round-trip to look it up.
+      // Writes a local snapshot (source=MANUAL_EDIT). The push to SailSys
+      // is NOT automatic — the SAVE/RESET banner that surfaces after this
+      // call (snapshot now diverges from SailSys's entrants payload) is the
+      // confirmation step before publishing. seriesId rides along so the
+      // server can persist context alongside the snapshot.
       const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/save-tcfs',
         { updates, seriesId: seriesIdForSave });
       if (!r.ok) {
@@ -3183,8 +3215,14 @@
       } else {
         const saved = (r.body && r.body.saved) || updates.length;
         messages.push('Saved ' + saved + ' TCF update'
-          + (saved === 1 ? '' : 's') + ' to SailSys.');
+          + (saved === 1 ? '' : 's') + ' locally — press SAVE on the '
+          + 'banner below the entrants table to publish to SailSys.');
         dirtyTcf.clear();
+        // Persist the cleared dirtyTcf so a later navigation back to this
+        // race doesn't rehydrate the now-saved values as fresh edits — the
+        // values would just match SailSys, masking any newer snapshot
+        // (e.g. one written by Process Handicaps on the previous race).
+        sessionSaveForm();
       }
     }
 
@@ -3278,10 +3316,40 @@
     state.textContent = messages.join(' ');
 
     // Refresh TCFs from server only if any TCFs were saved (cheap re-fetch).
+    // Also re-fetch the local TCF snapshot so the SAVE/RESET mismatch banner
+    // can surface — /save-tcfs writes the snapshot locally but does NOT push
+    // to SailSys, so on success the snapshot diverges from the entrants
+    // payload and the banner should appear.
     if (dirtyTcf.size === 0 && messages.some(m => m.startsWith('Saved') && m.includes('TCF'))) {
       await loadEntrants();
+      await refreshTcfSnapshot();
+      renderTcfMismatchBanner();
     }
     updateSaveBar();
+  }
+
+  // Re-fetches the local TCF snapshot and updates snapshotTcf + snapshotMeta
+  // in place. Used after a /save-tcfs write so the banner can show without a
+  // full page reload.
+  async function refreshTcfSnapshot() {
+    const r = await fetchJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/tcf-snapshot');
+    snapshotTcf = new Map();
+    snapshotMeta = null;
+    if (r && r.ok && r.body && r.body.snapshot) {
+      const snap = r.body.snapshot;
+      snapshotMeta = {
+        savedAt: snap.savedAt || null,
+        source: snap.source || null,
+        sourceRaceId: snap.sourceRaceId || null,
+        sourceRaceNumber: (snap.sourceRaceNumber != null) ? snap.sourceRaceNumber : null
+      };
+      if (Array.isArray(snap.tcfs)) {
+        for (const t of snap.tcfs) {
+          if (t && t.boatId != null && t.value != null)
+            snapshotTcf.set(String(t.boatId), Number(t.value));
+        }
+      }
+    }
   }
 
   function snapshotTimes(saved) {
@@ -3562,7 +3630,8 @@
       snapshotMeta = {
         savedAt: snap.savedAt || null,
         source: snap.source || null,
-        sourceRaceId: snap.sourceRaceId || null
+        sourceRaceId: snap.sourceRaceId || null,
+        sourceRaceNumber: (snap.sourceRaceNumber != null) ? snap.sourceRaceNumber : null
       };
       if (Array.isArray(snap.tcfs)) {
         for (const t of snap.tcfs) {
@@ -3671,17 +3740,6 @@
     document.getElementById('entrants-count').textContent = '(' + entrantData.length + ')';
     document.getElementById('race-entrants').style.display = '';
 
-    // Resolve the series's earliest-unprocessed race so the mismatch banner
-    // only fires on the right page. Fired here (post-status) because we need
-    // seriesIdForSave, which renderStatus populates. Failure is non-fatal —
-    // banner just stays hidden.
-    if (seriesIdForSave) {
-      try {
-        const curR = await fetchJson('/api/series/' + encodeURIComponent(seriesIdForSave) + '/current-race');
-        isEarliestUnprocessedRace = !!(curR && curR.ok && curR.body
-          && String(curR.body.raceId) === String(raceIdGlobal));
-      } catch (e) { isEarliestUnprocessedRace = false; }
-    }
     renderTcfMismatchBanner();
 
     // Hide-DNC filter: editable-only; the Came column isn't shown in read-only
