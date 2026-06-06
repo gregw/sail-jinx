@@ -1,0 +1,17 @@
+# sail-jinx configuration.
+
+sailsys:
+  clubId: 23                  # MYC
+  seriesId: 5699              # 2026 Winter Twilight Series — change each season
+  handicapDefinitionId: 15    # MYC TCF
+  timezone: "Australia/Sydney"
+  timezoneOffset: 10          # 11 when daylight saving is in effect
+
+algorithm:
+  penaltyList: [6, 4, 2 ]
+  idealRaceLength: 90         # minutes
+  dnfAllowance: 5             # minutes added to slowest finisher
+  earliestStart: "18:00"
+
+server:
+  port: 8080

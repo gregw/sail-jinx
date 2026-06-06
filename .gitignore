@@ -28,8 +28,5 @@ target/
 .idea/
 *.iml
 
-# Local configuration with credentials (never commit)
-data/config/config.yaml
-
 # Local JSON store
 data/store/

@@ -15,9 +15,6 @@ import org.slf4j.LoggerFactory;
 /**
  * Root configuration loaded from {@code data/config/config.yaml} at startup.
  * Credentials, series IDs, algorithm parameters and the server port live here.
- * <p>
- * The file is never committed: a {@code config.example.yaml} ships with the project
- * and the operator copies it locally to inject credentials.
  */
 public record JinxConfig(
     SailSys sailsys,
