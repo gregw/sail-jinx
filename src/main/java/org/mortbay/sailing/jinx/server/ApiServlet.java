@@ -1225,25 +1225,24 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
-     * Save per-division actual start times to SailSys for a non-pursuit race.
-     * Body: {@code {starts: {"<divisionId>": "HH:MM:SS", ...}}}.
+     * Save per-division start times (and, for pursuit races, course lengths)
+     * to SailSys. This is the persist-only path used by the main Save button
+     * for both race types. Body:
+     * {@code {divisions: {"<divisionId>": {startTimeLocal: "HH:MM", courseLength?: n}, ...}}}.
+     * The legacy {@code {starts: {"<divisionId>": "HH:MM:SS"}}} shape is also
+     * accepted (see {@link #divisionsFromBody}).
      *
-     * <p>SailSys models a scratch start's gun time as
-     * {@code divisionTiming[i].startTimeLocal}; there is no separate
-     * scheduled-vs-actual concept. So "save the actual gun time" means
-     * "overwrite the existing startTimeLocal" via the same PUT
-     * {@code /races/{id}/timing} endpoint used elsewhere. Steps:
-     * <ol>
-     *   <li>GET status to read the current divisionTiming (template) and the
-     *       race date.</li>
-     *   <li>For each divisionId in the request body, mutate that division's
-     *       startTimeLocal to {@code raceDate + 'T' + HH:MM:SS + '.000'} and
-     *       recompute startTimeUtc by preserving the existing
-     *       local→UTC offset (typical SailSys clients don't always update
-     *       UTC consistently — recomputing keeps the two in sync).</li>
-     *   <li>PUT the whole divisionTiming array.</li>
-     *   <li>Return the fresh status so the client can refresh the panel.</li>
-     * </ol>
+     * <p>For a scratch start the {@code startTimeLocal} is the division's
+     * allocated gun time; for a pursuit race it is the division's earliest
+     * start, and {@code courseLength} configures the staggering. SailSys has no
+     * separate scheduled-vs-actual concept — both live on
+     * {@code divisionTiming[i]}, written via PUT {@code /races/{id}/timing}.
+     * Steps: GET status for the current divisionTiming template, apply the
+     * per-division patch ({@link #patchDivisionTiming}), PUT the whole array,
+     * then return the fresh status so the client can refresh the panel. No
+     * polling — a successful PUT triggers SailSys-side processing, but the
+     * caller doesn't wait for the staggered sheet here (that's
+     * {@link #handleProcessRace}).
      */
     private void handleDivisionStarts(HttpServletRequest req, HttpServletResponse resp, int raceId)
         throws Exception
@@ -1256,11 +1255,11 @@ public class ApiServlet extends HttpServlet
             return;
         }
         JsonNode body = MAPPER.readTree(req.getInputStream());
-        JsonNode starts = body.path("starts");
-        if (!starts.isObject() || starts.isEmpty())
+        ObjectNode divisions = divisionsFromBody(body);
+        if (divisions.isEmpty())
         {
             resp.setStatus(400);
-            writeJson(resp, Map.of("error", "starts object required"));
+            writeJson(resp, Map.of("error", "divisions (or starts) object required"));
             return;
         }
 
@@ -1273,31 +1272,7 @@ public class ApiServlet extends HttpServlet
             return;
         }
 
-        JsonNode patched = divisionTiming.deepCopy();
-        java.util.Iterator<String> it = starts.fieldNames();
-        while (it.hasNext())
-        {
-            String divIdStr = it.next();
-            String hhmmss = starts.path(divIdStr).asText("");
-            if (hhmmss.isEmpty()) continue;
-            int divId;
-            try { divId = Integer.parseInt(divIdStr); }
-            catch (NumberFormatException e) { continue; }
-
-            for (JsonNode dt : patched)
-            {
-                if (!(dt instanceof ObjectNode on)) continue;
-                if (on.path("divisionId").asInt() != divId) continue;
-                String origLocal = on.path("startTimeLocal").asText("");
-                String origUtc = on.path("startTimeUtc").asText("");
-                String newLocal = replaceTimePortion(origLocal, hhmmss);
-                String newUtc = recomputeUtc(origLocal, origUtc, newLocal);
-                on.put("startTimeLocal", newLocal);
-                on.put("startTimeUtc", newUtc);
-                break;
-            }
-        }
-
+        ArrayNode patched = patchDivisionTiming(divisionTiming, divisions);
         sailsys.setRaceTiming(session.token(), raceId, patched);
         // Refetch so the client sees the post-PUT state — including the new
         // startTimeLocal values that just landed.
@@ -1384,6 +1359,82 @@ public class ApiServlet extends HttpServlet
      * suffix shape. Returns the input unchanged if it doesn't have the
      * expected structure.
      */
+    /**
+     * Patch a {@code divisionTiming} array (the SailSys /status / /timing shape)
+     * from a per-division {@code divisions} object:
+     * {@code {"<divisionId>": {startTimeLocal?: "HH:MM", courseLength?: number}}}.
+     *
+     * <p>For each referenced division: when {@code startTimeLocal} is a
+     * non-empty string the division's {@code startTimeLocal} is rewritten with
+     * the new time portion ({@link #replaceTimePortion}, which accepts both
+     * {@code HH:MM} and {@code HH:MM:SS}) and {@code startTimeUtc} is recomputed
+     * preserving the original local→UTC offset; when {@code courseLength} is a
+     * number it overwrites the division's course length. All other fields, and
+     * any division not named in {@code divisions}, are preserved verbatim — the
+     * whole array is what gets PUT back to SailSys, which rejects partial or
+     * altered entries.
+     *
+     * <p>Operates on a deep copy; the input array is never mutated.
+     */
+    /**
+     * Normalise a request body into the unified {@code divisions} object
+     * consumed by {@link #patchDivisionTiming}. Accepts the new
+     * {@code {divisions: {"<id>": {startTimeLocal, courseLength}}}} shape and
+     * the legacy {@code {starts: {"<id>": "HH:MM:SS"}}} shape (converted to
+     * {@code {"<id>": {startTimeLocal: "HH:MM:SS"}}}). Returns an empty object
+     * when neither is present.
+     */
+    static ObjectNode divisionsFromBody(JsonNode body)
+    {
+        JsonNode divisions = body.path("divisions");
+        if (divisions.isObject() && !divisions.isEmpty()) return (ObjectNode) divisions;
+        JsonNode starts = body.path("starts");
+        ObjectNode out = MAPPER.createObjectNode();
+        if (starts.isObject())
+        {
+            java.util.Iterator<String> it = starts.fieldNames();
+            while (it.hasNext())
+            {
+                String id = it.next();
+                String hhmmss = starts.path(id).asText("");
+                if (!hhmmss.isEmpty()) out.putObject(id).put("startTimeLocal", hhmmss);
+            }
+        }
+        return out;
+    }
+
+    static ArrayNode patchDivisionTiming(JsonNode divisionTiming, JsonNode divisions)
+    {
+        ArrayNode patched = (ArrayNode) divisionTiming.deepCopy();
+        java.util.Iterator<String> it = divisions.fieldNames();
+        while (it.hasNext())
+        {
+            String divIdStr = it.next();
+            int divId;
+            try { divId = Integer.parseInt(divIdStr); }
+            catch (NumberFormatException e) { continue; }
+            JsonNode spec = divisions.path(divIdStr);
+            for (JsonNode dt : patched)
+            {
+                if (!(dt instanceof ObjectNode on)) continue;
+                if (on.path("divisionId").asInt() != divId) continue;
+                JsonNode start = spec.path("startTimeLocal");
+                if (start.isTextual() && !start.asText().isEmpty())
+                {
+                    String origLocal = on.path("startTimeLocal").asText("");
+                    String origUtc = on.path("startTimeUtc").asText("");
+                    String newLocal = replaceTimePortion(origLocal, start.asText());
+                    on.put("startTimeLocal", newLocal);
+                    on.put("startTimeUtc", recomputeUtc(origLocal, origUtc, newLocal));
+                }
+                JsonNode course = spec.path("courseLength");
+                if (course.isNumber()) on.put("courseLength", course.asDouble());
+                break;
+            }
+        }
+        return patched;
+    }
+
     private static String replaceTimePortion(String iso, String hhmmss)
     {
         if (iso == null) return null;
@@ -1441,12 +1492,18 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
-     * Set course length and trigger start-time processing. Body:
-     * {@code {courseLength: number}}. Implementation:
+     * Save per-division earliest start + course length and wait for SailSys to
+     * (re)stagger. This is the "Process start times" path for pursuit races —
+     * it does the same persist as {@link #handleDivisionStarts} (so the Process
+     * button is a save-if-dirty + process in one call) and then polls for the
+     * staggered sheet. Body:
+     * {@code {divisions: {"<divisionId>": {startTimeLocal: "HH:MM", courseLength: n}}}}.
+     * The legacy {@code {courseLength: n}} shape (one length applied to every
+     * division, start times untouched) is still accepted. Implementation:
      * <ol>
-     *   <li>Fetch the race status to get the current divisionTiming.</li>
-     *   <li>Patch courseLength on every division (MYC Twilight has one).</li>
-     *   <li>PUT it back, which kicks off SailSys-side processing.</li>
+     *   <li>Fetch the race status to get the current divisionTiming template.</li>
+     *   <li>Apply the per-division patch ({@link #patchDivisionTiming}).</li>
+     *   <li>PUT it back, which kicks off SailSys-side staggering.</li>
      *   <li>Poll status until handicapAndStartTimeProcessingStatus leaves 1
      *       (= "processing"), up to a 30 s deadline.</li>
      *   <li>Return the final status to the client so the UI can refresh.</li>
@@ -1463,13 +1520,14 @@ public class ApiServlet extends HttpServlet
             return;
         }
         JsonNode body = MAPPER.readTree(req.getInputStream());
-        if (body.path("courseLength").isMissingNode() || body.path("courseLength").isNull())
+        ObjectNode divisions = divisionsFromBody(body);
+        boolean legacyGlobalCourse = divisions.isEmpty() && body.path("courseLength").isNumber();
+        if (divisions.isEmpty() && !legacyGlobalCourse)
         {
             resp.setStatus(400);
-            writeJson(resp, Map.of("error", "courseLength required"));
+            writeJson(resp, Map.of("error", "divisions object required"));
             return;
         }
-        double courseLength = body.path("courseLength").asDouble();
 
         JsonNode status = sailsys.fetchRaceStatus(session.token(), raceId);
         JsonNode divisionTiming = status.path("divisionTiming");
@@ -1479,11 +1537,20 @@ public class ApiServlet extends HttpServlet
             writeJson(resp, Map.of("error", "race has no divisionTiming yet"));
             return;
         }
-        // Mutate courseLength on a copy so we don't alter the cached node.
-        JsonNode patched = divisionTiming.deepCopy();
-        for (JsonNode dt : patched)
+        ArrayNode patched;
+        if (legacyGlobalCourse)
         {
-            if (dt instanceof ObjectNode on) on.put("courseLength", courseLength);
+            // Apply one course length to every division (start times untouched).
+            double courseLength = body.path("courseLength").asDouble();
+            ObjectNode all = MAPPER.createObjectNode();
+            for (JsonNode dt : divisionTiming)
+                all.putObject(String.valueOf(dt.path("divisionId").asInt()))
+                    .put("courseLength", courseLength);
+            patched = patchDivisionTiming(divisionTiming, all);
+        }
+        else
+        {
+            patched = patchDivisionTiming(divisionTiming, divisions);
         }
 
         sailsys.setRaceTiming(session.token(), raceId, patched);
@@ -1506,7 +1573,6 @@ public class ApiServlet extends HttpServlet
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("ok", !timedOut);
         out.put("raceId", raceId);
-        out.put("courseLength", courseLength);
         out.put("status", finalStatus);
         if (timedOut) out.put("error", "Processing still in progress after 30s — try refreshing in a moment.");
         writeJson(resp, out);

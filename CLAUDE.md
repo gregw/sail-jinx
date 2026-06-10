@@ -20,7 +20,12 @@ application has grown into a general SailSys-companion results UI:
   table.
 - The race page no longer takes any edit-mode URL flags. The page is
   always editable subject to gates; live-timing affordances (NOW buttons,
-  NOW log) appear automatically when the race's `resultStatus < 2`.
+  NOW log) appear automatically while the race is "current" — i.e. not yet
+  fully published. A race stops being current only once its entrants AND its
+  results are published (`raceEntrantVisibility === 1` and `resultStatus >= 3`).
+  This deliberately avoids the sticky `resultStatus` field, which SailSys never
+  resets below 2 once a race has been processed (even after results are
+  deleted).
 
 Architectural pluggability is preserved:
 

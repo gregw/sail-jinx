@@ -163,6 +163,33 @@ th.sortable .sort-marker { color: #888; margin-left: 0.3em; font-size: 0.85em; }
 .status-grid dt { color: #555; }
 .status-grid dd { margin: 0; font-weight: bold; }
 
+/* Race status box — fixed-height readouts (race type / processing / results
+   source / dirty) plus a reserved message line, so the layout never jumps as
+   the status text or operation feedback changes. */
+#status-box {
+  border: 1px solid #ccc; border-radius: 4px;
+  background: #fafafa;
+  padding: 0.6rem 0.9rem;
+  margin: 0.5rem 0 1rem;
+}
+#status-box .status-grid { margin: 0; }
+/* Reserved-height operation message line. Sized for the tallest content
+   (a line of text plus the 8px .progress bar) and overflow-hidden so a long
+   message can't push the layout around. The banner-* colour class (added by
+   ctrlMsg alongside .status-msg-text) supplies the background/border/colour;
+   when empty it's just blank reserved space. */
+#status-msg {
+  min-height: 2.6rem;
+  margin-top: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.9em;
+  overflow: hidden;
+}
+
+/* Ordered workflow controls panel below the status box. */
+#workflow { margin-bottom: 1rem; }
+
 /* Forms */
 .form-row { display: grid; grid-template-columns: 8em 1fr; gap: 0.4rem 0.8rem; max-width: 28em; margin: 0.5rem 0; }
 .form-row input { font-family: monospace; padding: 3px 6px; }
