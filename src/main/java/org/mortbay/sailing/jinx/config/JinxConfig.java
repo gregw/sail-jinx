@@ -84,7 +84,7 @@ public record JinxConfig(
      * can be converted to local time using {@link SailSys#timezone()}.
      */
     public record Algorithm(
-        @JsonProperty("penaltyList") List<Integer> penaltyList,
+        @JsonProperty("penaltyList") List<Double> penaltyList,
         @JsonProperty("idealRaceLength") int idealRaceLength,
         @JsonProperty("dnfAllowance") int dnfAllowance,
         @JsonProperty("earliestStart") String earliestStart,
@@ -95,7 +95,7 @@ public record JinxConfig(
         public Algorithm
         {
             if (penaltyList == null || penaltyList.isEmpty())
-                penaltyList = List.of(5, 4, 3, 2, 1);
+                penaltyList = List.of(5.0, 4.0, 3.0, 2.0, 1.0);
             if (idealRaceLength <= 0)
                 idealRaceLength = 90;
             if (dnfAllowance <= 0)

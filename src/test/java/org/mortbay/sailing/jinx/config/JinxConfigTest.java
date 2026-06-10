@@ -43,7 +43,7 @@ class JinxConfigTest
 
         assertThat(config.sailsys().clubId(), equalTo(23));
         assertThat(config.sailsys().timezoneOffset(), equalTo(11));
-        assertThat(config.algorithm().penaltyList(), contains(6, 4, 2));
+        assertThat(config.algorithm().penaltyList(), contains(6.0, 4.0, 2.0));
         assertThat(config.algorithm().idealRaceLength(), equalTo(75));
         assertThat(config.algorithm().dnfAllowance(), equalTo(7));
         assertThat(config.algorithm().earliestStart(), equalTo("17:45"));
@@ -51,6 +51,24 @@ class JinxConfigTest
         assertThat(config.algorithm().longitude(), closeTo(150.9876, 1e-9));
         assertThat(config.algorithm().limitBySunset(), is(true));
         assertThat(config.server().port(), equalTo(9090));
+    }
+
+    @Test
+    void fractionalPenaltiesArePreserved(@TempDir Path tmp) throws IOException
+    {
+        Path file = tmp.resolve("config.yaml");
+        Files.writeString(file, """
+            sailsys:
+              clubId: 23
+            algorithm:
+              penaltyList: [5, 4, 3, 2, 1, 0.5, 0.25]
+            server: {}
+            """);
+
+        JinxConfig config = JinxConfig.load(file);
+
+        assertThat(config.algorithm().penaltyList(),
+            contains(5.0, 4.0, 3.0, 2.0, 1.0, 0.5, 0.25));
     }
 
     @Test
@@ -72,7 +90,7 @@ class JinxConfigTest
         assertThat(config.sailsys().timezoneOffset(), equalTo(10));
 
         // Algorithm defaults (from wiki §10)
-        assertThat(config.algorithm().penaltyList(), equalTo(List.of(5, 4, 3, 2, 1)));
+        assertThat(config.algorithm().penaltyList(), equalTo(List.of(5.0, 4.0, 3.0, 2.0, 1.0)));
         assertThat(config.algorithm().idealRaceLength(), equalTo(90));
         assertThat(config.algorithm().dnfAllowance(), equalTo(5));
         assertThat(config.algorithm().earliestStart(), equalTo("18:00"));

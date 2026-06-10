@@ -196,13 +196,13 @@ class JsonStoreTest
         JsonStore first = new JsonStore(tmp);
         first.start();
         first.putSeriesConfig("5699",
-            new JinxConfig.Algorithm(List.of(7, 5, 3, 1), 75, 4, "17:30",
+            new JinxConfig.Algorithm(List.of(7.0, 5.0, 3.0, 1.0), 75, 4, "17:30",
                 -34.5678, 150.4321, true));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
         JinxConfig.Algorithm read = reopened.seriesConfig("5699");
-        assertThat(read.penaltyList(), contains(7, 5, 3, 1));
+        assertThat(read.penaltyList(), contains(7.0, 5.0, 3.0, 1.0));
         assertThat(read.idealRaceLength(), equalTo(75));
         assertThat(read.dnfAllowance(), equalTo(4));
         assertThat(read.earliestStart(), equalTo("17:30"));

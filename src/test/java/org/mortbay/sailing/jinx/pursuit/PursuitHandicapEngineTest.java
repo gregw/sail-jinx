@@ -32,7 +32,7 @@ import static org.hamcrest.Matchers.hasSize;
 class PursuitHandicapEngineTest
 {
     private static final JinxConfig.Algorithm DEFAULT_ALG = new JinxConfig.Algorithm(
-        List.of(5, 4, 3, 2, 1), 90, 5, "18:00", -33.8000, 151.2833, false);
+        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 5, "18:00", -33.8000, 151.2833, false);
 
     private static final double TOLERANCE = 0.01;
 

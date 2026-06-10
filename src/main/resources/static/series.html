@@ -43,7 +43,7 @@
     <div id="cfg-state"></div>
     <div class="form-row" style="max-width: 32em;">
       <label for="cfg-penalty-list">Penalty list</label>
-      <input id="cfg-penalty-list" type="text" placeholder="6, 4, 2">
+      <input id="cfg-penalty-list" type="text" placeholder="5, 4, 3, 2, 1, 0.5, 0.25">
 
       <label for="cfg-ideal">Ideal race length (min)</label>
       <input id="cfg-ideal" type="number" min="1" step="1">
@@ -255,14 +255,15 @@
   }
 
   function readForm() {
-    // Penalty list is parsed from a comma/space-separated string of ints.
-    // Anything that doesn't parse as an integer is silently dropped, which
+    // Penalty list is parsed from a comma/space-separated string of numbers.
+    // Fractional penalties are allowed (e.g. 5, 4, 3, 2, 1, 0.5, 0.25).
+    // Anything that doesn't parse as a number is silently dropped, which
     // matches the "trust the user, validate at boundaries" tradeoff — the
     // server-side canonical constructor re-defaults to a safe value if the
     // resulting list comes back empty.
     const tokens = (cfgPenalty.value || '').split(/[,\s]+/).filter(t => t.length);
     const penaltyList = tokens
-      .map(t => parseInt(t, 10))
+      .map(t => parseFloat(t))
       .filter(n => !Number.isNaN(n));
     // Lat/long: parseFloat on blank → NaN. Send null in that case so the
     // server-side canonical constructor backfills the MYC default.

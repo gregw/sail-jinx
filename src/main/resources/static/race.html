@@ -884,18 +884,24 @@
   }
 
   // Derive the Jinx FinishStatus (FIN / DNF / DNS / DNC / DSQ / RET) from the
-  // local flags. AVG (duty boat) and any of DNC/DNS map to non-participating;
-  // an entrant flagged DNF participates with frozen finish. DSQ is not auto-
-  // flagged by the UI today, but is honoured if it ever lands here. The
-  // server-side engine itself does the FIN/DNF/DSQ/DNC/DNS partitioning, so
-  // accuracy here only affects what we *send*.
+  // entrant's EFFECTIVE flag set — the same set the Flags column shows, i.e.
+  // SailSys ∪ auto-from-times ∪ manual additions \ manual removals. Reading
+  // the bare auto-from-times flags here would drop both SailSys-supplied and
+  // RO-added DNF/RET flags, so a boat the RO has marked DNF would be sent as
+  // DNS/FIN and silently fall into the engine's excluded branch (no
+  // dnfAllowance redistribution — wiki §5). DNF/RET are checked before DNS so
+  // an explicit DNF/RET override wins over an auto-derived DNS (came, no
+  // finish, no captured actual start). AVG (duty boat) maps to non-
+  // participating. The server-side engine does the final FIN/DNF/RET/DSQ/DNC/
+  // DNS partitioning; accuracy here only affects what we *send*.
   function jinxStatusForEntrant(entrant) {
-    const flags = flagsForEntrant(entrant);
+    const flags = effectiveFlagsForEntrant(entrant);
     if (flags.includes('AVG')) return 'DNC';
     if (flags.includes('DSQ')) return 'DSQ';
     if (flags.includes('DNC')) return 'DNC';
-    if (flags.includes('DNS')) return 'DNS';
+    if (flags.includes('RET')) return 'RET';
     if (flags.includes('DNF')) return 'DNF';
+    if (flags.includes('DNS')) return 'DNS';
     return 'FIN';
   }
 
@@ -914,6 +920,15 @@
   // render via recomputePlaces() so cell `get`s are cheap map lookups.
   let placeMap = new Map();     // boatId -> 1-based place (finish order)
 
+  // SailSys-authoritative tie-corrected places, keyed by boatId, for the
+  // currently selected handicap. SailSys reports a tie via equal points
+  // (e.g. two boats sharing 1st each score 1.5) but still hands back distinct
+  // raw `placing.place` ordinals (1 and 2). Showing those ordinals would
+  // render a tie as "1" and "2"; the sailing convention is that tied boats
+  // share the better place ("=1, =1, 3"). We collapse here so the Place
+  // column can show the tie. Recomputed alongside placeMap.
+  let sailsysPlaceMap = new Map();
+
   // Compute the local placeMap using whichever sort key the Handicap
   // selector currently says (per wiki §5.1):
   //   `pursuit` → scored_finish_time
@@ -930,6 +945,10 @@
   // last resort).
   function recomputePlaces() {
     placeMap = new Map();
+    // SailSys tie correction applies whether or not the table is editable
+    // (read-only past races still show SailSys places), so compute it before
+    // the local-only placeMap bails out for non-editable views.
+    recomputeSailsysPlaces();
     if (!IS_EDITABLE) return;
     const EXCLUDED = isPursuit
       ? new Set(['AVG', 'DNC', 'DNS', 'DNF'])
@@ -970,6 +989,40 @@
         placeMap.set(x.id, currentPlace);
       });
     }
+  }
+
+  // Tie-correct the SailSys-supplied places for the selected handicap. SailSys
+  // signals a tie via equal points but keeps distinct raw `place` ordinals, so
+  // tied boats must be collapsed to share the better (lowest) of the ordinals
+  // they occupy. We group by division (places are scored per division) and,
+  // within a division, by exact points value — equal points is SailSys's own
+  // tie signal — taking the minimum raw place across the group as the shared
+  // displayed place. Boats without a SailSys place under this handicap (no
+  // result, or a no-place flag) are skipped; the Place column falls through to
+  // its raw value / local placeMap for those.
+  function recomputeSailsysPlaces() {
+    sailsysPlaceMap = new Map();
+    if (!isResultsClean()) return;
+    const key = String(selectedHandicap);
+    // divKey -> (points -> {minPlace, ids:[]})
+    const byDivision = new Map();
+    for (const e of entrantData) {
+      const id = String(e.boat && e.boat.id);
+      const bh = sailsysResults[id] && sailsysResults[id].byHandicap
+        && sailsysResults[id].byHandicap[key];
+      if (!bh || bh.place == null || bh.points == null) continue;
+      const divKey = String((e.division && e.division.id) != null ? e.division.id : '');
+      if (!byDivision.has(divKey)) byDivision.set(divKey, new Map());
+      const groups = byDivision.get(divKey);
+      if (!groups.has(bh.points)) groups.set(bh.points, { minPlace: bh.place, ids: [] });
+      const g = groups.get(bh.points);
+      if (bh.place < g.minPlace) g.minPlace = bh.place;
+      g.ids.push(id);
+    }
+    for (const groups of byDivision.values())
+      for (const g of groups.values())
+        for (const id of g.ids)
+          sailsysPlaceMap.set(id, g.minPlace);
   }
 
   // Columns. `get` returns a sort-friendly value; `render` (optional) returns
@@ -1138,6 +1191,9 @@
           const r = sailsysResults[id];
           const bh = r && r.byHandicap
             && r.byHandicap[String(selectedHandicap)];
+          // Prefer the tie-corrected place (collapses SailSys's distinct
+          // ordinals for boats sharing points); fall back to the raw place.
+          if (sailsysPlaceMap.has(id)) return sailsysPlaceMap.get(id);
           if (bh && bh.place != null) return bh.place;
         }
         const p = placeMap.get(id);
