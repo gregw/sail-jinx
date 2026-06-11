@@ -2948,6 +2948,8 @@
     for (const d of s.divisionTiming) {
       if (!d || d.divisionId == null) continue;
       const divId = d.divisionId;
+      // Skip divisions with no entrants — there's nothing to start.
+      if (divisionBoatIds(divId).length === 0) continue;
       const name = d.divisionName || ('Div ' + divId);
       const sched = divisionScheduledStart(divId) || '';
       const start = (divisionStartsMap.get(String(divId)) || sched || '');

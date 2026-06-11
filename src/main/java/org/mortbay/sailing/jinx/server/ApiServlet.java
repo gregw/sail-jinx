@@ -131,6 +131,13 @@ public class ApiServlet extends HttpServlet
     private final java.util.Map<Integer, Map<String, Map<String, String>>> handicapDefsCache
         = new java.util.concurrent.ConcurrentHashMap<>();
 
+    // In-memory cache of per-series pursuit determination, keyed by seriesId.
+    // A series's race type is fixed (Twilight = all pursuit, Championship = all
+    // scratch), so the first probe settles it; every later series-page load
+    // reads the cached answer instead of re-hitting SailSys.
+    private final java.util.Map<Integer, Boolean> pursuitCache
+        = new java.util.concurrent.ConcurrentHashMap<>();
+
     public ApiServlet(JinxConfig config, JsonStore store, SailSysClient sailsys, HandicapEngine engine)
     {
         this.config = config;
@@ -540,6 +547,16 @@ public class ApiServlet extends HttpServlet
      * on the race-list summaries is always 0 so it can't substitute.
      */
     private boolean seriesHasPursuit(String token, int seriesId)
+    {
+        Boolean cached = pursuitCache.get(seriesId);
+        if (cached != null)
+            return cached;
+        boolean result = computeSeriesHasPursuit(token, seriesId);
+        pursuitCache.put(seriesId, result);
+        return result;
+    }
+
+    private boolean computeSeriesHasPursuit(String token, int seriesId)
     {
         try
         {
