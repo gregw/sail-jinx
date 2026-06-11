@@ -1152,23 +1152,25 @@
           + checked + disabled + '>';
       }},
     { key: 'actualStart', label: 'Actual<br/>Start',
-      editableOnly: true, now: true,
+      editableOnly: true,
       get: e => getTimes(e.boat && e.boat.id).actualStart || '',
       render: (e) => {
         const id = e.boat && e.boat.id;
         const t = getTimes(id);
         if (resultsPublished) return esc(t.actualStart || '');
         const disabled = t.came ? '' : ' disabled';
-        const nowBtn = isCurrentRace
-          ? ('<button type="button" class="now-btn" data-boat-id="' + esc(id) + '"'
-             + ' data-field="actualStart"' + disabled + '>NOW</button>')
-          : '';
         return '<input type="text" class="time-input" placeholder="HH:MM:SS"'
           + ' data-boat-id="' + esc(id) + '" data-field="actualStart"'
-          + ' value="' + esc(t.actualStart || '') + '"' + disabled + '>'
-          + nowBtn;
+          + ' value="' + esc(t.actualStart || '') + '"' + disabled + '>';
       }},
-    { key: 'finish',  label: 'Actual<br/>Finish', now: true,
+    // NOW button for Actual Start, in its own column so the header NOW button
+    // sits directly above this column of per-row buttons. See nowButtonCell
+    // and the `c.nowField` handling in activeCols / renderEntrantsHead.
+    { key: 'actualStartNow', label: '', nowField: 'actualStart',
+      editableOnly: true, sortable: false, cellClass: 'now-col',
+      get: () => '',
+      render: (e) => nowButtonCell(e, 'actualStart') },
+    { key: 'finish',  label: 'Actual<br/>Finish',
       get: e => {
         if (IS_EDITABLE) return getTimes(e.boat && e.boat.id).finish || '';
         return e.finishTimeLocal || '';
@@ -1182,15 +1184,15 @@
         // Results published → finish is locked (read-only).
         if (resultsPublished) return esc(t.finish || e.finishTimeLocal || '');
         const disabled = t.came ? '' : ' disabled';
-        const nowBtn = isCurrentRace
-          ? ('<button type="button" class="now-btn" data-boat-id="' + esc(id) + '"'
-             + ' data-field="finish"' + disabled + '>NOW</button>')
-          : '';
         return '<input type="text" class="time-input" placeholder="HH:MM:SS"'
           + ' data-boat-id="' + esc(id) + '" data-field="finish"'
-          + ' value="' + esc(t.finish || '') + '"' + disabled + '>'
-          + nowBtn;
+          + ' value="' + esc(t.finish || '') + '"' + disabled + '>';
       }},
+    // NOW button for Actual Finish, in its own column (see actualStartNow).
+    { key: 'finishNow', label: '', nowField: 'finish',
+      sortable: false, cellClass: 'now-col',
+      get: () => '',
+      render: (e) => nowButtonCell(e, 'finish') },
     // Late: actualStart minus allocated start, in seconds. Negative = early
     // (and OCS-flagged elsewhere). Empty when the boat has no recorded
     // actualStart. The `get` returns a Number so sorting is numeric; render
@@ -1372,6 +1374,15 @@
       // per-division Start panel in the status grid replaces them.
       if (!isPursuit && (c.key === 'start' || c.key === 'actualStart' || c.key === 'late'))
         return false;
+      // NOW-button columns mirror their time column: they only exist while the
+      // race is live and results aren't yet locked (the only time a NOW button
+      // does anything), and the actualStart NOW column follows actualStart in
+      // being pursuit-only. Hidden entirely otherwise, so the header NOW button
+      // sits directly above its column of per-row buttons.
+      if (c.nowField) {
+        if (!(isCurrentRace && !resultsPublished)) return false;
+        if (!isPursuit && c.nowField === 'actualStart') return false;
+      }
       // Next Start column only shows once the Jinx algorithm has produced
       // adjustments — populated by the Process Handicaps button or
       // restored on load from /api/races/{id}/pending-handicaps.
@@ -1899,6 +1910,19 @@
     });
   }
 
+  // Renders the per-row NOW button that lives in a dedicated column beside its
+  // time field. Disabled until the boat is marked "came" (same rule the time
+  // input uses). Returns '' when the race isn't live / results are locked —
+  // though activeCols hides the whole column in that case anyway.
+  function nowButtonCell(e, field) {
+    const id = e.boat && e.boat.id;
+    const t = getTimes(id);
+    if (resultsPublished || !isCurrentRace) return '';
+    const disabled = t.came ? '' : ' disabled';
+    return '<button type="button" class="now-btn" data-boat-id="' + esc(id) + '"'
+      + ' data-field="' + field + '"' + disabled + '>NOW</button>';
+  }
+
   function logNow(boatId, field, time) {
     const entrant = entrantData.find(e => String(e.boat && e.boat.id) === String(boatId));
     const sail = entrant && entrant.boat && entrant.boat.sailNumber;
@@ -2381,6 +2405,14 @@
     const head = document.getElementById('entrants-head');
     const cols = activeCols();
     head.innerHTML = cols.map(c => {
+      // A NOW-button column's header is just the matching header NOW button,
+      // sitting directly above its column of per-row buttons. It captures an
+      // unattached, field-typed time into the NOW log (matched to a boat later).
+      if (c.nowField) {
+        return '<th class="now-col" data-key="' + esc(c.key) + '">'
+          + '<button type="button" class="now-btn now-head-btn" data-field="'
+          + esc(c.nowField) + '">NOW</button></th>';
+      }
       const sortable = c.sortable !== false;
       const myKey = sortKeyForCol(c);
       let marker = '';
@@ -2403,17 +2435,9 @@
       if (sortable) classes.push('sortable');
       if (c.cellClass) classes.push(c.cellClass);
       const cls = classes.length ? ' class="' + classes.join(' ') + '"' : '';
-      // Columns flagged `now` carry a per-row NOW button; the header gets a
-      // matching NOW button that captures an unattached, field-typed time
-      // into the NOW log (to be matched to a boat later). Shown under the
-      // same condition the row buttons are: live race, results not yet locked.
-      const nowHead = (c.now && isCurrentRace && !resultsPublished)
-        ? ' <button type="button" class="now-btn now-head-btn" data-field="'
-          + esc(c.key) + '">NOW</button>'
-        : '';
       // c.label may carry literal "<br/>" for multi-line headers — emitted
       // raw, since labels are hard-coded by us. Never use user data here.
-      return '<th' + cls + ' data-key="' + myKey + '">' + c.label + marker + nowHead + '</th>';
+      return '<th' + cls + ' data-key="' + myKey + '">' + c.label + marker + '</th>';
     }).join('');
     head.querySelectorAll('th.sortable').forEach(th => {
       th.onclick = () => applySortClick(th.dataset.key);
