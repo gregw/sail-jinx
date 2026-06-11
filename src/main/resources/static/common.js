@@ -5,7 +5,20 @@ function esc(val) {
   return String(val).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// Count of in-flight requests. While any request to our server (and thus,
+// behind it, SailSys) is outstanding, <body> gets a `busy` class so the page
+// shows a wait cursor — the RO knows to wait rather than re-clicking. A counter
+// (not a boolean) keeps the cursor up until the LAST concurrent request settles.
+let _pendingRequests = 0;
+function setBusy(on) {
+  _pendingRequests = on ? _pendingRequests + 1 : Math.max(0, _pendingRequests - 1);
+  if (typeof document !== 'undefined' && document.body) {
+    document.body.classList.toggle('busy', _pendingRequests > 0);
+  }
+}
+
 async function fetchJson(url, options) {
+  setBusy(true);
   try {
     const resp = await fetch(url, options);
     if (!resp.ok) {
@@ -18,6 +31,8 @@ async function fetchJson(url, options) {
   } catch (e) {
     console.error('fetchJson failed:', url, e);
     return { ok: false, status: 0, error: e };
+  } finally {
+    setBusy(false);
   }
 }
 

@@ -42,6 +42,12 @@
 
 * { box-sizing: border-box; }
 
+/* While a request to the server / SailSys is in flight (toggled by setBusy in
+   common.js), show a wait cursor over the whole page so the RO knows to wait.
+   The `* !important` wins over element-specific cursors (buttons, inputs, drag
+   handles) for the duration. */
+body.busy, body.busy * { cursor: wait !important; }
+
 body {
   font-family: var(--font-ui);
   color: var(--ink);
@@ -85,6 +91,12 @@ button.primary {
 }
 button.primary:hover:not(:disabled) { background: var(--brand-dark); border-color: var(--brand-dark); }
 button:disabled { opacity: 0.55; cursor: default; }
+/* A disabled primary isn't the current next step — drop it to a neutral grey
+   fill so only the actionable primary button reads as "do this now". */
+button.primary:disabled {
+  background: var(--surface-alt); color: var(--muted);
+  border-color: var(--line-strong); box-shadow: none; opacity: 1;
+}
 
 /* TCF input — sized for exactly "0.0000" in monospace. The number spinner is
    suppressed so the box doesn't need extra room for it; 0.0001-step typing is
@@ -169,6 +181,37 @@ th.now-col, td.now-col { text-align: center; padding-left: 4px; padding-right: 4
 .banner-info  { background: var(--info-bg); border-color: var(--info-bd); color: var(--info-fg); }
 .banner-ok    { background: var(--ok-bg);   border-color: var(--ok-bd);   color: var(--ok-fg); }
 
+/* State pills — compact, colour-coded status chips used in the status box
+   readouts (results source, unsaved changes, race-type tags). */
+.pill {
+  display: inline-block; padding: 1px 9px; border-radius: 999px;
+  font-size: 0.82em; font-weight: 600; line-height: 1.5;
+  border: 1px solid transparent;
+}
+.pill-ok    { background: var(--ok-bg);   border-color: var(--ok-bd);   color: var(--ok-fg); }
+.pill-warn  { background: var(--warn-bg); border-color: var(--warn-bd); color: var(--warn-fg); }
+.pill-err   { background: var(--err-bg);  border-color: var(--err-bd);  color: var(--err-fg); }
+.pill-info  { background: var(--info-bg); border-color: var(--info-bd); color: var(--info-fg); }
+.pill-muted { background: var(--surface-alt); border-color: var(--line); color: var(--muted); }
+
+/* Text utilities — replace the scattered inline color/size styles. */
+.muted { color: var(--muted); }
+.hint  { color: var(--muted); font-size: 0.85em; font-weight: normal; }
+
+/* Toolbar above a table: heading on the left, controls pushed to the right,
+   with the same hairline divider the bare <h2> used to carry. */
+.table-toolbar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1rem;
+  margin: 1.75rem 0 0.6rem; padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--line);
+}
+.table-toolbar h2 { margin: 0; padding: 0; border: none; }
+.table-toolbar .toolbar-controls {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 1rem;
+  font-size: 0.85em; color: var(--muted); font-weight: normal;
+}
+.table-toolbar .toolbar-controls label { display: inline-flex; align-items: center; gap: 0.35rem; }
+
 /* Tables — sans-serif with tabular figures so times/numbers stay aligned
    without needing a monospace face. Wrapped in a soft surface card. */
 table {
@@ -186,7 +229,7 @@ td { padding: 6px 10px; border-bottom: 1px solid var(--line); }
 /* Zebra striping for readability. The :not() guards ensure hover, current-race
    highlighting, and the drag ghost still win on rows that match those states. */
 tbody tr:nth-child(even):not(:hover):not(.current-race):not(.dragging) td {
-  background: #fafbfd;
+  background: #e6ebf1;
 }
 tr:hover td { background: var(--accent-soft); }
 
@@ -201,6 +244,16 @@ tr:hover td { background: var(--accent-soft); }
 }
 #entrants-table th:first-child, #races-table th:first-child { border-top-left-radius: var(--radius); }
 #entrants-table th:last-child,  #races-table th:last-child  { border-top-right-radius: var(--radius); }
+
+/* Entrants table header row: a navy band like the SailSys page header. White
+   text, with the sortable hover going a shade darker and the sort marker /
+   pencil-affordance lightened for contrast on the dark background. */
+#entrants-table thead th {
+  background: var(--brand); color: #fff;
+  border-bottom-color: var(--brand-dark);
+}
+#entrants-table th.sortable:hover { background: var(--brand-dark); color: #fff; }
+#entrants-table thead th .sort-marker { color: #cfe0f5; }
 
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: var(--accent-soft); }
@@ -283,22 +336,44 @@ th.sortable .sort-marker { color: var(--accent); margin-left: 0.3em; font-size: 
 .status-grid dt { color: var(--muted); }
 .status-grid dd { margin: 0; font-weight: 600; }
 
-/* Race status box — fixed-height readouts (race type / processing / results
-   source / dirty) plus a reserved message line, so the layout never jumps as
-   the status text or operation feedback changes. */
+/* Status area layout: the readout box and the workflow controls sit side by
+   side on a wide screen and stack on a narrow one, so the race page wastes less
+   vertical space before the entrants table. Pure CSS — renderStatusBox and
+   renderControls populate the two children independently. */
+#status-layout {
+  display: grid;
+  gap: 0.75rem;
+  /* align-items defaults to stretch so the workflow (left) and status box
+     (right) columns share the same height. */
+  grid-template-columns: 1fr;
+  margin: 0.5rem 0 1rem;
+}
+@media (min-width: 760px) {
+  /* Both boxes size to their content: the workflow (actions) on the left at
+     its natural width, the status box immediately to its right (small gap),
+     left-aligned with any leftover space falling to the right. */
+  #status-layout {
+    grid-template-columns: auto auto;
+    justify-content: start;
+  }
+}
+
+/* Race status box — readouts (race type / processing / results source /
+   unsaved) plus a reserved message line, so the layout never jumps as the
+   status text or operation feedback changes. */
 #status-box {
   border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--shadow);
   padding: 0.85rem 1.1rem;
-  margin: 0.5rem 0 1rem;
+  margin: 0;
 }
 #status-box .status-grid { margin: 0; }
-/* Reserved-height operation message line. Sized for the tallest content
-   (a line of text plus the 8px .progress bar) and overflow-hidden so a long
-   message can't push the layout around. */
+/* Reserved-height operation message line: one wrapped line plus the 8px
+   .progress bar. ctrlMsg blanks the class/text when idle, so an empty line is
+   just slim reserved space that doesn't pad the left column. */
 #status-msg {
-  min-height: 2.6rem;
+  min-height: 1.7rem;
   margin-top: 0.6rem;
   padding: 0.35rem 0.55rem;
   border-radius: var(--radius-sm);
@@ -306,8 +381,17 @@ th.sortable .sort-marker { color: var(--accent); margin-left: 0.3em; font-size: 
   overflow: hidden;
 }
 
-/* Ordered workflow controls panel below the status box. */
-#workflow { margin-bottom: 1rem; }
+/* Ordered workflow controls panel (right column / below the status box). */
+#workflow { margin: 0; }
+/* Each numbered step groups its action with its publish control. A hairline
+   divider between steps reinforces the top-to-bottom sequence. */
+.workflow-step { padding: 0.3rem 0 0.5rem; border-top: 1px solid var(--line); }
+.workflow-step:first-child { border-top: none; padding-top: 0; }
+.step-title {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--muted); margin: 0 0 0.15rem;
+}
+.workflow-step .controls-row { margin: 0.2rem 0; }
 
 /* Forms */
 .form-row { display: grid; grid-template-columns: 8em 1fr; gap: 0.5rem 0.8rem; max-width: 28em; margin: 0.5rem 0; }

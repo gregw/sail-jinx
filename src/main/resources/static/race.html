@@ -20,40 +20,46 @@
 <main>
   <h1 id="race-heading">Race</h1>
 
+  <div id="race-nav" style="display:flex; gap:0.4rem; margin-bottom:0.75rem;">
+      <button id="race-prev-btn" type="button" disabled>&larr; Previous race</button>
+      <button id="race-next-btn" type="button" disabled>Next race &rarr;</button>
+  </div>
+
   <section id="race-status" style="display:none;">
-    <!-- Fixed-height status box: readouts (race type, processing, results
-         source, dirty status) + a reserved message line for operation
-         feedback / progress. Fixed height so the layout never jumps as the
-         status text changes. Built by renderStatusBox(). -->
-    <div id="status-box">
-      <dl class="status-grid" id="status-readouts"></dl>
-      <div id="status-msg"></div>
-    </div>
+    <!-- Status area: the readout box and the ordered workflow controls sit
+         side by side on a wide screen and stack on a narrow one (see
+         #status-layout in style.css). -->
+    <div id="status-layout">
+      <!-- Ordered workflow controls (publish entrants, start times / course /
+           process, publish start times, process results / publish results,
+           process handicaps, duty boat) on the left. Built by renderControls(). -->
+      <div id="workflow"></div>
 
-    <!-- Ordered workflow controls (publish entrants, start times / course /
-         process, publish start times, process results / publish results,
-         process handicaps, duty boat). Built by renderControls(). -->
-    <div id="workflow"></div>
-
-    <div id="race-nav" style="display:flex; gap:0.4rem; margin-top:0.5rem;">
-        <button id="race-prev-btn" type="button" disabled>&larr; Previous race</button>
-        <button id="race-next-btn" type="button" disabled>Next race &rarr;</button>
+      <!-- Status box on the right: readouts (race type, processing, results
+           source, unsaved changes) + a reserved message line for operation
+           feedback / progress. Built by renderStatusBox(). -->
+      <div id="status-box">
+        <dl class="status-grid" id="status-readouts"></dl>
+        <div id="status-msg"></div>
+      </div>
     </div>
   </section>
 
   <section id="race-entrants" style="display:none;">
-    <h2>Entrants
-      <span id="entrants-count" style="font-weight: normal; color: #666; font-size: 0.85em;"></span>
-      <label id="handicap-selector-wrap" style="display:none; font-weight: normal; font-size: 0.85em; color: #555; margin-left: 1rem;">
-        Results by: <select id="handicap-selector"></select>
-      </label>
-      <label id="hide-dnc-toggle" style="display:none; font-weight: normal; font-size: 0.85em; color: #555; margin-left: 1rem;">
-        <input type="checkbox" id="hide-dnc"> Hide DNC
-      </label>
-      <label id="show-sailsys-toggle" style="font-weight: normal; font-size: 0.85em; color: #555; margin-left: 1rem;">
-        <input type="checkbox" id="show-sailsys"> Show sailsys
-      </label>
-    </h2>
+    <div class="table-toolbar">
+      <h2>Entrants <span id="entrants-count" class="hint"></span></h2>
+      <div class="toolbar-controls">
+        <label id="handicap-selector-wrap" style="display:none;">
+          Results by: <select id="handicap-selector"></select>
+        </label>
+        <label id="hide-dnc-toggle" style="display:none;">
+          <input type="checkbox" id="hide-dnc"> Hide DNC
+        </label>
+        <label id="show-sailsys-toggle">
+          <input type="checkbox" id="show-sailsys"> Show sailsys
+        </label>
+      </div>
+    </div>
     <div id="tcf-mismatch-banner" class="banner banner-warn" style="display:none;"></div>
     <table id="entrants-table">
       <thead>
@@ -69,8 +75,10 @@
   </section>
 
   <section id="now-log" style="margin-top: 2rem;">
-    <h2>NOW button log <span style="font-weight: normal; color: #888; font-size: 0.85em;">(this session only)</span></h2>
-    <p style="margin: 0 0 0.5rem; color: #666; font-size: 0.9em;">Drag an entry onto any time field to set it.</p>
+    <h2>NOW button log <span class="hint">(this session only)</span>
+      <button id="now-clear-btn" type="button" style="margin-left: 0.75rem; font-size: 0.75rem;" disabled>Clear</button>
+    </h2>
+    <p class="hint" style="margin: 0 0 0.5rem;">Drag an entry onto any time field to set it.</p>
     <ol id="now-log-list"></ol>
   </section>
 </main>
@@ -274,19 +282,15 @@
   // admin can see at a glance whether they still owe SailSys an update.
   function resultsSourceCell() {
     if (isResultsClean()) {
-      return '<span style="color:#155724;font-weight:bold;">'
-        + 'SailSys (authoritative)</span>';
+      return '<span class="pill pill-ok">Showing SailSys results</span>';
     }
     if (isAnyDirty()) {
-      return '<span style="color:#856404;font-weight:bold;">'
-        + 'Local &mdash; pending push to SailSys</span>';
+      return '<span class="pill pill-warn">Showing local (unsaved) results</span>';
     }
     if (currentStatus && currentStatus.requiresResultCalculation) {
-      return '<span style="color:#856404;font-weight:bold;">'
-        + 'Local &mdash; SailSys recalc needed</span>';
+      return '<span class="pill pill-warn">Local &mdash; needs reprocessing</span>';
     }
-    return '<span style="color:#666;">'
-      + 'Local &mdash; never processed</span>';
+    return '<span class="pill pill-muted">Local &mdash; never processed</span>';
   }
 
   // Flag short-names that always mean "this boat doesn't have a finishing
@@ -373,7 +377,13 @@
           byHandicap[key] = { place, points, correctedTime };
         }
         const elapsedTime = it.elapsedTime || null;
-        map[String(boatId)] = { flags, elapsedTime, byHandicap };
+        // Casual entries: SailSys flags them on the result item (observed on
+        // skipper.casualEntry; seriesCasualEntry has also been seen). They get
+        // a real place but score 0 / no series points, so they must not be
+        // tie-collapsed with each other and show "C" rather than a points value.
+        const casual = !!(it.seriesCasualEntry === true
+          || (it.skipper && it.skipper.casualEntry === true));
+        map[String(boatId)] = { flags, elapsedTime, byHandicap, casual };
       }
     }
     return map;
@@ -821,6 +831,35 @@
     return known.concat(unknown);
   }
 
+  // === Abandonment =========================================================
+  // A division is abandoned when SailSys's status carries
+  // divisionTiming[].isAbandoned (set by the pre-processing /divisions/abandon
+  // endpoint), OR — for a race abandoned AFTER results were processed, where
+  // that flag is never set — when every boat in the division carries the ABD
+  // flag (the per-boat mechanism). A race is abandoned when all divisions are.
+  function isDivisionAbandoned(divId) {
+    const dts = (currentStatus && currentStatus.divisionTiming) || [];
+    const dt = dts.find(d => String(d.divisionId) === String(divId));
+    if (dt && dt.isAbandoned === true) return true;
+    const boats = entrantData.filter(e => String(e.division && e.division.id) === String(divId));
+    return boats.length > 0 && boats.every(e => effectiveFlagsForEntrant(e).includes('ABD'));
+  }
+  function abandonedDivisions() {
+    const dts = (currentStatus && currentStatus.divisionTiming) || [];
+    return dts.filter(d => d && d.divisionId != null && isDivisionAbandoned(d.divisionId));
+  }
+  function isRaceAbandoned() {
+    const dts = (currentStatus && currentStatus.divisionTiming) || [];
+    return dts.length > 0 && dts.every(d => isDivisionAbandoned(d.divisionId));
+  }
+  // Abandon is only offered for a division with no finish times — you don't
+  // abandon a race boats have completed.
+  function divisionHasFinishers(divId) {
+    return entrantData.some(e =>
+      String(e.division && e.division.id) === String(divId)
+      && !!getTimes(e.boat && e.boat.id).finish);
+  }
+
   // === Canonical scoring + handicap helpers (wiki §5.1) =====================
   //
   // Order of declaration mirrors the formula sheet — each step only depends
@@ -1086,8 +1125,14 @@
     const byDivision = new Map();
     for (const e of entrantData) {
       const id = String(e.boat && e.boat.id);
-      const bh = sailsysResults[id] && sailsysResults[id].byHandicap
-        && sailsysResults[id].byHandicap[key];
+      const r = sailsysResults[id];
+      // Casual entries score 0 points but hold a real, distinct place. Equal
+      // 0 points is NOT a tie, so they must be excluded from the points-based
+      // tie-collapse below (otherwise several casuals fold onto the lowest of
+      // their places). They keep their raw SailSys place via the Place
+      // column's fallthrough to bh.place.
+      if (r && r.casual) continue;
+      const bh = r && r.byHandicap && r.byHandicap[key];
       if (!bh || bh.place == null || bh.points == null) continue;
       const divKey = String((e.division && e.division.id) != null ? e.division.id : '');
       if (!byDivision.has(divKey)) byDivision.set(divKey, new Map());
@@ -1101,6 +1146,27 @@
       for (const g of groups.values())
         for (const id of g.ids)
           sailsysPlaceMap.set(id, g.minPlace);
+  }
+
+  // The Points cell value when showing SailSys-authoritative results: the
+  // SailSys points for the selected handicap, else the local place number.
+  // Shared by the Points column's get (sort key) and render (display).
+  function sailsysPointsValue(e) {
+    const id = String(e.boat && e.boat.id);
+    if (isResultsClean()) {
+      const r = sailsysResults[id];
+      const bh = r && r.byHandicap && r.byHandicap[String(selectedHandicap)];
+      if (bh && bh.points != null) return bh.points;
+    }
+    const p = placeMap.get(id);
+    return p == null ? '' : p;
+  }
+
+  // A casual entry (per SailSys) only counts as casual while we're showing
+  // SailSys-authoritative results — that's the payload the flag rides on.
+  function isCasualEntry(e) {
+    const id = String(e.boat && e.boat.id);
+    return !!(isResultsClean() && sailsysResults[id] && sailsysResults[id].casual);
   }
 
   // Columns. `get` returns a sort-friendly value; `render` (optional) returns
@@ -1291,16 +1357,14 @@
     // points from SailSys. Otherwise mirror the place number (low-point
     // scoring); blank when no place.
     { key: 'points', label: 'Points',
-      get: e => {
-        const id = String(e.boat && e.boat.id);
-        if (isResultsClean()) {
-          const r = sailsysResults[id];
-          const bh = r && r.byHandicap
-            && r.byHandicap[String(selectedHandicap)];
-          if (bh && bh.points != null) return bh.points;
-        }
-        const p = placeMap.get(id);
-        return p == null ? '' : p;
+      get: e => sailsysPointsValue(e),
+      render: e => {
+        // Casual entries don't score — SailSys shows "-"; we show "C" with a
+        // tooltip so it's distinguishable from a genuine zero/blank.
+        if (isCasualEntry(e))
+          return '<span title="Casual entry — does not score series points">C</span>';
+        const v = sailsysPointsValue(e);
+        return (typeof v === 'number' && isNaN(v)) ? '' : (v == null ? '' : esc(String(v)));
       }},
     // Adjustment: signed Δs (penalty − reward) for this boat in M:SS, as
     // produced by the Jinx algorithm. The next race's start-time
@@ -1943,6 +2007,8 @@
 
   function renderNowLog() {
     const list = document.getElementById('now-log-list');
+    const clearBtn = document.getElementById('now-clear-btn');
+    if (clearBtn) clearBtn.disabled = nowLog.length === 0;
     if (nowLog.length === 0) {
       list.innerHTML = '<li style="color: #888; list-style: none; margin-left: -1.5em;">(no NOW clicks yet)</li>';
       return;
@@ -2140,7 +2206,12 @@
       if (!entrant) return;
       const cells = tr.querySelectorAll('td');
       if (placeCol && cells[placeIdx]) cells[placeIdx].textContent = fmt(placeCol.get(entrant));
-      if (pointsCol && cells[pointsIdx]) cells[pointsIdx].textContent = fmt(pointsCol.get(entrant));
+      // Points may render an HTML "C" for casual entries — use render (not the
+      // numeric get) so the in-place patch matches the full re-render.
+      if (pointsCol && cells[pointsIdx]) {
+        if (pointsCol.render) cells[pointsIdx].innerHTML = pointsCol.render(entrant);
+        else cells[pointsIdx].textContent = fmt(pointsCol.get(entrant));
+      }
     });
   }
 
@@ -2495,15 +2566,25 @@
     isCurrentRace = !!status && !(entrantsPublished && resultsPublished);
     isPursuit = computeIsPursuit(status);
 
-    // Heading: "<date> - <race name> - <series name> (id <seriesId>)".
-    // The raceId stays in the URL; race state now lives in the status box.
+    // Heading: "<date> - <race name> (id <raceId>) - <series name> (id <seriesId>)".
+    // The ids are de-emphasised (.hint); race state lives in the status box.
     const parts = [];
-    if (status && status.dateTime) parts.push(fmtDate(status.dateTime));
-    parts.push((status && status.name) ? status.name : ('Race ' + raceId));
-    if (status && status.seriesName) {
-      parts.push(status.seriesName + (status.seriesId != null ? ' (id ' + status.seriesId + ')' : ''));
+    if (status && status.dateTime) parts.push(esc(fmtDate(status.dateTime)));
+    let namePart = esc((status && status.name) ? status.name : ('Race ' + raceId));
+    if (raceId != null) {
+      namePart += ' <span class="hint">(id ' + esc(raceId) + ')</span>';
     }
-    heading.textContent = parts.join(' - ');
+    parts.push(namePart);
+    if (status && status.seriesName) {
+      let seriesPart = esc(status.seriesName);
+      if (status.seriesId != null) {
+        seriesPart += ' <span class="hint">(id ' + esc(status.seriesId) + ')</span>';
+      }
+      parts.push(seriesPart);
+    }
+    // innerHTML (not textContent) so the series id can be de-emphasised; every
+    // dynamic segment is esc()'d above.
+    heading.innerHTML = parts.join(' - ');
 
     renderStatusBox();
     renderControls();
@@ -2525,7 +2606,18 @@
     // Race type, with a "· MYC TCF" suffix when this race is scored against
     // the handicap definition we manage (the "pursuit-TCF" flavour).
     let raceType = esc(computeRaceTypeLabel(s));
-    if (isOurHandicap) raceType += ' <span style="color:#888;font-weight:normal;">· MYC TCF</span>';
+    if (isOurHandicap) raceType += ' <span class="pill pill-muted">MYC TCF</span>';
+    // Surface abandonment prominently — without this the race reads as a normal
+    // (hidden, all-DNC) race rather than an abandoned one.
+    if (isRaceAbandoned()) {
+      raceType += ' <span class="pill pill-err">Abandoned</span>';
+    } else {
+      const ab = abandonedDivisions();
+      if (ab.length > 0) {
+        const names = ab.map(d => d.divisionName || ('Div ' + d.divisionId)).join(', ');
+        raceType += ' <span class="pill pill-err">' + esc(names) + ' abandoned</span>';
+      }
+    }
 
     // Processing status — start-time staggering and results recalc, the two
     // SailSys-side processing pipelines the RO waits on.
@@ -2534,14 +2626,14 @@
     const reqCalc = !!(s && s.requiresResultCalculation);
     const procParts = [];
     if (isPursuit) procParts.push('start times ' + startProc);
-    procParts.push(reqCalc ? 'results recalc needed' : 'results up to date');
+    procParts.push(reqCalc ? 'results need reprocessing' : 'results up to date');
     const processingHtml = esc(procParts.join(' · '));
 
     const rows = [
       ['Race type', raceType],
       ['Processing', processingHtml],
       ['Results source', resultsSourceCell(), 'results-source-cell'],
-      ['Dirty', dirtyStatusHtml(), 'dirty-status-cell']
+      ['Unsaved', dirtyStatusHtml(), 'dirty-status-cell']
     ];
     readouts.innerHTML = rows.map(r => {
       const k = r[0], v = r[1], ddId = r[2];
@@ -2571,10 +2663,9 @@
     // SailSys and what SAVE / RESET will do.
     if (snapshotDivergent()) reasons.push(snapshotReasonText());
     if (reasons.length === 0) {
-      return '<span style="color:#155724;">clean</span>';
+      return '<span class="pill pill-ok">No unsaved changes</span>';
     }
-    return '<span style="color:#856404;font-weight:bold;">'
-      + esc(reasons.join(', ')) + '</span>';
+    return '<span class="pill pill-warn">' + esc(reasons.join(', ')) + '</span>';
   }
 
   // Human-readable reason for a divergent TCF snapshot, naming the source race
@@ -2669,7 +2760,10 @@
            </label>
          </div>`
       : '';
-    const startGroup = calibrateRow + divisionStartRowsHtml() + processRow + startPublishRow;
+    // Step 2 groups the start-times action(s) with the publish toggle, the way
+    // the Results step already pairs Process results + the publish selector.
+    // For a scratch race this is just the per-division allocated-start inputs.
+    const startStepHtml = calibrateRow + divisionStartRowsHtml() + processRow + startPublishRow;
 
     // --- 3. Process + publish results ----------------------------------------
     // Process Results is always present once there are entrants; greyed when
@@ -2705,6 +2799,21 @@
         ${processResultsBtn}
         <label>Publish results: ${resultsSel}</label>
       </div>`;
+
+    // Per-division Abandon (one-way) — offered only for a division with no
+    // finishers that isn't already abandoned. Sits with Process results.
+    const abandonBtns = (s.divisionTiming || [])
+      .filter(d => d && d.divisionId != null
+        && divisionBoatIds(d.divisionId).length > 0
+        && !isDivisionAbandoned(d.divisionId)
+        && !divisionHasFinishers(d.divisionId))
+      .map(d => {
+        const nm = d.divisionName || ('Div ' + d.divisionId);
+        return '<button type="button" class="ctrl-abandon" data-div-id="' + esc(d.divisionId)
+          + '" title="Mark ' + esc(nm) + ' abandoned in SailSys — cannot be undone.">Abandon '
+          + esc(nm) + '</button>';
+      }).join(' ');
+    const abandonRow = abandonBtns ? `<div class="controls-row">${abandonBtns}</div>` : '';
 
     // --- 4. Process handicaps (pursuit) --------------------------------------
     // Process Handicaps computes the next race's TCF adjustments; Save
@@ -2751,8 +2860,24 @@
         <label>Duty boat: <select id="ctrl-duty-boat">${dutyOptions.join('')}</select></label>
       </div>`;
 
+    // Assemble the workflow as numbered steps, top-to-bottom in the order an RO
+    // works a race. Steps that don't apply to this flavour produce empty HTML
+    // and are dropped, so the numbering is always 1..n with no gaps. Duty boat
+    // stays last — it's deliberately set late, once an entrant is noticed to
+    // have no result.
+    const steps = [
+      { title: 'Entrants',    html: entrantsRow },
+      { title: 'Start times', html: startStepHtml },
+      { title: 'Results',     html: resultsRow + abandonRow },
+      { title: 'Handicaps',   html: handicapsRow },
+      { title: 'Duty boat',   html: dutyRow }
+    ].filter(st => st.html && st.html.trim());
+
     panel.style.display = '';
-    panel.innerHTML = entrantsRow + startGroup + resultsRow + handicapsRow + dutyRow;
+    panel.innerHTML = steps.map((st, i) =>
+      '<section class="workflow-step"><div class="step-title">'
+      + (i + 1) + ' &middot; ' + esc(st.title) + '</div>' + st.html + '</section>'
+    ).join('');
 
     // Wire division start/course inputs (when editable) and the buttons.
     wireDivisionStartInputs();
@@ -2766,6 +2891,9 @@
     if (calBtn) calBtn.onclick = doCalibrate;
     const prBtn = document.getElementById('ctrl-process-results');
     if (prBtn) prBtn.onclick = doProcessResults;
+    document.querySelectorAll('button.ctrl-abandon').forEach(btn => {
+      btn.onclick = () => doAbandon(Number(btn.dataset.divId));
+    });
     const rsSel = document.getElementById('results-status-sel');
     if (rsSel) rsSel.onchange = () => doSetResultsStatus(Number(rsSel.value));
     const hcBtn = document.getElementById('ctrl-handicaps');
@@ -2828,16 +2956,18 @@
         ? divisionCourseMap.get(String(divId))
         : (schedCourse != null ? schedCourse : '');
       let cell;
-      if (locked) {
+      if (isDivisionAbandoned(divId)) {
+        cell = '<span class="pill pill-err">Abandoned</span>';
+      } else if (locked) {
         cell = '<strong>' + esc(start || '—') + '</strong>'
-          + (isPursuit ? ' <span style="color:#555;">course ' + esc(course === '' ? '—' : course) + ' nm</span>' : '');
+          + (isPursuit ? ' <span class="muted">course ' + esc(course === '' ? '—' : course) + ' nm</span>' : '');
       } else {
         const startDirty = (divisionStartsMap.has(String(divId))
           && !timeStringsEqual(divisionStartsMap.get(String(divId)), sched)) ? ' dirty' : '';
         const nowBtn = (!isPursuit && isCurrentRace)
           ? ('<button type="button" class="now-btn div-now-btn" data-div-id="' + esc(divId) + '">NOW</button>')
           : '';
-        cell = '<span style="color:#666; margin-right:0.4rem;">sched ' + esc(sched || '—') + '</span>'
+        cell = '<span class="muted" style="margin-right:0.4rem;">sched ' + esc(sched || '—') + '</span>'
           + '<input type="text" class="time-input division-start' + startDirty + '"'
           + ' placeholder="HH:MM" data-div-id="' + esc(divId) + '"'
           + ' value="' + esc(start) + '">'
@@ -2845,13 +2975,13 @@
         if (isPursuit) {
           const courseDirty = (divisionCourseMap.has(String(divId))
             && divisionCourseMap.get(String(divId)) !== schedCourse) ? ' dirty' : '';
-          cell += '<label style="margin-left:0.8rem; color:#555;">course '
+          cell += '<label class="muted" style="margin-left:0.8rem;">course '
             + '<input type="number" step="0.1" min="0" class="division-course' + courseDirty + '"'
             + ' data-div-id="' + esc(divId) + '" style="width:5em;"'
             + ' value="' + esc(course) + '"> nm</label>';
         }
       }
-      html += '<div class="controls-row"><label style="min-width:8em; color:#555;">'
+      html += '<div class="controls-row"><label class="muted" style="min-width:8em;">'
         + esc(name) + ' start</label>' + cell + '</div>';
     }
     return html;
@@ -3281,10 +3411,15 @@
       : (r.body.targetElapsedMinutes
           ? (' (mean elapsed ' + r.body.targetElapsedMinutes + ' min)')
           : '');
+    // Only point at [Save Handicaps] when that button is actually offered —
+    // it renders only for an admin on a race scored against our handicap
+    // (same gate as saveHcBtnHtml in renderControls). For everyone else the
+    // adjustments are review-only, so don't promise a save that can't happen.
+    const canSave = ((typeof isAdmin === 'function') && isAdmin()) && isOurHandicap;
     ctrlMsg('banner-ok',
       'Computed ' + list.length + ' handicap adjustment' + (list.length === 1 ? '' : 's')
-      + tMsg + '. Hover the [Adjustment] column for the breakdown. '
-      + 'Press [Save Handicaps] to persist locally.');
+      + tMsg + '. Hover the [Adjustment] column for the breakdown.'
+      + (canSave ? ' Press [Save Handicaps] to persist locally.' : ''));
   }
 
   // Save Handicaps — persist the currently-displayed adjustments locally AND
@@ -3560,6 +3695,27 @@
     }
     // Refetch entrants — their startTimeLocal will have changed after processing.
     await loadEntrants();
+  }
+
+  // Abandon a division (one-way). Server picks the mechanism from the race's
+  // processed state: /divisions/abandon when results aren't processed, else
+  // per-boat ABD flags. Reloads on success since the state changes wholesale
+  // (isAbandoned set / results wiped).
+  async function doAbandon(divId) {
+    const dts = (currentStatus && currentStatus.divisionTiming) || [];
+    const dt = dts.find(d => String(d.divisionId) === String(divId));
+    const nm = (dt && dt.divisionName) || ('Div ' + divId);
+    if (!confirm('Abandon ' + nm + '?\n\nThis marks the division as abandoned in SailSys '
+        + 'and CANNOT be undone.')) return;
+    ctrlMsg('banner-info', 'Abandoning ' + nm + '…');
+    const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/abandon',
+      { divisions: [divId] });
+    if (!r.ok) {
+      ctrlMsg('banner-err', 'Abandon failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+      return;
+    }
+    ctrlMsg('banner-ok', nm + ' abandoned.');
+    location.reload();
   }
 
   function setControlsDisabled(disabled) {
@@ -3948,6 +4104,21 @@
   // (after status loads and we know isCurrentRace) by updateNowLogSection.
   document.getElementById('now-log').style.display = 'none';
 
+  // Clear the whole NOW log (after confirming). The log is session-only, so a
+  // clear just empties the in-memory array and the sessionStorage mirror.
+  {
+    const nowClearBtn = document.getElementById('now-clear-btn');
+    if (nowClearBtn) nowClearBtn.onclick = () => {
+      if (nowLog.length === 0) return;
+      if (!confirm('Clear the NOW button log? This removes all '
+          + nowLog.length + ' recorded time' + (nowLog.length === 1 ? '' : 's')
+          + ' and cannot be undone.')) return;
+      nowLog.length = 0;
+      renderNowLog();
+      sessionSaveNowLog();
+    };
+  }
+
   function updateNowLogSection() {
     const section = document.getElementById('now-log');
     if (isCurrentRace) {
@@ -4075,6 +4246,43 @@
     if (!m) return null;
     const pad = (n) => String(n).padStart(2, '0');
     return pad(Number(m[1])) + ':' + pad(Number(m[2])) + ':' + pad(Number(m[3]));
+  }
+
+  // SailSys runs start-time / handicap staggering asynchronously: the status
+  // field handicapAndStartTimeProcessingStatus moves 0 → 1 → 2 (pending →
+  // processing → processed). 1 is the only "currently processing" state we can
+  // observe from a status fetch — results processing is synchronous (the server
+  // holds the /process-results request open), so it never surfaces here.
+  function isSailsysProcessing(status) {
+    return !!status && (status.handicapAndStartTimeProcessingStatus ?? 0) === 1;
+  }
+
+  // If SailSys is mid-processing when we land on (or refresh) the race, hold the
+  // busy cursor (setBusy, common.js) and poll status until it settles, then
+  // refresh the entrants — their start times change once staggering finishes.
+  // No-op (returns immediately) when nothing is processing.
+  async function pollWhileProcessing() {
+    if (!isSailsysProcessing(currentStatus)) return;
+    setBusy(true);
+    ctrlMsg('banner-info', '⏳ SailSys is processing — waiting for it to finish…');
+    const startMs = Date.now();
+    const TIMEOUT_MS = 120000;
+    try {
+      while (isSailsysProcessing(currentStatus)) {
+        if (Date.now() - startMs > TIMEOUT_MS) {
+          ctrlMsg('banner-warn', 'SailSys is still processing — reload to check again.');
+          return;
+        }
+        await new Promise(res => setTimeout(res, 1500));
+        const r = await fetchJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/status');
+        if (r.ok && r.body && r.body.status) renderStatus(r.body.status, raceIdGlobal);
+      }
+      // Processing finished — start times have been re-staggered; refresh them.
+      ctrlMsg('banner-ok', 'SailSys processing complete.');
+      await loadEntrants();
+    } finally {
+      setBusy(false);
+    }
   }
 
   (async () => {
@@ -4334,6 +4542,10 @@
     // tab session — surface the SAVE bar immediately if so. Without this
     // the bar only appears after the next interactive mutation.
     updateSaveBar();
+
+    // If SailSys was busy staggering start times when we loaded, show the busy
+    // cursor and poll until it's done, then refresh the (now re-timed) entrants.
+    await pollWhileProcessing();
   })();
 </script>
 </body>

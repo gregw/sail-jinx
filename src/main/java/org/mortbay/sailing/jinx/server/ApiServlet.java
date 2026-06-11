@@ -96,6 +96,8 @@ public class ApiServlet extends HttpServlet
         java.util.regex.Pattern.compile("/races/(\\d+)/results-status");
     private static final java.util.regex.Pattern RACE_DIVISION_STARTS =
         java.util.regex.Pattern.compile("/races/(\\d+)/division-starts");
+    private static final java.util.regex.Pattern RACE_ABANDON =
+        java.util.regex.Pattern.compile("/races/(\\d+)/abandon");
     private static final java.util.regex.Pattern RACE_CALIBRATE =
         java.util.regex.Pattern.compile("/races/(\\d+)/calibrate");
     private static final java.util.regex.Pattern RACE_PROCESS_HANDICAPS =
@@ -278,6 +280,12 @@ public class ApiServlet extends HttpServlet
                         java.util.regex.Matcher m = RACE_DIVISION_STARTS.matcher(path);
                         if (m.matches())
                             handleDivisionStarts(req, resp, Integer.parseInt(m.group(1)));
+                    }
+                    else if (RACE_ABANDON.matcher(path).matches())
+                    {
+                        java.util.regex.Matcher m = RACE_ABANDON.matcher(path);
+                        if (m.matches())
+                            handleAbandon(req, resp, Integer.parseInt(m.group(1)));
                     }
                     else if (RACE_CALIBRATE.matcher(path).matches())
                     {
@@ -1576,6 +1584,133 @@ public class ApiServlet extends HttpServlet
         out.put("status", finalStatus);
         if (timedOut) out.put("error", "Processing still in progress after 30s — try refreshing in a moment.");
         writeJson(resp, out);
+    }
+
+    /**
+     * POST /api/races/{id}/abandon — abandon one or more divisions of a race.
+     * Body: {@code {divisions: [<divisionId>, ...]}}; an empty/absent list
+     * abandons every division on the race. One-way (SailSys has no un-abandon).
+     *
+     * <p>Two mechanisms, picked from the fresh race status:
+     * <ul>
+     *   <li><b>Results not yet processed</b> ({@code lastProcessedTime} empty):
+     *       SailSys's own {@code PUT /races/{id}/divisions/abandon} endpoint,
+     *       which sets {@code divisionTiming[].isAbandoned=true}.</li>
+     *   <li><b>Results already processed</b>: that endpoint is rejected, so we
+     *       flag every boat in the target divisions ABD via the
+     *       starters/finishers result path ({@link #buildAbandonStarters}).
+     *       NOTE: this path is built from error-only HAR captures and is not
+     *       yet verified against a successful SailSys round-trip.</li>
+     * </ul>
+     */
+    private void handleAbandon(HttpServletRequest req, HttpServletResponse resp, int raceId)
+        throws Exception
+    {
+        SailSysSession session = currentSession(req);
+        if (session == null)
+        {
+            resp.setStatus(401);
+            writeJson(resp, Map.of("error", "not signed in"));
+            return;
+        }
+        String token = session.token();
+
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        java.util.List<Integer> divisionIds = new java.util.ArrayList<>();
+        if (body.path("divisions").isArray())
+            for (JsonNode d : body.path("divisions")) divisionIds.add(d.asInt());
+
+        JsonNode status = sailsys.fetchRaceStatus(token, raceId);
+        // No divisions specified → abandon the whole race (every division).
+        if (divisionIds.isEmpty())
+            for (JsonNode dt : status.path("divisionTiming"))
+                divisionIds.add(dt.path("divisionId").asInt());
+        if (divisionIds.isEmpty())
+        {
+            resp.setStatus(400);
+            writeJson(resp, Map.of("error", "race has no divisions to abandon"));
+            return;
+        }
+
+        boolean resultsProcessed = !status.path("lastProcessedTime").asText("").isEmpty();
+        if (!resultsProcessed)
+            sailsys.abandonDivisions(token, raceId, divisionIds);
+        else
+            abandonViaStarters(token, raceId, status, new java.util.HashSet<>(divisionIds));
+
+        JsonNode fresh = sailsys.fetchRaceStatus(token, raceId);
+        writeJson(resp, Map.of("ok", true, "raceId", raceId, "status", fresh));
+    }
+
+    /**
+     * Processed-race abandon: flag every boat in {@code divisionIds} ABD by
+     * round-tripping the SailSys result template (GET starters → mutate → PUT
+     * starters → PUT finishers), mirroring {@link #handlePushResults}'s
+     * token-chained two-PUT flow.
+     */
+    private void abandonViaStarters(String token, int raceId, JsonNode status,
+                                    java.util.Set<Integer> divisionIds) throws Exception
+    {
+        int saveToken = status.path("resultSaveToken").asInt(0);
+        String raceDate = status.path("dateTime").asText("");
+        raceDate = (raceDate.length() >= 10) ? raceDate.substring(0, 10)
+            : java.time.LocalDate.now().toString();
+
+        JsonNode startersNode = sailsys.fetchRaceStarters(token, raceId);
+        if (!startersNode.isArray() || startersNode.isEmpty())
+            throw new SailSysClient.SailSysException("abandonViaStarters", "GET",
+                "/races/" + raceId + "/results/starters", 502,
+                "no starters template to flag ABD");
+
+        // ABD penalty object per target division (penalty ids are per-division).
+        java.util.Map<Integer, JsonNode> abdByDivision = new java.util.HashMap<>();
+        for (Integer divId : divisionIds)
+        {
+            JsonNode abd = findPenaltyByShortName(
+                sailsys.fetchDivisionPenalties(token, divId), "ABD");
+            if (abd != null) abdByDivision.put(divId, abd);
+        }
+
+        ArrayNode payload = buildAbandonStarters(startersNode, divisionIds, abdByDivision, raceDate);
+        JsonNode afterStarters = sailsys.putRaceStarters(token, raceId, saveToken, payload);
+        int newToken = afterStarters.path("resultSaveToken").asInt(saveToken + 1);
+        Thread.sleep(300L);
+        sailsys.putRaceFinishers(token, raceId, newToken, payload);
+    }
+
+    /**
+     * Build the {@code /results/starters} payload that flags every boat in the
+     * given divisions ABD: {@code startedRace=true}, {@code finishTime} cleared,
+     * {@code finishDate} set to the race date, and the division's ABD penalty
+     * attached. Boats in other divisions are left exactly as the template had
+     * them. Does not mutate the input. Pure logic — unit-tested in
+     * {@code ApiServletTest}.
+     *
+     * @param startersTemplate the {@code /results/starters} array (full echo)
+     * @param divisionIds      divisions to abandon
+     * @param abdByDivision    division id → that division's ABD penalty object
+     * @param raceDate         {@code yyyy-MM-dd}, used for {@code finishDate}
+     */
+    static ArrayNode buildAbandonStarters(JsonNode startersTemplate,
+                                          java.util.Set<Integer> divisionIds,
+                                          java.util.Map<Integer, JsonNode> abdByDivision,
+                                          String raceDate)
+    {
+        ArrayNode out = (ArrayNode) startersTemplate.deepCopy();
+        for (JsonNode entry : out)
+        {
+            if (!(entry instanceof ObjectNode obj)) continue;
+            int divisionId = obj.path("divisionId").asInt();
+            if (!divisionIds.contains(divisionId)) continue;
+            obj.put("startedRace", true);
+            obj.putNull("finishTime");
+            obj.put("finishDate", raceDate + "T00:00:00.000");
+            ArrayNode penalties = MAPPER.createArrayNode();
+            JsonNode abd = abdByDivision.get(divisionId);
+            if (abd != null) penalties.add(abd);
+            obj.set("penalties", penalties);
+        }
+        return out;
     }
 
     /**

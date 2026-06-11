@@ -304,6 +304,30 @@ public class SailSysClient
      * unique id, definitionId, value, description, etc. — SailSys rejects
      * partially-filled stubs).
      */
+    /**
+     * PUT /races/{raceId}/divisions/abandon?notify=false — abandon the given
+     * divisions. The body is a bare JSON array of division ids, e.g.
+     * {@code [16097]}. SailSys returns the full race object with the affected
+     * {@code divisionTiming[].isAbandoned} set true.
+     *
+     * <p>Only valid while the race's results have NOT been processed — SailSys
+     * rejects it (HTTP 400, "Races can only be abandoned if results haven't
+     * been processed.") otherwise. For a processed race the caller flags each
+     * boat ABD via the starters/finishers result path instead. One-way: there
+     * is no un-abandon endpoint.
+     */
+    public JsonNode abandonDivisions(String sessionToken, int raceId, List<Integer> divisionIds) throws Exception
+    {
+        requireToken(sessionToken);
+        String body = MAPPER.writeValueAsString(divisionIds);
+        JsonNode root = sendAndParse(
+            newRequest("/races/" + raceId + "/divisions/abandon?notify=false", sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", body)),
+            "abandonDivisions", body);
+        return root.path("data");
+    }
+
     public JsonNode fetchDivisionPenalties(String sessionToken, int divisionId) throws Exception
     {
         requireToken(sessionToken);
