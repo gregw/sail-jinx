@@ -248,6 +248,13 @@ td.status-loading {
   transition: width 0.4s linear;
 }
 
+/* NOW-log entries are draggable onto a start/finish time field. The ☰ handle
+   signals the affordance; the whole <li> is the drag source. */
+li.now-log-entry { cursor: grab; }
+li.now-log-entry:active { cursor: grabbing; }
+.now-drag-handle { color: #999; cursor: grab; user-select: none; }
+li.now-log-entry:hover .now-drag-handle { color: #2255aa; }
+
 /* SAVE bar sits below the entrants table and sticks to the bottom of the
    viewport while the RO is mid-table, so the buttons stay reachable without
    scrolling all the way past the last row. A yellow background mirrors the

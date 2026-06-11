@@ -70,10 +70,7 @@
 
   <section id="now-log" style="margin-top: 2rem;">
     <h2>NOW button log <span style="font-weight: normal; color: #888; font-size: 0.85em;">(this session only)</span></h2>
-    <div style="margin-bottom: 0.5rem;">
-      <button id="now-log-btn" class="primary" type="button">NOW</button>
-      <span style="margin-left: 0.6rem; color: #666; font-size: 0.9em;">Capture a time not tied to a boat.</span>
-    </div>
+    <p style="margin: 0 0 0.5rem; color: #666; font-size: 0.9em;">Drag an entry onto any time field to set it.</p>
     <ol id="now-log-list"></ol>
   </section>
 </main>
@@ -1155,7 +1152,7 @@
           + checked + disabled + '>';
       }},
     { key: 'actualStart', label: 'Actual<br/>Start',
-      editableOnly: true,
+      editableOnly: true, now: true,
       get: e => getTimes(e.boat && e.boat.id).actualStart || '',
       render: (e) => {
         const id = e.boat && e.boat.id;
@@ -1171,7 +1168,7 @@
           + ' value="' + esc(t.actualStart || '') + '"' + disabled + '>'
           + nowBtn;
       }},
-    { key: 'finish',  label: 'Actual<br/>Finish',
+    { key: 'finish',  label: 'Actual<br/>Finish', now: true,
       get: e => {
         if (IS_EDITABLE) return getTimes(e.boat && e.boat.id).finish || '';
         return e.finishTimeLocal || '';
@@ -1911,8 +1908,11 @@
     sessionSaveNowLog();
   }
 
-  function logNowUnattached() {
-    nowLog.push({ time: localNow() });
+  // A header NOW button captures a time tied to a field (start/finish) but
+  // not yet to a boat — the RO matches it up later. Distinct from logNow,
+  // which records boat + field together.
+  function logNowField(field) {
+    nowLog.push({ time: localNow(), field });
     renderNowLog();
     sessionSaveNowLog();
   }
@@ -1932,17 +1932,127 @@
       return String(a.time).localeCompare(String(b.time));
     });
     list.innerHTML = sorted.map(e => {
-      // Entries from the standalone NOW button have no field/boat — render
-      // just the time. Boat-tied entries get " — start/finish for <boat>".
+      // Entries from a header NOW button carry a field but no boat — render
+      // " — start/finish". Boat-tied entries get " — start/finish for <boat>".
+      // A displaced entry (a value bumped out of a field by a drag) carries a
+      // free-text note describing where it came from; that wins the tail.
       const fld = e.field === 'actualStart' ? 'start'
                 : e.field === 'finish'      ? 'finish' : null;
       const who = [e.sail, e.name].filter(Boolean).map(esc).join(' ');
-      const tail = fld
-        ? (' — ' + esc(fld) + (who ? ' for ' + who : ''))
-        : '';
-      return '<li><code>' + esc(e.time) + '</code>' + tail + '</li>';
+      const tail = e.note
+        ? (' — ' + esc(e.note))
+        : (fld ? (' — ' + esc(fld) + (who ? ' for ' + who : '')) : '');
+      // Each entry is draggable onto a time input field (see the document-level
+      // drop handler) to set that field to this captured time. The ☰ handle
+      // signals the affordance (matching the row-reorder handle).
+      return '<li class="now-log-entry" draggable="true" data-time="' + esc(e.time) + '">'
+        + '<span class="now-drag-handle" title="Drag onto a start/finish field">☰</span> '
+        + '<code>' + esc(e.time) + '</code>' + tail + '</li>';
     }).join('');
+    list.querySelectorAll('li.now-log-entry').forEach(li => {
+      li.ondragstart = (ev) => {
+        ev.dataTransfer.setData('text/plain', li.dataset.time);
+        // A private type so the entrants-table row-reorder handlers can tell a
+        // NOW-time drag apart from a row drag and leave it alone.
+        ev.dataTransfer.setData('application/x-now-time', li.dataset.time);
+        ev.dataTransfer.effectAllowed = 'copy';
+      };
+    });
   }
+
+  // True when the in-flight drag originated from a NOW-log entry (vs an
+  // entrants-table row reorder). Checked during dragover/drop, where the
+  // payload itself can't be read but the type list can.
+  function isNowTimeDrag(ev) {
+    return !!(ev.dataTransfer && Array.from(ev.dataTransfer.types)
+      .includes('application/x-now-time'));
+  }
+
+  // A value about to be overwritten by a drag is "displaced". If it isn't a
+  // time already captured in the log, record it so it isn't lost — tagged with
+  // a note saying which field it came out of. `entry` carries any field/boat
+  // tags so the recorded value stays draggable and self-describing.
+  function logDisplaced(oldValue, entry) {
+    const v = (oldValue || '').trim();
+    if (!v) return;
+    const pv = parseTime(v);
+    const dup = nowLog.some(e =>
+      e.time === v || (pv != null && parseTime(e.time) === pv));
+    if (dup) return;
+    nowLog.push(Object.assign({ time: v }, entry));
+    renderNowLog();
+    sessionSaveNowLog();
+  }
+
+  // Apply a dragged NOW-log time to a target time input. The previous value is
+  // displaced into the log (logDisplaced) before being overwritten. The
+  // dragged entry itself stays in the log. Handles both the per-entrant
+  // start/finish fields and the per-division start fields.
+  function applyNowDrop(inp, draggedTime) {
+    if (!draggedTime) return;
+
+    // Per-division start field (HH:MM granularity).
+    if (inp.classList.contains('division-start')) {
+      const divId = inp.dataset.divId;
+      const canon = reformatHHMM(draggedTime);
+      if (!canon) return;
+      const name = (currentStatus && Array.isArray(currentStatus.divisionTiming)
+        && (currentStatus.divisionTiming.find(d => String(d.divisionId) === String(divId)) || {}).divisionName)
+        || ('Div ' + divId);
+      logDisplaced(inp.value, { field: 'divStart-' + divId, note: 'replaced ' + name + ' start by drag' });
+      const sched = divisionScheduledStart(Number(divId)) || '';
+      if (timeStringsEqual(canon, sched)) divisionStartsMap.delete(String(divId));
+      else divisionStartsMap.set(String(divId), canon);
+      refreshDivisionRows(divId);
+      updateSaveBar();
+      sessionSaveForm();
+      return;
+    }
+
+    // Per-entrant start/finish field (HH:MM:SS granularity).
+    const id = Number(inp.dataset.boatId);
+    const field = inp.dataset.field;
+    if (!field) return;
+    const canon = reformatTime(draggedTime) || draggedTime;
+    const entrant = entrantData.find(e => String(e.boat && e.boat.id) === String(id));
+    const sail = entrant && entrant.boat && entrant.boat.sailNumber;
+    const name = entrant && entrant.boat && entrant.boat.name;
+    const who = [sail, name].filter(Boolean).join(' ');
+    const fld = field === 'actualStart' ? 'start' : 'finish';
+    logDisplaced(inp.value, { field, sail, name,
+      note: 'replaced ' + fld + (who ? ' for ' + who : '') + ' by drag' });
+    const t = getTimes(id);
+    t[field] = canon;
+    if (field === 'finish') lastFinishTime = canon;
+    inp.value = canon;
+    delete inp.dataset.prefilled;
+    inp.classList.remove('invalid');
+    const tr = inp.closest('tr');
+    updateElapsedCell(tr, id);
+    updateFlagsCell(tr, id);
+    updateSaveBar();
+    sessionSaveForm();
+  }
+
+  // Document-level drag-over/drop delegation: any (enabled) time input field
+  // accepts a NOW-log entry dropped onto it. dragover must preventDefault to
+  // mark the input as a valid drop target; drop preventDefault suppresses the
+  // browser's own text-insertion so we set the value ourselves.
+  document.addEventListener('dragover', (ev) => {
+    if (!isNowTimeDrag(ev)) return;
+    const inp = ev.target.closest && ev.target.closest('input.time-input');
+    if (inp && !inp.disabled && !inp.readOnly) {
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'copy';
+    }
+  });
+  document.addEventListener('drop', (ev) => {
+    if (!isNowTimeDrag(ev)) return;
+    const inp = ev.target.closest && ev.target.closest('input.time-input');
+    if (!inp || inp.disabled || inp.readOnly) return;
+    ev.preventDefault();
+    applyNowDrop(inp, ev.dataTransfer.getData('text/plain'));
+  });
 
   function updateElapsedCell(tr, boatId) {
     const cols = activeCols();
@@ -2025,6 +2135,9 @@
         document.querySelectorAll('tr.drag-over').forEach(x => x.classList.remove('drag-over'));
       };
       tr.ondragover = (ev) => {
+        // A NOW-log time drag isn't a row reorder — let it fall through to the
+        // time-input drop target (no row highlight, no preventDefault here).
+        if (isNowTimeDrag(ev)) return;
         ev.preventDefault();
         ev.dataTransfer.dropEffect = 'move';
         document.querySelectorAll('tr.drag-over').forEach(x => x.classList.remove('drag-over'));
@@ -2034,6 +2147,7 @@
         tr.classList.remove('drag-over');
       };
       tr.ondrop = (ev) => {
+        if (isNowTimeDrag(ev)) return;
         ev.preventDefault();
         tr.classList.remove('drag-over');
         const srcId = dragSrcId;
@@ -2289,12 +2403,28 @@
       if (sortable) classes.push('sortable');
       if (c.cellClass) classes.push(c.cellClass);
       const cls = classes.length ? ' class="' + classes.join(' ') + '"' : '';
+      // Columns flagged `now` carry a per-row NOW button; the header gets a
+      // matching NOW button that captures an unattached, field-typed time
+      // into the NOW log (to be matched to a boat later). Shown under the
+      // same condition the row buttons are: live race, results not yet locked.
+      const nowHead = (c.now && isCurrentRace && !resultsPublished)
+        ? ' <button type="button" class="now-btn now-head-btn" data-field="'
+          + esc(c.key) + '">NOW</button>'
+        : '';
       // c.label may carry literal "<br/>" for multi-line headers — emitted
       // raw, since labels are hard-coded by us. Never use user data here.
-      return '<th' + cls + ' data-key="' + myKey + '">' + c.label + marker + '</th>';
+      return '<th' + cls + ' data-key="' + myKey + '">' + c.label + marker + nowHead + '</th>';
     }).join('');
     head.querySelectorAll('th.sortable').forEach(th => {
       th.onclick = () => applySortClick(th.dataset.key);
+    });
+    // Header NOW buttons sit inside sortable <th>s — stop the click bubbling
+    // so capturing a time doesn't also re-sort the column.
+    head.querySelectorAll('button.now-head-btn').forEach(btn => {
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        logNowField(btn.dataset.field);
+      };
     });
   }
 
@@ -3798,7 +3928,6 @@
     const section = document.getElementById('now-log');
     if (isCurrentRace) {
       section.style.display = '';
-      document.getElementById('now-log-btn').onclick = logNowUnattached;
       renderNowLog();
     } else {
       section.style.display = 'none';
