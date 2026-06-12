@@ -1,5 +1,5 @@
 
-Now buttons as the title for the Now button columns
-allow now values to be dragged to time inputs
+
+
 
 

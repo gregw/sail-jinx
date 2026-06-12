@@ -74,6 +74,8 @@ public class ApiServlet extends HttpServlet
         java.util.regex.Pattern.compile("/series/(\\d+)/config");
     private static final java.util.regex.Pattern SERIES_IS_PURSUIT =
         java.util.regex.Pattern.compile("/series/(\\d+)/is-pursuit");
+    private static final java.util.regex.Pattern SERIES_SPINNAKER =
+        java.util.regex.Pattern.compile("/series/(\\d+)/spinnaker");
     private static final java.util.regex.Pattern RACE_ENTRANTS =
         java.util.regex.Pattern.compile("/races/(\\d+)/entrants");
     private static final java.util.regex.Pattern RACE_STATUS =
@@ -185,6 +187,12 @@ public class ApiServlet extends HttpServlet
                         java.util.regex.Matcher m = SERIES_IS_PURSUIT.matcher(path);
                         if (m.matches())
                             handleIsSeriesPursuit(req, resp, Integer.parseInt(m.group(1)));
+                    }
+                    else if (SERIES_SPINNAKER.matcher(path).matches())
+                    {
+                        java.util.regex.Matcher m = SERIES_SPINNAKER.matcher(path);
+                        if (m.matches())
+                            handleSeriesSpinnaker(req, resp, Integer.parseInt(m.group(1)));
                     }
                     else if (re.matches())
                         handleRaceEntrants(req, resp, Integer.parseInt(re.group(1)));
@@ -519,6 +527,45 @@ public class ApiServlet extends HttpServlet
             LOG.warn("loadHandicapDefinitions failed; returning empty catalogue", x);
             return Map.of();
         }
+    }
+
+    /**
+     * GET /api/series/{id}/spinnaker — the per-boat spinnaker designation for
+     * the series, as {@code { seriesId, spinnakerByBoat: { "<boatId>": 1|2 } }}
+     * (1 = spinnaker, 2 = non-spinnaker). SailSys keeps this on the series ENTRY
+     * (not the per-race entrants payload), so the race page joins it in to show
+     * the S / NS column.
+     */
+    private void handleSeriesSpinnaker(HttpServletRequest req, HttpServletResponse resp,
+                                       int seriesId) throws Exception
+    {
+        SailSysSession session = currentSession(req);
+        if (session == null)
+        {
+            resp.setStatus(401);
+            writeJson(resp, Map.of("error", "not signed in"));
+            return;
+        }
+        Map<String, Integer> byBoat = new LinkedHashMap<>();
+        try
+        {
+            JsonNode entries = sailsys.fetchSeriesEntries(session.token(), seriesId);
+            if (entries != null && entries.isArray())
+            {
+                for (JsonNode it : entries)
+                {
+                    int boatId = it.path("boatId").asInt(0);
+                    if (boatId == 0 || it.path("spinnakerType").isMissingNode()
+                        || it.path("spinnakerType").isNull()) continue;
+                    byBoat.put(String.valueOf(boatId), it.path("spinnakerType").asInt());
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            LOG.warn("fetchSeriesEntries failed for series {}: {}", seriesId, e.toString());
+        }
+        writeJson(resp, Map.of("seriesId", seriesId, "spinnakerByBoat", byBoat));
     }
 
     /**
@@ -1540,7 +1587,7 @@ public class ApiServlet extends HttpServlet
      *   <li>Apply the per-division patch ({@link #patchDivisionTiming}).</li>
      *   <li>PUT it back, which kicks off SailSys-side staggering.</li>
      *   <li>Poll status until handicapAndStartTimeProcessingStatus leaves 1
-     *       (= "processing"), up to a 30 s deadline.</li>
+     *       (= "processing"), up to a 90 s deadline.</li>
      *   <li>Return the final status to the client so the UI can refresh.</li>
      * </ol>
      */
@@ -1572,7 +1619,7 @@ public class ApiServlet extends HttpServlet
         // to settle (then re-read the fresh divisionTiming) before our own PUT.
         if (status.path("handicapAndStartTimeProcessingStatus").asInt() == 1)
         {
-            long preDeadline = System.currentTimeMillis() + 30_000L;
+            long preDeadline = System.currentTimeMillis() + 90_000L;
             while (System.currentTimeMillis() < preDeadline
                 && status.path("handicapAndStartTimeProcessingStatus").asInt() == 1)
             {
@@ -1616,7 +1663,7 @@ public class ApiServlet extends HttpServlet
         // Poll. processingStatus: 0 = pending, 1 = processing, 2 = processed.
         // We see the transition 0→1→2; if SailSys is fast it can be 0→2 in one
         // tick. Either way, the moment we see anything other than 1 we're done.
-        long deadline = System.currentTimeMillis() + 30_000L;
+        long deadline = System.currentTimeMillis() + 90_000L;
         JsonNode finalStatus = null;
         while (System.currentTimeMillis() < deadline)
         {
@@ -1632,7 +1679,7 @@ public class ApiServlet extends HttpServlet
         out.put("ok", !timedOut);
         out.put("raceId", raceId);
         out.put("status", finalStatus);
-        if (timedOut) out.put("error", "Processing still in progress after 30s — try refreshing in a moment.");
+        if (timedOut) out.put("error", "Processing still in progress after 90s — try refreshing in a moment.");
         writeJson(resp, out);
     }
 

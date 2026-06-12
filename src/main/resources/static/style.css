@@ -232,6 +232,50 @@ tbody tr:nth-child(even):not(:hover):not(.current-race):not(.dragging) td {
   background: #e6ebf1;
 }
 tr:hover td { background: var(--accent-soft); }
+/* Entrants-table row hover. Each division gets its OWN hover colour — a deeper,
+   more saturated version of that division's tint — so a hovered row visibly
+   lifts yet still reads as its division's hue (you can still tell the division
+   while it's highlighted). These win over the per-division tint rules below
+   (which carry :not(:hover)) and over the generic hover above. The plain
+   tr:hover fallback covers any entrant row without a div-color class. */
+#entrants-table tbody tr:hover td              { background: #ffe9a3; }
+#entrants-table tbody tr.div-color-0:hover td { background: #c7d6ea; }
+#entrants-table tbody tr.div-color-1:hover td { background: #bfdfc2; }
+#entrants-table tbody tr.div-color-2:hover td { background: #f0d99e; }
+#entrants-table tbody tr.div-color-3:hover td { background: #d6c4ef; }
+#entrants-table tbody tr.div-color-4:hover td { background: #b3dde4; }
+#entrants-table tbody tr.div-color-5:hover td { background: #f3c4d1; }
+#entrants-table tbody tr.div-color-6:hover td { background: #d8e69e; }
+#entrants-table tbody tr.div-color-7:hover td { background: #f9cfa7; }
+#entrants-table tbody tr.div-color-8:hover td { background: #bccdf4; }
+#entrants-table tbody tr.div-color-9:hover td { background: #ddd5c5; }
+
+/* Per-division row tinting (entrants table). Each division is assigned one
+   .div-color-N pair (light = odd rows, dark = even rows) by its order in
+   SailSys's divisionTiming — div-color-0 is the original blue-grey so a
+   single-division race is unchanged. Subtle tints, harmonious with the navy
+   chrome; ordered best/most-distinct first. The :not() guards keep hover,
+   current-race, and drag-ghost states winning, matching the base zebra rule. */
+#entrants-table tbody tr.div-color-0:not(:hover):not(.current-race):not(.dragging) td { background: #ffffff; }
+#entrants-table tbody tr.div-color-1:not(:hover):not(.current-race):not(.dragging) td { background: #f1f7f1; }
+#entrants-table tbody tr.div-color-2:not(:hover):not(.current-race):not(.dragging) td { background: #fbf6ea; }
+#entrants-table tbody tr.div-color-3:not(:hover):not(.current-race):not(.dragging) td { background: #f5f2fb; }
+#entrants-table tbody tr.div-color-4:not(:hover):not(.current-race):not(.dragging) td { background: #ecf6f7; }
+#entrants-table tbody tr.div-color-5:not(:hover):not(.current-race):not(.dragging) td { background: #fbf2f4; }
+#entrants-table tbody tr.div-color-6:not(:hover):not(.current-race):not(.dragging) td { background: #f6f8ec; }
+#entrants-table tbody tr.div-color-7:not(:hover):not(.current-race):not(.dragging) td { background: #fdf3eb; }
+#entrants-table tbody tr.div-color-8:not(:hover):not(.current-race):not(.dragging) td { background: #eff2fc; }
+#entrants-table tbody tr.div-color-9:not(:hover):not(.current-race):not(.dragging) td { background: #f6f5f3; }
+#entrants-table tbody tr.div-color-0:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #e6ebf1; }
+#entrants-table tbody tr.div-color-1:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #dcebdd; }
+#entrants-table tbody tr.div-color-2:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #f1e6cf; }
+#entrants-table tbody tr.div-color-3:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #e7def2; }
+#entrants-table tbody tr.div-color-4:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #d6e9ec; }
+#entrants-table tbody tr.div-color-5:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #f2dde3; }
+#entrants-table tbody tr.div-color-6:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #e7eccf; }
+#entrants-table tbody tr.div-color-7:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #f8e2cf; }
+#entrants-table tbody tr.div-color-8:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #dce3f6; }
+#entrants-table tbody tr.div-color-9:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #e8e5df; }
 
 /* The entrants/races tables shrink to their content and sit in a rounded,
    shadowed card that scrolls horizontally if the columns overflow. */
@@ -240,10 +284,16 @@ tr:hover td { background: var(--accent-soft); }
 #races-table th, #races-table td { padding: 5px 12px; white-space: nowrap; }
 #entrants-table, #races-table {
   border: 1px solid var(--line); border-radius: var(--radius);
-  box-shadow: var(--shadow); overflow: hidden;
+  box-shadow: var(--shadow);
+  /* No overflow:hidden here — it would clip the adjustment tooltip when it
+     opens above a top row. Corners are rounded per-cell instead (below). */
 }
 #entrants-table th:first-child, #races-table th:first-child { border-top-left-radius: var(--radius); }
 #entrants-table th:last-child,  #races-table th:last-child  { border-top-right-radius: var(--radius); }
+#entrants-table tbody tr:last-child td:first-child,
+#races-table tbody tr:last-child td:first-child { border-bottom-left-radius: var(--radius); }
+#entrants-table tbody tr:last-child td:last-child,
+#races-table tbody tr:last-child td:last-child { border-bottom-right-radius: var(--radius); }
 
 /* Entrants table header row: a navy band like the SailSys page header. White
    text, with the sortable hover going a shade darker and the sort marker /
