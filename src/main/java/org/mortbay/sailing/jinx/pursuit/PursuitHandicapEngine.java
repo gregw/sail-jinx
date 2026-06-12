@@ -172,7 +172,7 @@ public class PursuitHandicapEngine implements HandicapEngine
         // = smallest elapsed = smallest share) and pursuit (front of
         // fleet = smallest elapsed = smallest share, by definition of
         // how pursuit start offsets are computed).
-        double gamma = (double) tTarget / (tTarget + config.idealRaceLength());
+        double gamma = (double) tTarget / (tTarget + config.idealRaceDuration());
         double[] weights = new double[participants.size()];
         double weightSum = 0.0;
         for (int i = 0; i < participants.size(); i++)

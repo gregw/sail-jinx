@@ -29,7 +29,7 @@ class JinxConfigTest
               timezoneOffset: 11
             algorithm:
               penaltyList: [6, 4, 2]
-              idealRaceLength: 75
+              idealRaceLength: 75         # legacy key — must still load via @JsonAlias
               dnfAllowance: 7
               earliestStart: "17:45"
               latitude: -34.1234
@@ -44,7 +44,7 @@ class JinxConfigTest
         assertThat(config.sailsys().clubId(), equalTo(23));
         assertThat(config.sailsys().timezoneOffset(), equalTo(11));
         assertThat(config.algorithm().penaltyList(), contains(6.0, 4.0, 2.0));
-        assertThat(config.algorithm().idealRaceLength(), equalTo(75));
+        assertThat(config.algorithm().idealRaceDuration(), equalTo(75));
         assertThat(config.algorithm().dnfAllowance(), equalTo(7));
         assertThat(config.algorithm().earliestStart(), equalTo("17:45"));
         assertThat(config.algorithm().latitude(), closeTo(-34.1234, 1e-9));
@@ -91,7 +91,7 @@ class JinxConfigTest
 
         // Algorithm defaults (from wiki §10)
         assertThat(config.algorithm().penaltyList(), equalTo(List.of(5.0, 4.0, 3.0, 2.0, 1.0)));
-        assertThat(config.algorithm().idealRaceLength(), equalTo(90));
+        assertThat(config.algorithm().idealRaceDuration(), equalTo(90));
         assertThat(config.algorithm().dnfAllowance(), equalTo(5));
         assertThat(config.algorithm().earliestStart(), equalTo("18:00"));
         // Manly Yacht Club ground truth — defaults are tuned to the

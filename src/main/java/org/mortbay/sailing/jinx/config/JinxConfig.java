@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
@@ -71,21 +72,18 @@ public record JinxConfig(
      * {@code data/store/series-config/{seriesId}.json}).
      *
      * <p>{@code latitude}/{@code longitude} default to MYC (Spit-mouth-ish);
-     * {@code limitBySunset} is the toggle for an upcoming feature that caps
-     * the target race length so the slowest boat is expected to finish before
-     * sunset on the race date.
+     * {@code limitBySunset} caps the race duration so the slowest boat is
+     * expected to finish by sunset on the race date.
      *
-     * <p>TODO: when {@code limitBySunset} is wired into the engine, fetch
-     * sunset wall-clock for the race date via
-     * <pre>
-     *   GET https://api.sunrise-sunset.org/json?lat={lat}&lng={lng}&date={YYYY-MM-DD}&formatted=0
-     * </pre>
-     * The {@code results.sunset} field in the response is ISO-8601 UTC and
-     * can be converted to local time using {@link SailSys#timezone()}.
+     * <p>Sunset is computed locally by
+     * {@link org.mortbay.sailing.jinx.pursuit.SolarTimes#sunsetLocal} (no
+     * external API) and converted to local wall-clock using the configured
+     * {@link SailSys#timezone()}, which keeps summer DST correct for the
+     * evening twilight races this serves.
      */
     public record Algorithm(
         @JsonProperty("penaltyList") List<Double> penaltyList,
-        @JsonProperty("idealRaceLength") int idealRaceLength,
+        @JsonProperty("idealRaceDuration") @JsonAlias("idealRaceLength") int idealRaceDuration,
         @JsonProperty("dnfAllowance") int dnfAllowance,
         @JsonProperty("earliestStart") String earliestStart,
         @JsonProperty("latitude") Double latitude,
@@ -96,8 +94,8 @@ public record JinxConfig(
         {
             if (penaltyList == null || penaltyList.isEmpty())
                 penaltyList = List.of(5.0, 4.0, 3.0, 2.0, 1.0);
-            if (idealRaceLength <= 0)
-                idealRaceLength = 90;
+            if (idealRaceDuration <= 0)
+                idealRaceDuration = 90;
             if (dnfAllowance <= 0)
                 dnfAllowance = 5;
             if (earliestStart == null || earliestStart.isBlank())

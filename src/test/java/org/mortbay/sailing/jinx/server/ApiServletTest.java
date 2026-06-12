@@ -7,6 +7,10 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -221,5 +225,129 @@ class ApiServletTest
             Map.of(16097, abdPenalty(19802)), "2026-06-02");
         assertThat(starter(original, 1330).path("startedRace").asBoolean(), is(false));
         assertThat(starter(original, 767).path("finishTime").asText(), is("2026-06-02T19:00:00.000"));
+    }
+
+    // ---- computeCoursePlan: turn a target race DURATION into a per-division
+    // course length. A boat's predicted speed is TCF × v0Knots, so over t hours
+    // it sails TCF × v0 × t nm. We size each division's course to the SLOWEST
+    // (min-TCF) boat, rounded to 0.1 nm. When limitBySunset, the duration is
+    // first capped so earliestStart + duration ≤ sunset. ----
+
+    private static ApiServlet.DivisionCourse course(ApiServlet.CoursePlan plan, int divisionId)
+    {
+        for (ApiServlet.DivisionCourse dc : plan.divisions())
+            if (dc.divisionId() == divisionId) return dc;
+        throw new AssertionError("division " + divisionId + " not in plan");
+    }
+
+    @Test
+    void courseLengthIsSlowestTcfTimesV0TimesHoursRoundedToOneDecimal()
+    {
+        // One (already-slowest) TCF per division in; one course out, 1:1.
+        // Div 1: 0.95 × 6.17 × (70/60) = 6.838… → 6.8 nm.
+        // Div 2: 1.20 × 6.17 × (70/60) = 8.638… → 8.6 nm.
+        ApiServlet.CoursePlan plan = ApiServlet.computeCoursePlan(
+            6.17, 70, false, LocalTime.of(18, 0), null,
+            List.of(new ApiServlet.DivisionTcf(1, 0.95),
+                    new ApiServlet.DivisionTcf(2, 1.20)));
+        assertThat(plan.effectiveDurationMinutes(), is(70));
+        assertThat(plan.limitedBySunset(), is(false));
+        assertThat(plan.divisions().size(), is(2));
+        assertThat(course(plan, 1).courseLengthNm(), closeTo(6.8, 1e-9));
+        assertThat(course(plan, 2).courseLengthNm(), closeTo(8.6, 1e-9));
+    }
+
+    @Test
+    void sunsetCapShortensDurationAndShrinksCourse()
+    {
+        // earliest 18:00, sunset 19:30 → max 90 min; requested 120 capped to 90.
+        ApiServlet.CoursePlan plan = ApiServlet.computeCoursePlan(
+            6.0, 120, true, LocalTime.of(18, 0), LocalTime.of(19, 30),
+            List.of(new ApiServlet.DivisionTcf(7, 1.0)));
+        assertThat(plan.effectiveDurationMinutes(), is(90));
+        assertThat(plan.limitedBySunset(), is(true));
+        // 1.0 × 6.0 × (90/60) = 9.0 nm.
+        assertThat(course(plan, 7).courseLengthNm(), closeTo(9.0, 1e-9));
+    }
+
+    @Test
+    void durationWithinSunsetLimitIsNotCapped()
+    {
+        ApiServlet.CoursePlan plan = ApiServlet.computeCoursePlan(
+            6.0, 60, true, LocalTime.of(18, 0), LocalTime.of(19, 30),
+            List.of(new ApiServlet.DivisionTcf(7, 1.0)));
+        assertThat(plan.effectiveDurationMinutes(), is(60));
+        assertThat(plan.limitedBySunset(), is(false));
+    }
+
+    @Test
+    void sunsetBeforeEarliestStartClampsToZeroAndFlagsLimited()
+    {
+        // Out-of-season date: sunset 17:00 is before the 18:00 start, so the
+        // race can't finish before dark. The cap engages (clamped to 0 min)
+        // and is flagged rather than silently ignored — which is what made the
+        // limit look broken on a winter test race.
+        ApiServlet.CoursePlan plan = ApiServlet.computeCoursePlan(
+            6.0, 120, true, LocalTime.of(18, 0), LocalTime.of(17, 0),
+            List.of(new ApiServlet.DivisionTcf(7, 1.0)));
+        assertThat(plan.effectiveDurationMinutes(), is(0));
+        assertThat(plan.limitedBySunset(), is(true));
+        assertThat(course(plan, 7).courseLengthNm(), closeTo(0.0, 1e-9));
+    }
+
+    // ---- deriveV0: SailSys measures each boat's start offset from the
+    // earliest (slowest) boat IN ITS OWN DIVISION, so offsets are only
+    // comparable within a division. V0 must be derived from a same-division
+    // slowest/fastest pair; mixing divisions inflates it. ----
+
+    private Map<String, Object> boatRow(double tcf, long offsetSeconds)
+    {
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("tcf", tcf);
+        r.put("startOffsetSeconds", offsetSeconds);
+        return r;
+    }
+
+    private Map<String, Object> divisionWith(List<Map<String, Object>> rows)
+    {
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("entrants", rows);
+        return d;
+    }
+
+    @Test
+    void deriveV0UsesWithinDivisionPairsNotCrossDivision()
+    {
+        // Two divisions, both consistent with a true V0 of 6.0 kn over a 100 nm
+        // probe course (offsets are each measured from that division's own
+        // slowest boat). Div 1 spans 0.75–1.00 with a 20000 s spread; Div 2
+        // spans 0.90–1.065 with a 10329 s spread.
+        List<Map<String, Object>> divs = new ArrayList<>();
+        divs.add(divisionWith(List.of(boatRow(0.75, 0), boatRow(1.00, 20000))));
+        divs.add(divisionWith(List.of(boatRow(0.90, 0), boatRow(1.065, 10329))));
+
+        Map<String, Object> d = ApiServlet.deriveV0(divs, 100.0);
+
+        // Picks the widest-spread division (Div 1) and stays within it: 0.75/1.00,
+        // never the cross-division 0.75/1.065 pair (which would give ~13.7 kn).
+        assertThat(((Number) d.get("slowestTcf")).doubleValue(), closeTo(0.75, 1e-9));
+        assertThat(((Number) d.get("fastestTcf")).doubleValue(), closeTo(1.00, 1e-9));
+        assertThat(((Number) d.get("v0Knots")).doubleValue(), closeTo(6.0, 0.05));
+    }
+
+    @Test
+    void nullSunsetOrLimitDisabledIgnoresSunset()
+    {
+        ApiServlet.CoursePlan a = ApiServlet.computeCoursePlan(
+            6.0, 120, true, LocalTime.of(18, 0), null,
+            List.of(new ApiServlet.DivisionTcf(7, 1.0)));
+        assertThat(a.effectiveDurationMinutes(), is(120));
+        assertThat(a.limitedBySunset(), is(false));
+
+        ApiServlet.CoursePlan b = ApiServlet.computeCoursePlan(
+            6.0, 120, false, LocalTime.of(18, 0), LocalTime.of(18, 30),
+            List.of(new ApiServlet.DivisionTcf(7, 1.0)));
+        assertThat(b.effectiveDurationMinutes(), is(120));
+        assertThat(b.limitedBySunset(), is(false));
     }
 }

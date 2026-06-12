@@ -45,7 +45,7 @@
       <label for="cfg-penalty-list">Penalty list</label>
       <input id="cfg-penalty-list" type="text" placeholder="5, 4, 3, 2, 1, 0.5, 0.25">
 
-      <label for="cfg-ideal">Ideal race length (min)</label>
+      <label for="cfg-ideal">Ideal race duration (min)</label>
       <input id="cfg-ideal" type="number" min="1" step="1">
 
       <label for="cfg-dnf">DNF allowance (min)</label>
@@ -246,7 +246,7 @@
 
   function fillForm(cfg) {
     cfgPenalty.value  = Array.isArray(cfg.penaltyList) ? cfg.penaltyList.join(', ') : '';
-    cfgIdeal.value    = cfg.idealRaceLength ?? '';
+    cfgIdeal.value    = cfg.idealRaceDuration ?? '';
     cfgDnf.value      = cfg.dnfAllowance ?? '';
     cfgEarliest.value = cfg.earliestStart || '';
     cfgLat.value      = cfg.latitude ?? '';
@@ -271,7 +271,7 @@
     const lng = parseFloat(cfgLng.value);
     return {
       penaltyList,
-      idealRaceLength: parseInt(cfgIdeal.value, 10) || 0,
+      idealRaceDuration: parseInt(cfgIdeal.value, 10) || 0,
       dnfAllowance: parseInt(cfgDnf.value, 10) || 0,
       earliestStart: cfgEarliest.value || '',
       latitude: Number.isNaN(lat) ? null : lat,

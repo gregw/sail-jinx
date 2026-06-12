@@ -113,12 +113,14 @@
 
   // Publication-state flags, recomputed in renderStatus from the race status.
   // They gate input editability across the page:
-  //   entrantsPublished  → TCF inputs become read-only (TCFs must not change
-  //                        once entrants are published).
+  //   entrantsPublished  → entrant list is visible to competitors (does NOT
+  //                        affect TCF editing).
   //   resultsPublished   → finish / flag / came / actualStart inputs become
-  //                        read-only and Process Results disappears.
-  //   startTimesPublished→ per-division start + course inputs become
-  //                        read-only and Process start times disappears.
+  //                        read-only and Process Results disappears; also locks
+  //                        TCF editing for a fleet (non-pursuit) race.
+  //   startTimesPublished→ per-division start + course inputs become read-only
+  //                        and Process start times disappears; also locks TCF
+  //                        editing for a pursuit race. (See tcfEditingLocked.)
   let entrantsPublished = false;
   let resultsPublished = false;
   let startTimesPublished = false;
@@ -167,6 +169,20 @@
   // divisionScheduledCourse() the same way divisionStartsMap is checked
   // against divisionScheduledStart().
   let divisionCourseMap = new Map();
+
+  // Active race duration (minutes) driving the per-division course-length
+  // auto-calc for a pursuit race. null ⇒ manual mode (courses typed directly).
+  // Set by the Race-duration box / its default; cleared when a course is edited
+  // by hand. lastCoursePlanNote holds the sunset-cap message to redisplay
+  // across renderControls() re-renders.
+  let raceDurationMinutes = null;
+  let lastCoursePlanNote = '';
+
+  // Locally-configured earliest start (HH:MM) from a CUSTOM series config. When
+  // set it overrides SailSys's per-division startTimeLocal as the default for
+  // the pursuit start boxes (the local config prevails; SailSys's value becomes
+  // a reference only). null when the series has no custom config.
+  let seriesEarliestStart = null;
 
   // Times state. timesMap is the live editable view; originalTimesJson is the
   // serialized snapshot we compare against to decide whether the times block
@@ -425,6 +441,7 @@
         dutyBoatId: dutyBoatId,
         divisionStarts: Array.from(divisionStartsMap.entries()),
         divisionCourses: Array.from(divisionCourseMap.entries()),
+        raceDurationMinutes: raceDurationMinutes,
         dirtyTcf: Array.from(dirtyTcf.entries()),
         // Serialise dirtyFlags as [[boatId, {added, removed}], ...].
         // added/removed are arrays so JSON survives the round-trip.
@@ -458,6 +475,7 @@
       if (Array.isArray(p.divisionCourses)) {
         divisionCourseMap = new Map(p.divisionCourses.map(([k, v]) => [String(k), Number(v)]));
       }
+      if (typeof p.raceDurationMinutes === 'number') raceDurationMinutes = p.raceDurationMinutes;
       hideDnc = !!p.hideDnc;
       showSailsys = !!p.showSailsys;
       // selectedHandicap may be a string (local mode label) or a number
@@ -478,11 +496,11 @@
           }
         }
       }
-      // Only restore dirty TCF state when entrants are NOT published AND we
-      // manage the handicap. Published races / foreign-handicap series have no
+      // Only restore dirty TCF state while TCF editing is still unlocked AND we
+      // manage the handicap. Locked races / foreign-handicap series have no
       // editable TCF input, so reviving the dirt would permanently mark the
       // page dirty without offering the user any way to clear it.
-      if (!entrantsPublished && isOurHandicap && Array.isArray(p.dirtyTcf)) {
+      if (!tcfEditingLocked() && isOurHandicap && Array.isArray(p.dirtyTcf)) {
         dirtyTcf.clear();
         for (const [k, v] of p.dirtyTcf) dirtyTcf.set(Number(k), Number(v));
       }
@@ -676,6 +694,12 @@
   // time; for a pursuit race it is the division's earliest start. Seconds are
   // dropped — the per-division start is minute-granularity. Returns null when
   // the status hasn't loaded yet or the division isn't in divisionTiming.
+  //
+  // SailSys is authoritative for the per-division start once it's been set, so
+  // a per-division override (e.g. one division at 14:10) sticks after Process.
+  // The locally-configured earliest start is applied as a *default* by seeding
+  // unset divisions on load (see initDivisionStartDefaults) — not by overriding
+  // here, which would clobber an intentional per-division value on re-render.
   function divisionScheduledStart(divisionId) {
     if (!currentStatus || !Array.isArray(currentStatus.divisionTiming)) return null;
     const dt = currentStatus.divisionTiming.find(d => d && d.divisionId === divisionId);
@@ -686,15 +710,44 @@
     return pad(Number(m[1])) + ':' + pad(Number(m[2]));
   }
 
-  // A division's course length straight out of currentStatus.divisionTiming.
-  // Returns a Number, or null when unavailable. Pursuit-only in practice
-  // (scratch starts carry no meaningful course length for our purposes).
+  // Course length (nm, 1dp) for a division derived from the active race
+  // duration: the slowest boat sails slowestTcf × V₀ × hours, so that's the
+  // course that makes it finish in the target time. Returns null when not in
+  // duration mode, there's no calibration, or the division has no rated boats.
+  function durationDerivedCourse(divisionId) {
+    if (!isPursuit || raceDurationMinutes == null) return null;
+    if (!currentCalibration || !(currentCalibration.v0Knots > 0)) return null;
+    let min = null;
+    for (const e of entrantData) {
+      if (!e || !e.division || String(e.division.id) !== String(divisionId)) continue;
+      const t = currentTcf(e);
+      if (typeof t === 'number' && isFinite(t) && t > 0 && (min == null || t < min)) min = t;
+    }
+    if (min == null) return null;
+    return Math.round(min * currentCalibration.v0Knots * raceDurationMinutes / 60 * 10) / 10;
+  }
+
+  // A division's course length. In duration mode the duration-derived value is
+  // authoritative (the duration calculator owns course lengths), so it's the
+  // baseline everywhere — box default, dirty comparison, Process fallback — and
+  // nothing reads back as dirty just from loading. Otherwise it's SailSys's
+  // stored courseLength. Returns a Number, or null when unavailable.
   function divisionScheduledCourse(divisionId) {
+    const derived = durationDerivedCourse(divisionId);
+    if (derived != null) return derived;
     if (!currentStatus || !Array.isArray(currentStatus.divisionTiming)) return null;
     const dt = currentStatus.divisionTiming.find(d => d && d.divisionId === divisionId);
     if (!dt || dt.courseLength == null || dt.courseLength === '') return null;
     const n = Number(dt.courseLength);
     return Number.isFinite(n) ? n : null;
+  }
+
+  // When TCF editing locks. A pursuit race's TCFs feed the staggered start
+  // sheet, so they stay editable until the START TIMES are published; a fleet
+  // race's TCFs only affect corrected results, so they stay editable until the
+  // RESULTS are published. (Publishing entrants no longer locks TCFs.)
+  function tcfEditingLocked() {
+    return isPursuit ? startTimesPublished : resultsPublished;
   }
 
   // The scheduled start string for an entrant — for pursuit, the entrant's
@@ -1185,12 +1238,12 @@
       render: (e) => {
         const cur = currentTcf(e);
         const fmt = (n) => (typeof n === 'number' && !isNaN(n)) ? n.toFixed(4) : '';
-        // TCF input is editable only while entrants are NOT published (TCFs
-        // must not change once published) AND the race is scored against the
-        // handicap definition this app manages. Published races, or any race
-        // whose series uses a different default handicap, see the value
+        // TCF input is editable until TCF editing locks (pursuit: start times
+        // published; fleet: results published) AND only when the race is scored
+        // against the handicap definition this app manages. Locked races, or any
+        // race whose series uses a different default handicap, see the value
         // read-only — we have no business writing those TCFs.
-        if (entrantsPublished || !isOurHandicap) {
+        if (tcfEditingLocked() || !isOurHandicap) {
           return esc(fmt(cur));
         }
         const orig = originalTcf(e);
@@ -2407,6 +2460,40 @@
 
   let lastDirtyState = false;
 
+  // Identify the currently-focused editable control by a stable selector +
+  // caret position, so focus survives a renderEntrants()/renderControls()
+  // rebuild (e.g. the first edit, which flips the dirty state and repaints the
+  // whole table — previously dropping focus mid-keystroke / mid-arrow-bump).
+  function captureFocus() {
+    const el = document.activeElement;
+    if (!el || !(el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')) return null;
+    const ds = el.dataset || {};
+    let selector = null;
+    if (el.id === 'race-duration') selector = '#race-duration';
+    else if (ds.boatId != null && ds.field)
+      selector = 'input[data-boat-id="' + ds.boatId + '"][data-field="' + ds.field + '"]';
+    else if (el.classList.contains('came-input') && ds.boatId != null)
+      selector = 'input.came-input[data-boat-id="' + ds.boatId + '"]';
+    else if (el.classList.contains('division-start') && ds.divId != null)
+      selector = 'input.division-start[data-div-id="' + ds.divId + '"]';
+    else if (el.classList.contains('division-course') && ds.divId != null)
+      selector = 'input.division-course[data-div-id="' + ds.divId + '"]';
+    if (!selector) return null;
+    let selStart = null, selEnd = null;
+    try { selStart = el.selectionStart; selEnd = el.selectionEnd; } catch (_) {}
+    return { selector, selStart, selEnd };
+  }
+
+  function restoreFocus(desc) {
+    if (!desc) return;
+    const el = document.querySelector(desc.selector);
+    if (!el) return;
+    try { el.focus(); } catch (_) {}
+    if (desc.selStart != null) {
+      try { el.setSelectionRange(desc.selStart, desc.selEnd); } catch (_) {}
+    }
+  }
+
   function updateSaveBar() {
     const bar = document.getElementById('save-bar');
     const summary = document.getElementById('save-summary');
@@ -2445,11 +2532,22 @@
     const nowDirty = isAnyDirty();
     if (nowDirty !== lastDirtyState) {
       lastDirtyState = nowDirty;
-      renderEntrants();
-      // The controls panel gates Process Handicaps on isAnyDirty() — repaint
-      // it so the button flips between enabled and "SAVE the pending edits
-      // first" as the user edits and saves.
-      renderControls();
+      // These repaints rebuild the very input being edited (the first edit of a
+      // session flips the dirty state). Preserve the caret + focus across them
+      // so an arrow-key bump or keystroke doesn't bounce focus to the SAVE bar.
+      // While typing in the Race-duration box the course cells are patched in
+      // place (applyCoursePlanInPlace), so the re-render is suppressed entirely
+      // — otherwise it would rebuild the duration <input> mid-keystroke, reset
+      // its value to the computed number, and steal focus.
+      if (!suppressDirtyRerender) {
+        const focusDesc = captureFocus();
+        renderEntrants();
+        // The controls panel gates Process Handicaps on isAnyDirty() — repaint
+        // it so the button flips between enabled and "SAVE the pending edits
+        // first" as the user edits and saves.
+        renderControls();
+        restoreFocus(focusDesc);
+      }
     }
   }
 
@@ -2715,12 +2813,13 @@
     const anyCame = Array.from(timesMap.values()).some(t => t && t.came);
 
     // --- 1. Publish entrants -------------------------------------------------
-    // Ticking publishes entrants and (per the confirm dialog) freezes TCF
-    // editing. Unticking reverts. Disabled while a start-time processing pass
-    // is in flight.
+    // Publishes/unpublishes the entrant list. TCF editing is NOT affected by
+    // this (pursuit TCFs stay editable until start times are published; fleet
+    // TCFs until results are published). Disabled while a start-time processing
+    // pass is in flight.
     const entrantsTip = entrantsPublished
-      ? 'TCF editing is locked while entrants are published.'
-      : 'Publishing locks TCF editing for this race.';
+      ? 'The entrant list is published (visible to competitors).'
+      : 'Publish the entrant list so competitors can see who has entered.';
     const entrantsRow = `
       <div class="controls-row">
         <label class="vis-toggle" title="${esc(entrantsTip)}">
@@ -2760,10 +2859,25 @@
            </label>
          </div>`
       : '';
+    // Race-duration → course-length calculator (pursuit, calibrated, pre-publish).
+    // One duration drives every division's course length from its slowest boat;
+    // see recomputeCoursesFromDuration. Hidden without a calibration (V₀) — then
+    // the per-division course inputs are filled in by hand as before.
+    const haveCalibrationForCourse = !!(currentCalibration && currentCalibration.v0Knots > 0);
+    const durationRow = (isPursuit && !startTimesPublished && haveCalibrationForCourse)
+      ? `<div class="controls-row">
+           <label class="muted" style="min-width:8em;" for="race-duration">Race duration</label>
+           <input type="text" id="race-duration" class="time-input" style="width:7ch;"
+                  placeholder="h:mm"
+                  value="${raceDurationMinutes != null ? esc(raceDurationMinutes) : ''}"
+                  title="Target race time — whole minutes (e.g. 90) or H:MM (e.g. 1:30). Sets each division's course length from the slowest boat's TCF. Editing a course length by hand clears this.">
+           <span id="duration-note" class="hint">${esc(lastCoursePlanNote || '')}</span>
+         </div>`
+      : '';
     // Step 2 groups the start-times action(s) with the publish toggle, the way
     // the Results step already pairs Process results + the publish selector.
     // For a scratch race this is just the per-division allocated-start inputs.
-    const startStepHtml = calibrateRow + divisionStartRowsHtml() + processRow + startPublishRow;
+    const startStepHtml = calibrateRow + durationRow + divisionStartRowsHtml() + processRow + startPublishRow;
 
     // --- 3. Process + publish results ----------------------------------------
     // Process Results is always present once there are entrants; greyed when
@@ -2918,21 +3032,11 @@
     };
   }
 
-  // Publish-entrants toggle handler. Ticking pops a confirm warning that TCFs
-  // shouldn't change once published (then publishes on OK, reverts on Cancel);
-  // unticking reverts immediately with no prompt. The publish/unpublish itself
-  // goes through doVisibility, whose re-render re-evaluates the TCF read-only
-  // gate (entrantsPublished).
+  // Publish-entrants toggle handler. Publishing the entrant list no longer
+  // locks TCF editing, so there's no confirm prompt — the checkbox simply
+  // publishes or unpublishes the list via doVisibility.
   async function onTogglePublishEntrants(ev) {
-    const cb = ev.target;
-    if (cb.checked) {
-      const ok = confirm('Publishing entrants locks TCF editing for this race — '
-        + 'TCFs should not be changed once published. Publish now?');
-      if (!ok) { cb.checked = false; return; }
-      await doVisibility('entrants-visibility', true);
-    } else {
-      await doVisibility('entrants-visibility', false);
-    }
+    await doVisibility('entrants-visibility', ev.target.checked);
   }
 
   // Per-division start (and, for pursuit, course length) inputs for the
@@ -2993,6 +3097,157 @@
     return entrantData
       .filter(e => e && e.division && String(e.division.id) === String(divisionId))
       .map(e => String(e.boat && e.boat.id));
+  }
+
+  // Parse a race-duration entry: whole minutes ("90") or H:MM / HH:MM
+  // ("1:30" → 90). Returns minutes (Number) or null when unparseable.
+  function parseDurationMinutes(raw) {
+    if (raw == null) return null;
+    const s = String(raw).trim();
+    if (s === '') return null;
+    if (/^\d+$/.test(s)) { const n = Number(s); return n > 0 ? n : null; }
+    const m = s.match(/^(\d{1,2}):([0-5]?\d)$/);
+    if (!m) return null;
+    const mins = Number(m[1]) * 60 + Number(m[2]);
+    return mins > 0 ? mins : null;
+  }
+
+  // Per-division slowest (minimum) TCF among entered boats, as
+  // [{divisionId, slowestTcf}]. The course is sized to the slowest boat so it
+  // finishes in the target duration; divisions with no valid TCF are omitted.
+  function slowestTcfByDivision() {
+    const out = [];
+    if (!currentStatus || !Array.isArray(currentStatus.divisionTiming)) return out;
+    for (const d of currentStatus.divisionTiming) {
+      if (!d || d.divisionId == null) continue;
+      let min = null;
+      for (const e of entrantData) {
+        if (!e || !e.division || String(e.division.id) !== String(d.divisionId)) continue;
+        const t = currentTcf(e);
+        if (typeof t === 'number' && isFinite(t) && t > 0 && (min == null || t < min)) min = t;
+      }
+      if (min != null) out.push({ divisionId: d.divisionId, slowestTcf: min });
+    }
+    return out;
+  }
+
+  // Monotonic token so out-of-order responses from rapid keystrokes (the box
+  // recomputes on every keystroke) can't apply stale course lengths — only the
+  // latest request's response is honoured.
+  let coursePlanSeq = 0;
+
+  // When set, updateSaveBar() skips its dirty-flip renderEntrants/renderControls
+  // repaint. applyCoursePlanInPlace sets it so live duration typing patches the
+  // course cells without rebuilding (and refocusing/resetting) the duration box.
+  let suppressDirtyRerender = false;
+
+  // POST the target duration + per-division slowest TCFs to the server, which
+  // applies the calibration V₀ and (when the series is configured to) the
+  // sunset cap, and write the returned course lengths into divisionCourseMap.
+  // durationMinutes === null asks the server for the series default. Leaves
+  // manual entry untouched when there's no calibration (server replies 409).
+  //
+  // opts.inPlace patches only the course inputs + note (keeping the duration
+  // box focused as the user types); otherwise the whole workflow re-renders.
+  async function recomputeCoursesFromDuration(durationMinutes, opts) {
+    opts = opts || {};
+    if (!currentCalibration || !(currentCalibration.v0Knots > 0)) return;
+    const divs = slowestTcfByDivision();
+    if (divs.length === 0) return;
+    const body = {
+      seriesId: seriesIdForSave != null ? String(seriesIdForSave) : null,
+      raceDate: (currentStatus && currentStatus.dateTime) ? currentStatus.dateTime : null,
+      divisions: divs
+    };
+    if (durationMinutes != null) body.durationMinutes = durationMinutes;
+    const seq = ++coursePlanSeq;
+    const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/course-plan', body);
+    if (seq !== coursePlanSeq) return; // superseded by a later keystroke
+    if (!r.ok || !r.body) return;
+    // The server call exists for the sunset cap — it returns the effective
+    // (possibly capped) duration. The per-division course lengths are then
+    // derived live via divisionScheduledCourse/durationDerivedCourse, so they
+    // stay the *baseline* (not dirty) rather than being seeded as edits. Setting
+    // a duration re-derives every course, so drop any manual overrides.
+    raceDurationMinutes = r.body.effectiveDurationMinutes;
+    divisionCourseMap.clear();
+    if (r.body.limitedBySunset && r.body.sunsetLocal) {
+      lastCoursePlanNote = (r.body.effectiveDurationMinutes > 0)
+
+        ? ('Capped to ' + r.body.effectiveDurationMinutes
+            + ' min by sunset (' + r.body.sunsetLocal + ').')
+        : ('Sunset (' + r.body.sunsetLocal + ') is before the race start');
+    } else {
+      lastCoursePlanNote = '';
+    }
+    if (opts.inPlace) applyCoursePlanInPlace();
+    else renderControls();
+    sessionSaveForm();
+  }
+
+  // Patch the rendered course inputs + the duration note in place — without
+  // rebuilding the workflow — so the Race-duration box keeps focus and typed
+  // text while courses update live on each keystroke. In duration mode the
+  // course is the derived baseline, so it's shown but never marked dirty.
+  function applyCoursePlanInPlace() {
+    if (currentStatus && Array.isArray(currentStatus.divisionTiming)) {
+      for (const d of currentStatus.divisionTiming) {
+        if (!d || d.divisionId == null) continue;
+        const inp = document.querySelector('input.division-course[data-div-id="' + d.divisionId + '"]');
+        if (!inp) continue;
+        const c = divisionScheduledCourse(d.divisionId);
+        inp.value = (c == null ? '' : c);
+        inp.classList.remove('invalid', 'dirty');
+      }
+    }
+    const note = document.getElementById('duration-note');
+    if (note) note.textContent = lastCoursePlanNote || '';
+    // Reflect the new dirtiness in the SAVE bar + status box, but suppress the
+    // dirty-flip workflow repaint so the duration box keeps focus + typed text.
+    suppressDirtyRerender = true;
+    try { updateSaveBar(); } finally { suppressDirtyRerender = false; }
+  }
+
+  // On load (or after a status refresh), populate the per-division courses from
+  // the active or default duration — unless the user has already set them up
+  // manually. Called once the gates (pursuit, editable, calibrated, not
+  // published) and entrant TCFs are known.
+  function initCourseDurationCalc() {
+    if (!IS_EDITABLE || !isPursuit || startTimesPublished) return;
+    if (!currentCalibration || !(currentCalibration.v0Knots > 0)) return;
+    // Duration mode persisted from this tab — refresh courses against it.
+    if (raceDurationMinutes != null) { recomputeCoursesFromDuration(raceDurationMinutes); return; }
+    // Manual courses already in play — leave them, stay in manual mode.
+    if (divisionCourseMap.size > 0) return;
+    // Fresh page: seed from the series default duration.
+    recomputeCoursesFromDuration(null);
+  }
+
+  // Default each pursuit division's start to the locally-configured earliest
+  // start, as an editable (dirty) override the user then pushes via Process.
+  // This is a DEFAULT, not an override of SailSys: it only seeds divisions whose
+  // SailSys start still differs from the configured time, skips any the user has
+  // already edited this session, and — crucially — does nothing once start times
+  // have been processed (handicapAndStartTimeProcessingStatus === 2). After that
+  // SailSys is authoritative, so an intentional per-division value (e.g. one
+  // division at 14:10) is shown as-is and never reset back to the default.
+  function initDivisionStartDefaults() {
+    if (!IS_EDITABLE || !isPursuit || startTimesPublished) return;
+    if (!seriesEarliestStart) return;
+    if (!currentStatus || !Array.isArray(currentStatus.divisionTiming)) return;
+    if ((currentStatus.handicapAndStartTimeProcessingStatus ?? 0) === 2) return; // already set up
+    let seeded = false;
+    for (const d of currentStatus.divisionTiming) {
+      if (!d || d.divisionId == null) continue;
+      const key = String(d.divisionId);
+      if (divisionStartsMap.has(key)) continue;              // user's session edit wins
+      if (divisionBoatIds(d.divisionId).length === 0) continue;
+      const sched = divisionScheduledStart(d.divisionId);    // SailSys's current value
+      if (sched && timeStringsEqual(sched, seriesEarliestStart)) continue; // already matches
+      divisionStartsMap.set(key, seriesEarliestStart);
+      seeded = true;
+    }
+    if (seeded) { updateSaveBar(); sessionSaveForm(); }
   }
 
   // After a per-division actualStart change, refresh the Elapsed/Late/Flags
@@ -3132,6 +3387,27 @@
     document.querySelectorAll('input.division-course').forEach(inp => {
       const commit = () => {
         const divId = inp.dataset.divId;
+        // A hand-entered course length takes over from the duration calculator.
+        // Before leaving duration mode, lock in every division's currently-
+        // derived course as an explicit override, so editing one division
+        // doesn't blank the others (divisionScheduledCourse would otherwise fall
+        // back to SailSys's stored value once duration mode is off).
+        if (raceDurationMinutes != null) {
+          for (const d of (currentStatus && currentStatus.divisionTiming) || []) {
+            if (!d || d.divisionId == null) continue;
+            const k = String(d.divisionId);
+            if (divisionCourseMap.has(k)) continue;
+            const c = durationDerivedCourse(d.divisionId);
+            if (c != null) divisionCourseMap.set(k, c);
+          }
+          raceDurationMinutes = null;
+          lastCoursePlanNote = '';
+          const durInp = document.getElementById('race-duration');
+          if (durInp) durInp.value = '';
+          const note = document.getElementById('duration-note');
+          if (note) note.textContent = '';
+        }
+        // Compare against SailSys's stored course now that duration mode is off.
         const sched = divisionScheduledCourse(Number(divId));
         const raw = inp.value.trim();
         if (raw === '') {
@@ -3154,6 +3430,26 @@
       inp.oninput = commit;
       inp.onchange = commit;
     });
+
+    // Race-duration box: re-derive all division course lengths live on every
+    // keystroke (in place, keeping focus). On commit (blur/Enter) do a full
+    // re-render so the box normalises to the effective, possibly sunset-capped,
+    // duration.
+    const durInput = document.getElementById('race-duration');
+    if (durInput) {
+      durInput.oninput = () => {
+        const mins = parseDurationMinutes(durInput.value);
+        if (mins == null) { durInput.classList.add('invalid'); return; }
+        durInput.classList.remove('invalid');
+        recomputeCoursesFromDuration(mins, { inPlace: true });
+      };
+      durInput.onchange = () => {
+        const mins = parseDurationMinutes(durInput.value);
+        if (mins == null) { durInput.classList.add('invalid'); return; }
+        durInput.classList.remove('invalid');
+        recomputeCoursesFromDuration(mins);
+      };
+    }
     document.querySelectorAll('button.div-now-btn').forEach(btn => {
       btn.onclick = () => {
         const divId = btn.dataset.divId;
@@ -3373,7 +3669,7 @@
     });
     // Default t_target_elapsed to the median actual elapsed time of
     // finishers (rounded to a whole minute). Empty fleet falls back to
-    // the algorithm config's idealRaceLength (server-side default).
+    // the algorithm config's idealRaceDuration (server-side default).
     const finElapsed = boats
       .filter(b => b.status === 'FIN' && typeof b.elapsedMinutes === 'number')
       .map(b => b.elapsedMinutes)
@@ -3407,7 +3703,7 @@
     renderEntrantsHead();
     renderEntrants();
     renderControls();
-    const ideal = r.body.config && r.body.config.idealRaceLength;
+    const ideal = r.body.config && r.body.config.idealRaceDuration;
     const tMsg = (r.body.targetElapsedMinutes && ideal)
       ? (' (mean elapsed ' + r.body.targetElapsedMinutes + ' min vs ideal ' + ideal + ' min)')
       : (r.body.targetElapsedMinutes
@@ -3544,6 +3840,7 @@
     const html = ''
       + '<strong>Calibration complete</strong> &mdash; original timing restored.'
       + '<div style="margin-top:0.5rem;font-family:monospace;white-space:pre;">'
+      +   (d.divisionName ? 'division       = ' + esc(d.divisionName) + ' (boats compared within one division)\n' : '')
       +   'course D       = ' + esc(courseStr) + ' nm\n'
       +   'fastest TCF    = ' + esc(fastestStr) + '\n'
       +   'slowest TCF    = ' + esc(slowestStr) + '\n'
@@ -3654,16 +3951,36 @@
     // Persist any other dirty edits first (TCF / times / flags). The division
     // start + course values are sent below via /process itself.
     if (!(await ensureSaved())) return;
+    const courseFor = (d) => {
+      const divId = String(d.divisionId);
+      return divisionCourseMap.has(divId)
+        ? divisionCourseMap.get(divId)
+        : divisionScheduledCourse(d.divisionId);
+    };
+    // SailSys needs a course length for EVERY division (even ones we don't show
+    // because they have no entrants). Empty divisions have no boats to size a
+    // course from, so give them the smallest course among the divisions that do
+    // have entrants — short enough that they can't be the binding constraint.
+    const enteredCourses = [];
+    for (const d of currentStatus.divisionTiming) {
+      if (!d || d.divisionId == null) continue;
+      if (divisionBoatIds(d.divisionId).length === 0) continue;
+      const c = courseFor(d);
+      if (c != null && c > 0) enteredCourses.push(c);
+    }
+    const minEnteredCourse = enteredCourses.length ? Math.min(...enteredCourses) : null;
+
     const divisions = {};
     let missingCourse = false;
     for (const d of currentStatus.divisionTiming) {
       if (!d || d.divisionId == null) continue;
       const divId = String(d.divisionId);
       const start = divisionStartsMap.get(divId) || divisionScheduledStart(d.divisionId);
-      const course = divisionCourseMap.has(divId)
-        ? divisionCourseMap.get(divId)
-        : divisionScheduledCourse(d.divisionId);
-      if (course == null || !(course > 0)) missingCourse = true;
+      const hasEntrants = divisionBoatIds(d.divisionId).length > 0;
+      let course = hasEntrants ? courseFor(d) : minEnteredCourse;
+      // A *shown* division must have a real course; an empty one only matters if
+      // we couldn't borrow a minimum (i.e. no entered division has a course).
+      if (hasEntrants && (course == null || !(course > 0))) missingCourse = true;
       divisions[divId] = {
         startTimeLocal: start || null,
         courseLength: (course != null && course > 0) ? course : null
@@ -4538,7 +4855,26 @@
     // looked dirty → status selector permanently disabled) and the duty-boat
     // <select> had no <option>s. Re-render now that the state is set up so
     // both controls reflect reality.
+    // Pull the series algorithm config so a locally-configured earliest start
+    // can DEFAULT the per-division start boxes (only a CUSTOM, user-saved config
+    // applies). SailSys stays authoritative — see initDivisionStartDefaults,
+    // which seeds only unset divisions and only before start times are
+    // processed, so a deliberate per-division start is never reset.
+    if (isPursuit && IS_EDITABLE && !startTimesPublished && seriesIdForSave != null) {
+      const cfgR = await fetchJson('/api/series/' + encodeURIComponent(seriesIdForSave) + '/config');
+      if (cfgR && cfgR.ok && cfgR.body && cfgR.body.isCustom
+          && cfgR.body.config && cfgR.body.config.earliestStart) {
+        const es = String(cfgR.body.config.earliestStart).match(/^(\d{1,2}):(\d{2})/);
+        if (es) seriesEarliestStart = es[1].padStart(2, '0') + ':' + es[2];
+      }
+      initDivisionStartDefaults();
+    }
+
     if (currentStatus) renderStatus(currentStatus, raceIdGlobal);
+
+    // Seed (or refresh) the per-division course lengths from the race-duration
+    // calculator now that status + entrants + calibration are all loaded.
+    initCourseDurationCalc();
 
     // sessionRestoreForm() may have rehydrated unsaved edits from a prior
     // tab session — surface the SAVE bar immediately if so. Without this

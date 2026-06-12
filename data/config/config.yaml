@@ -9,7 +9,7 @@ sailsys:
 
 algorithm:
   penaltyList: [6, 4, 2 ]
-  idealRaceLength: 90         # minutes
+  idealRaceDuration: 90       # minutes
   dnfAllowance: 5             # minutes added to slowest finisher
   earliestStart: "18:00"
 

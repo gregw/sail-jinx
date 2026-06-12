@@ -34,11 +34,6 @@
     </p>
 
     <section>
-        <h2>Configuration</h2>
-        <div id="config-summary" class="banner banner-info">Loading…</div>
-    </section>
-
-    <section>
         <h2>Sign in to SailSys</h2>
         <div id="auth-state" class="banner banner-warn">Checking session…</div>
 
@@ -74,28 +69,7 @@
 <script src="/common.js"></script>
 <script>
     async function refreshState() {
-        const [statusR, configR] = await Promise.all([
-            fetchJson('/api/auth/status'),
-            fetchJson('/api/config')
-        ]);
-
-        const cfgEl = document.getElementById('config-summary');
-        if (configR.ok) {
-            const c = configR.body;
-            cfgEl.className = 'banner banner-info';
-            cfgEl.innerHTML =
-                '<strong>SailSys club:</strong> ' + esc(c.sailsys.clubId) +
-                ' &middot; <strong>handicap definition:</strong> ' + esc(c.sailsys.handicapDefinitionId) +
-                ' &middot; <em>series is chosen at runtime via the <a href="/series.html">Series tab</a></em>' +
-                '<br><strong>Algorithm:</strong> penalty list ' +
-                esc(JSON.stringify(c.algorithm.penaltyList)) +
-                ', ideal race length ' + esc(c.algorithm.idealRaceLength) +
-                ' min, DNF allowance ' + esc(c.algorithm.dnfAllowance) +
-                ' min, earliest start ' + esc(c.algorithm.earliestStart);
-        } else {
-            cfgEl.className = 'banner banner-err';
-            cfgEl.textContent = 'Cannot reach server.';
-        }
+        const statusR = await fetchJson('/api/auth/status');
 
         const authEl = document.getElementById('auth-state');
         const form = document.getElementById('login-form');

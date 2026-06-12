@@ -1,6 +1,7 @@
 package org.mortbay.sailing.jinx.server;
 
 import java.io.IOException;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -29,6 +30,7 @@ import org.mortbay.sailing.jinx.model.RaceTimes;
 import org.mortbay.sailing.jinx.model.Result;
 import org.mortbay.sailing.jinx.pursuit.HandicapEngine;
 import org.mortbay.sailing.jinx.pursuit.PursuitHandicapEngine;
+import org.mortbay.sailing.jinx.pursuit.SolarTimes;
 import org.mortbay.sailing.jinx.sailsys.SailSysClient;
 import org.mortbay.sailing.jinx.sailsys.SailSysSession;
 import org.mortbay.sailing.jinx.store.JsonStore;
@@ -100,6 +102,8 @@ public class ApiServlet extends HttpServlet
         java.util.regex.Pattern.compile("/races/(\\d+)/abandon");
     private static final java.util.regex.Pattern RACE_CALIBRATE =
         java.util.regex.Pattern.compile("/races/(\\d+)/calibrate");
+    private static final java.util.regex.Pattern RACE_COURSE_PLAN =
+        java.util.regex.Pattern.compile("/races/(\\d+)/course-plan");
     private static final java.util.regex.Pattern RACE_PROCESS_HANDICAPS =
         java.util.regex.Pattern.compile("/races/(\\d+)/process-handicaps");
     private static final java.util.regex.Pattern RACE_SAVE_HANDICAPS =
@@ -299,6 +303,12 @@ public class ApiServlet extends HttpServlet
                         java.util.regex.Matcher m = RACE_CALIBRATE.matcher(path);
                         if (m.matches())
                             handleCalibrate(req, resp, Integer.parseInt(m.group(1)));
+                    }
+                    else if (RACE_COURSE_PLAN.matcher(path).matches())
+                    {
+                        java.util.regex.Matcher m = RACE_COURSE_PLAN.matcher(path);
+                        if (m.matches())
+                            handleCoursePlan(req, resp, m.group(1));
                     }
                     else if (RACE_PROCESS_HANDICAPS.matcher(path).matches())
                     {
@@ -630,7 +640,7 @@ public class ApiServlet extends HttpServlet
     {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("penaltyList", a.penaltyList());
-        m.put("idealRaceLength", a.idealRaceLength());
+        m.put("idealRaceDuration", a.idealRaceDuration());
         m.put("dnfAllowance", a.dnfAllowance());
         m.put("earliestStart", a.earliestStart());
         m.put("latitude", a.latitude());
@@ -1555,6 +1565,29 @@ public class ApiServlet extends HttpServlet
         }
 
         JsonNode status = sailsys.fetchRaceStatus(session.token(), raceId);
+
+        // If SailSys is still staggering from an earlier pass
+        // (handicapAndStartTimeProcessingStatus == 1), PUT /timing is rejected
+        // with HTTP 400 "Start times are currently being processed". Wait for it
+        // to settle (then re-read the fresh divisionTiming) before our own PUT.
+        if (status.path("handicapAndStartTimeProcessingStatus").asInt() == 1)
+        {
+            long preDeadline = System.currentTimeMillis() + 30_000L;
+            while (System.currentTimeMillis() < preDeadline
+                && status.path("handicapAndStartTimeProcessingStatus").asInt() == 1)
+            {
+                Thread.sleep(500L);
+                status = sailsys.fetchRaceStatus(session.token(), raceId);
+            }
+            if (status.path("handicapAndStartTimeProcessingStatus").asInt() == 1)
+            {
+                resp.setStatus(409);
+                writeJson(resp, Map.of("error",
+                    "SailSys is still processing start times — wait a moment and try again."));
+                return;
+            }
+        }
+
         JsonNode divisionTiming = status.path("divisionTiming");
         if (!divisionTiming.isArray() || divisionTiming.isEmpty())
         {
@@ -1728,6 +1761,56 @@ public class ApiServlet extends HttpServlet
             obj.set("penalties", penalties);
         }
         return out;
+    }
+
+    // ---- Race-duration → per-division course-length calculator ----------------
+
+    /** A division's slowest-boat TCF, as supplied by the client. */
+    record DivisionTcf(int divisionId, double slowestTcf) {}
+
+    /** A division's computed course length (nm, 1 decimal). */
+    record DivisionCourse(int divisionId, double courseLengthNm) {}
+
+    /** Result of {@link #computeCoursePlan}: the (possibly capped) duration and the per-division courses. */
+    record CoursePlan(int effectiveDurationMinutes, boolean limitedBySunset, List<DivisionCourse> divisions) {}
+
+    /**
+     * Turn a target race duration into a per-division course length. A boat's
+     * predicted speed is {@code TCF × v0Knots}, so over {@code t} hours it sails
+     * {@code TCF × v0 × t} nm; each division's course is sized to the slowest
+     * (min-TCF) boat — supplied per division by the caller — rounded to 0.1 nm.
+     *
+     * <p>When {@code limitBySunset} and a {@code sunset} are given, the duration
+     * is capped so {@code earliestStart + duration ≤ sunset}. If sunset is at or
+     * before {@code earliestStart} (an out-of-season date where it's already
+     * dark at the start), the cap still engages — clamped to 0 minutes and
+     * flagged — rather than silently doing nothing. Pure logic — unit-tested in
+     * {@code ApiServletTest}.
+     */
+    static CoursePlan computeCoursePlan(double v0Knots, int requestedDurationMinutes,
+                                        boolean limitBySunset, LocalTime earliestStart,
+                                        LocalTime sunset, List<DivisionTcf> divisions)
+    {
+        int effective = requestedDurationMinutes;
+        boolean limited = false;
+        if (limitBySunset && sunset != null && earliestStart != null)
+        {
+            long maxMinutes = java.time.Duration.between(earliestStart, sunset).toMinutes();
+            if (effective > maxMinutes)
+            {
+                effective = (int) Math.max(0, maxMinutes);
+                limited = true;
+            }
+        }
+        double hours = effective / 60.0;
+        List<DivisionCourse> out = new ArrayList<>(divisions.size());
+        for (DivisionTcf d : divisions)
+        {
+            double nm = d.slowestTcf() * v0Knots * hours;
+            double rounded = Math.round(nm * 10.0) / 10.0;
+            out.add(new DivisionCourse(d.divisionId(), rounded));
+        }
+        return new CoursePlan(effective, limited, out);
     }
 
     /**
@@ -2024,61 +2107,78 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
-     * Across the probe's divisions, pick the slowest- and fastest-TCF
-     * entries that both have a known {@code startOffsetSeconds}, and solve
-     * for V₀ — the speed at which SailSys assumes a 1.000-TCF boat sails:
+     * Solve for V₀ — the speed at which SailSys assumes a 1.000-TCF boat sails:
      * <pre>
-     *   v0 [kn] = D [nm] / Δt [h] × (1/TCF_min − 1/TCF_max)
+     *   v0 [kn] = D [nm] / Δt [h] × (1/TCF_slow − 1/TCF_fast)
      * </pre>
-     * Returns the inputs and result so the UI can render the working and
-     * Save can persist exactly what the user saw. Returns {@code null} when
-     * the probe didn't yield two distinct, offset-bearing TCFs.
+     * <p><strong>Within a single division.</strong> SailSys staggers each boat
+     * relative to the earliest (slowest) boat <em>in its own division</em>, so
+     * {@code startOffsetSeconds} is only comparable between boats in the same
+     * division. We therefore compute V₀ from each division's slowest/fastest
+     * pair and keep the one with the widest offset spread (best precision);
+     * pairing a slow boat in one division with a fast boat in another mixes
+     * incompatible reference points and inflates V₀.
+     *
+     * <p>Returns the chosen pair + result so the UI can render the working and
+     * Save can persist exactly what the user saw. {@code null} when no single
+     * division yielded two distinct, offset-bearing TCFs.
      */
-    private static Map<String, Object> deriveV0(List<Map<String, Object>> divisionsOut,
-                                                double courseLengthNm)
+    static Map<String, Object> deriveV0(List<Map<String, Object>> divisionsOut,
+                                        double courseLengthNm)
     {
-        Map<String, Object> slowest = null;
-        Map<String, Object> fastest = null;
+        Map<String, Object> best = null;
+        long bestDelta = 0;
         for (Map<String, Object> div : divisionsOut)
         {
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> rows = (List<Map<String, Object>>) div.get("entrants");
+            if (rows == null) continue;
+
+            // Slowest (min TCF) and fastest (max TCF) offset-bearing boats in
+            // THIS division only.
+            Map<String, Object> slowest = null;
+            Map<String, Object> fastest = null;
             for (Map<String, Object> r : rows)
             {
                 Object offObj = r.get("startOffsetSeconds");
                 Object tcfObj = r.get("tcf");
                 if (!(offObj instanceof Number offN) || !(tcfObj instanceof Number tcfN))
                     continue;
-                long off = offN.longValue();
-                double tcf = tcfN.doubleValue();
-                if (off < 0 || tcf <= 0) continue;
-                if (slowest == null || tcf < ((Number) slowest.get("tcf")).doubleValue())
+                if (offN.longValue() < 0 || tcfN.doubleValue() <= 0) continue;
+                if (slowest == null || tcfN.doubleValue() < ((Number) slowest.get("tcf")).doubleValue())
                     slowest = r;
-                if (fastest == null || tcf > ((Number) fastest.get("tcf")).doubleValue())
+                if (fastest == null || tcfN.doubleValue() > ((Number) fastest.get("tcf")).doubleValue())
                     fastest = r;
             }
-        }
-        if (slowest == null || fastest == null || slowest == fastest)
-            return null;
-        double slowestTcf = ((Number) slowest.get("tcf")).doubleValue();
-        double fastestTcf = ((Number) fastest.get("tcf")).doubleValue();
-        long slowestOff = ((Number) slowest.get("startOffsetSeconds")).longValue();
-        long fastestOff = ((Number) fastest.get("startOffsetSeconds")).longValue();
-        long deltaSeconds = fastestOff - slowestOff;
-        if (deltaSeconds <= 0)
-            return null;
-        double deltaHours = deltaSeconds / 3600.0;
-        double v0 = courseLengthNm / deltaHours * (1.0 / slowestTcf - 1.0 / fastestTcf);
+            if (slowest == null || fastest == null || slowest == fastest) continue;
 
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("courseLengthNm", courseLengthNm);
-        out.put("slowestTcf", slowestTcf);
-        out.put("slowestStartOffsetSeconds", slowestOff);
-        out.put("fastestTcf", fastestTcf);
-        out.put("fastestStartOffsetSeconds", fastestOff);
-        out.put("deltaSeconds", deltaSeconds);
-        out.put("v0Knots", v0);
-        return out;
+            long slowestOff = ((Number) slowest.get("startOffsetSeconds")).longValue();
+            long fastestOff = ((Number) fastest.get("startOffsetSeconds")).longValue();
+            long deltaSeconds = fastestOff - slowestOff;
+            if (deltaSeconds <= 0) continue;
+
+            // Keep the division with the largest spread — most boats / least
+            // relative rounding error in SailSys's minute-quantised offsets.
+            if (deltaSeconds <= bestDelta) continue;
+            bestDelta = deltaSeconds;
+
+            double slowestTcf = ((Number) slowest.get("tcf")).doubleValue();
+            double fastestTcf = ((Number) fastest.get("tcf")).doubleValue();
+            double v0 = courseLengthNm / (deltaSeconds / 3600.0) * (1.0 / slowestTcf - 1.0 / fastestTcf);
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("courseLengthNm", courseLengthNm);
+            out.put("slowestTcf", slowestTcf);
+            out.put("slowestStartOffsetSeconds", slowestOff);
+            out.put("fastestTcf", fastestTcf);
+            out.put("fastestStartOffsetSeconds", fastestOff);
+            out.put("deltaSeconds", deltaSeconds);
+            out.put("v0Knots", v0);
+            if (div.get("divisionId") != null) out.put("divisionId", div.get("divisionId"));
+            if (div.get("divisionName") != null) out.put("divisionName", div.get("divisionName"));
+            best = out;
+        }
+        return best;
     }
 
     /**
@@ -2197,11 +2297,114 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
+     * POST /api/races/{id}/course-plan — turn a target race duration into a
+     * per-division course length for a pursuit race. Body shape:
+     * <pre>{@code
+     *   { "seriesId": "5699",          // optional; selects per-series config overlay
+     *     "raceDate": "2026-01-13",    // optional; only needed when limitBySunset
+     *     "durationMinutes": 90,        // optional; defaults to series idealRaceDuration
+     *     "divisions": [ { "divisionId": 13779, "slowestTcf": 0.95 }, ... ] }
+     * }</pre>
+     *
+     * <p>The client supplies each division's slowest (min) TCF — so unsaved TCF
+     * edits are honoured and no SailSys round-trip is needed. The server applies
+     * the saved calibration's V₀, the per-series sunset cap (when configured),
+     * and {@link #computeCoursePlan}. Returns the effective (possibly capped)
+     * duration, the sunset cutoff, and per-division course lengths (0.1 nm).
+     */
+    private void handleCoursePlan(HttpServletRequest req, HttpServletResponse resp, String raceId)
+        throws Exception
+    {
+        SailSysSession session = currentSession(req);
+        if (session == null)
+        {
+            resp.setStatus(401);
+            writeJson(resp, Map.of("error", "not signed in"));
+            return;
+        }
+
+        // Same gate as Process Handicaps: the TCF → course conversion needs V₀.
+        org.mortbay.sailing.jinx.model.Calibration calibration = store.calibration();
+        if (calibration == null)
+        {
+            resp.setStatus(409);
+            writeJson(resp, Map.of("error",
+                "No calibration on file. Run Calibrate first to measure "
+                + "SailSys's TCF → start-offset conversion (V₀)."));
+            return;
+        }
+
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+
+        String seriesId = body.path("seriesId").isMissingNode()
+            ? null : body.path("seriesId").asText(null);
+        JinxConfig.Algorithm alg = (seriesId != null) ? store.seriesConfig(seriesId) : null;
+        if (alg == null) alg = config.algorithm();
+
+        int duration = (body.path("durationMinutes").isMissingNode() || body.path("durationMinutes").isNull())
+            ? alg.idealRaceDuration()
+            : body.path("durationMinutes").asInt(alg.idealRaceDuration());
+        if (duration <= 0) duration = alg.idealRaceDuration();
+
+        List<DivisionTcf> divisions = new ArrayList<>();
+        for (JsonNode d : body.path("divisions"))
+        {
+            if (d.path("divisionId").isMissingNode()) continue;
+            double tcf = d.path("slowestTcf").asDouble(0);
+            if (!(tcf > 0)) continue; // a division with no valid TCF can't be sized
+            divisions.add(new DivisionTcf(d.path("divisionId").asInt(), tcf));
+        }
+
+        LocalTime earliestStart = null;
+        try { earliestStart = LocalTime.parse(alg.earliestStart()); }
+        catch (Exception ignore) { /* leave null → no sunset cap */ }
+
+        LocalTime sunset = null;
+        if (alg.limitBySunset() && earliestStart != null)
+        {
+            String raceDate = body.path("raceDate").asText(null);
+            if (raceDate != null && raceDate.length() >= 10
+                && alg.latitude() != null && alg.longitude() != null)
+            {
+                try
+                {
+                    sunset = SolarTimes.sunsetLocal(alg.latitude(), alg.longitude(),
+                        java.time.LocalDate.parse(raceDate.substring(0, 10)),
+                        java.time.ZoneId.of(config.sailsys().timezone()));
+                }
+                catch (Exception e)
+                {
+                    LOG.warn("Sunset computation failed for course-plan (race {}): {}",
+                        raceId, e.toString());
+                }
+            }
+        }
+
+        CoursePlan plan = computeCoursePlan(calibration.v0Knots(), duration,
+            alg.limitBySunset(), earliestStart, sunset, divisions);
+
+        List<Map<String, Object>> divOut = new ArrayList<>(plan.divisions().size());
+        for (DivisionCourse dc : plan.divisions())
+            divOut.add(Map.of("divisionId", dc.divisionId(), "courseLengthNm", dc.courseLengthNm()));
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("raceId", raceId);
+        out.put("requestedDurationMinutes", duration);
+        out.put("effectiveDurationMinutes", plan.effectiveDurationMinutes());
+        out.put("limitedBySunset", plan.limitedBySunset());
+        out.put("sunsetLocal", sunset == null ? null
+            : String.format("%02d:%02d", sunset.getHour(), sunset.getMinute()));
+        out.put("v0Knots", calibration.v0Knots());
+        out.put("divisions", divOut);
+        writeJson(resp, out);
+    }
+
+    /**
      * POST /api/races/{id}/process-handicaps — run the Jinx algorithm against
      * a client-supplied snapshot of the race. Body shape:
      * <pre>{@code
      *   { "seriesId": "5699",                  // optional; selects per-series config overlay
-     *     "targetElapsedMinutes": 90,           // optional; defaults to series idealRaceLength
+     *     "targetElapsedMinutes": 90,           // optional; defaults to series idealRaceDuration
      *     "boats": [
      *       { "boatId": "...", "currentTcf": 1.0, "status": "FIN",
      *         "elapsedMinutes": 85.0 },
@@ -2237,7 +2440,7 @@ public class ApiServlet extends HttpServlet
         JinxConfig.Algorithm alg = (seriesId != null) ? store.seriesConfig(seriesId) : null;
         if (alg == null) alg = config.algorithm();
 
-        int tTarget = body.path("targetElapsedMinutes").asInt(alg.idealRaceLength());
+        int tTarget = body.path("targetElapsedMinutes").asInt(alg.idealRaceDuration());
 
         JsonNode boatsNode = body.path("boats");
         if (!boatsNode.isArray() || boatsNode.isEmpty())
@@ -2296,7 +2499,7 @@ public class ApiServlet extends HttpServlet
         out.put("targetElapsedMinutes", tTarget);
         out.put("config", Map.of(
             "penaltyList", alg.penaltyList(),
-            "idealRaceLength", alg.idealRaceLength(),
+            "idealRaceDuration", alg.idealRaceDuration(),
             "dnfAllowance", alg.dnfAllowance(),
             "earliestStart", alg.earliestStart()));
         out.put("calibration", Map.of("v0Knots", calibration.v0Knots()));
