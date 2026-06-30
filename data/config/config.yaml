@@ -12,6 +12,7 @@ algorithm:
   idealRaceDuration: 90       # minutes
   dnfAllowance: 5             # minutes added to slowest finisher
   earliestStart: "18:00"
+  v0knots: 5.5               # V0: speed (kn) of a 1.000-TCF boat; sizes courses from duration
 
 server:
   port: 8080

@@ -16,7 +16,7 @@
     click one to load its races. Series whose default handicap matches the
     configured jinx handicap (MYC TCF, id 15 at MYC) get the full editing
     workflow including writing TCFs back. Other <em>pursuit</em> series can
-    also be [Configure]d and have Process Handicaps run for calibration /
+    also be [Configure]d and have Process Handicaps run for review /
     check purposes — only saving back to SailSys is gated.
   </p>
 
@@ -50,6 +50,9 @@
 
       <label for="cfg-dnf">DNF allowance (min)</label>
       <input id="cfg-dnf" type="number" min="0" step="1">
+
+      <label for="cfg-v0knots">V₀ (kn)</label>
+      <input id="cfg-v0knots" type="number" min="0" step="any" placeholder="5.5">
 
       <label for="cfg-earliest">Earliest start (HH:MM)</label>
       <input id="cfg-earliest" type="time">
@@ -222,6 +225,7 @@
   const cfgPenalty  = document.getElementById('cfg-penalty-list');
   const cfgIdeal    = document.getElementById('cfg-ideal');
   const cfgDnf      = document.getElementById('cfg-dnf');
+  const cfgV0       = document.getElementById('cfg-v0knots');
   const cfgEarliest = document.getElementById('cfg-earliest');
   const cfgLat      = document.getElementById('cfg-lat');
   const cfgLng      = document.getElementById('cfg-lng');
@@ -248,6 +252,7 @@
     cfgPenalty.value  = Array.isArray(cfg.penaltyList) ? cfg.penaltyList.join(', ') : '';
     cfgIdeal.value    = cfg.idealRaceDuration ?? '';
     cfgDnf.value      = cfg.dnfAllowance ?? '';
+    cfgV0.value       = cfg.v0knots ?? '';
     cfgEarliest.value = cfg.earliestStart || '';
     cfgLat.value      = cfg.latitude ?? '';
     cfgLng.value      = cfg.longitude ?? '';
@@ -269,10 +274,14 @@
     // server-side canonical constructor backfills the MYC default.
     const lat = parseFloat(cfgLat.value);
     const lng = parseFloat(cfgLng.value);
+    // V₀: blank → null so the server-side canonical constructor backfills the
+    // 5.5 kn default.
+    const v0 = parseFloat(cfgV0.value);
     return {
       penaltyList,
       idealRaceDuration: parseInt(cfgIdeal.value, 10) || 0,
       dnfAllowance: parseInt(cfgDnf.value, 10) || 0,
+      v0knots: Number.isNaN(v0) ? null : v0,
       earliestStart: cfgEarliest.value || '',
       latitude: Number.isNaN(lat) ? null : lat,
       longitude: Number.isNaN(lng) ? null : lng,
@@ -285,7 +294,7 @@
     cfgPanel.style.display = '';
     cfgSource.textContent = 'Loading…';
     clearBanner();
-    [cfgPenalty, cfgIdeal, cfgDnf, cfgEarliest, cfgLat, cfgLng].forEach(i => i.value = '');
+    [cfgPenalty, cfgIdeal, cfgDnf, cfgV0, cfgEarliest, cfgLat, cfgLng].forEach(i => i.value = '');
     cfgLimit.checked = false;
     cfgPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 

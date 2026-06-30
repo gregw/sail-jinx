@@ -18,7 +18,6 @@ import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.AuditEntry;
 import org.mortbay.sailing.jinx.model.Boat;
-import org.mortbay.sailing.jinx.model.Calibration;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceTcfSnapshot;
 import org.mortbay.sailing.jinx.model.RaceTimes;
@@ -40,7 +39,6 @@ import org.slf4j.LoggerFactory;
  *   series-config/{seriesId}.json — per-series Jinx algorithm settings (overrides config.yaml)
  *   pending-adjustments/{raceId}.json — Jinx-computed adjustments awaiting push to SailSys
  *   race-tcfs/{raceId}.json     — local snapshot of the TCFs in effect for this race (season-long history)
- *   calibration.json            — Calibration of SailSys' TCF → start-offset conversion
  *   audit.json                  — List&lt;AuditEntry&gt;, append-only
  * </pre>
  *
@@ -68,7 +66,6 @@ public class JsonStore
     private final Path seriesConfigDir;
     private final Path pendingAdjustmentsDir;
     private final Path raceTcfsDir;
-    private final Path calibrationFile;
     private final Path auditFile;
 
     private Map<String, Boat> boats;
@@ -85,7 +82,6 @@ public class JsonStore
         this.seriesConfigDir = storeDir.resolve("series-config");
         this.pendingAdjustmentsDir = storeDir.resolve("pending-adjustments");
         this.raceTcfsDir = storeDir.resolve("race-tcfs");
-        this.calibrationFile = storeDir.resolve("calibration.json");
         this.auditFile = storeDir.resolve("audit.json");
     }
 
@@ -259,27 +255,6 @@ public class JsonStore
     {
         Path file = raceTcfsDir.resolve(raceId + ".json");
         return Files.deleteIfExists(file);
-    }
-
-    // --- Calibration (single, global — one SailSys instance per club) ---
-
-    /**
-     * Returns the saved calibration, or {@code null} if the SailSys conversion
-     * has never been probed. The {@link org.mortbay.sailing.jinx.pursuit.PursuitHandicapEngine}
-     * requires a calibration to convert {@code netAdjustmentMinutes} into a
-     * new TCF; the API layer surfaces a clear error when {@code calibration()}
-     * is {@code null} and the user attempts to run Process Handicaps.
-     */
-    public synchronized Calibration calibration() throws IOException
-    {
-        if (!Files.exists(calibrationFile))
-            return null;
-        return MAPPER.readValue(Files.readAllBytes(calibrationFile), Calibration.class);
-    }
-
-    public synchronized void putCalibration(Calibration cal) throws IOException
-    {
-        MAPPER.writeValue(calibrationFile.toFile(), cal);
     }
 
     // --- Audit ---

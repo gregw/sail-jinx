@@ -14,7 +14,6 @@ import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.AuditEntry;
 import org.mortbay.sailing.jinx.model.Boat;
-import org.mortbay.sailing.jinx.model.Calibration;
 import org.mortbay.sailing.jinx.model.FinishStatus;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceStatus;
@@ -197,7 +196,7 @@ class JsonStoreTest
         first.start();
         first.putSeriesConfig("5699",
             new JinxConfig.Algorithm(List.of(7.0, 5.0, 3.0, 1.0), 75, 4, "17:30",
-                -34.5678, 150.4321, true));
+                -34.5678, 150.4321, true, 6.3));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
@@ -209,6 +208,7 @@ class JsonStoreTest
         assertThat(read.latitude(), equalTo(-34.5678));
         assertThat(read.longitude(), equalTo(150.4321));
         assertThat(read.limitBySunset(), is(true));
+        assertThat(read.v0knots(), equalTo(6.3));
     }
 
     @Test
@@ -238,34 +238,6 @@ class JsonStoreTest
         assertThat(read.get(1).netAdjustmentMinutes(), equalTo(2.24));
     }
 
-    @Test
-    void calibrationIsNullWhenMissing(@TempDir Path tmp) throws IOException
-    {
-        JsonStore store = new JsonStore(tmp);
-        store.start();
-        assertThat(store.calibration(), nullValue());
-    }
-
-    @Test
-    void calibrationRoundTripsAcrossRestart(@TempDir Path tmp) throws IOException
-    {
-        JsonStore first = new JsonStore(tmp);
-        first.start();
-        Calibration cal = new Calibration(
-            6.107, 100.0, 0.79, 0L, 1.12, 21960L,
-            Instant.parse("2026-05-29T09:30:00Z"));
-        first.putCalibration(cal);
-
-        JsonStore reopened = new JsonStore(tmp);
-        reopened.start();
-        Calibration read = reopened.calibration();
-        assertThat(read.v0Knots(), equalTo(6.107));
-        assertThat(read.courseLengthNm(), equalTo(100.0));
-        assertThat(read.slowestTcf(), equalTo(0.79));
-        assertThat(read.fastestTcf(), equalTo(1.12));
-        assertThat(read.fastestStartOffsetSeconds(), equalTo(21960L));
-        assertThat(read.computedAt(), equalTo(Instant.parse("2026-05-29T09:30:00Z")));
-    }
 
     @Test
     void auditAppendIsOrderedAndPersisted(@TempDir Path tmp) throws IOException

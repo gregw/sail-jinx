@@ -220,12 +220,11 @@
   let sailsysTcf = new Map();       // boatId(string) -> Number (from entrants)
   let snapshotMeta = null;          // {savedAt, source, sourceRaceId, sourceRaceNumber} or null
 
-  // SailSys calibration (V₀) used by the engine to convert each boat's net
-  // adjustment minutes into a new TCF. Loaded once on page load via
-  // GET /api/calibration; Process Handicaps is gated on this being non-null
-  // (it's the only thing the engine uses to project TCFs). Refreshed when
-  // the admin Saves a fresh calibration.
-  let currentCalibration = null;
+  // V₀ (knots) — the configured speed of a 1.000-TCF boat, used to size a
+  // division's course from a target race duration. It is a per-series
+  // configuration value (default 5.5 kn); the server resolves it and returns
+  // it on the race status payload. Defaults here until status loads.
+  let seriesV0Knots = 5.5;
 
   // Club-wide handicap-definition catalogue, fetched once from
   // GET /api/handicap-definitions. Maps stringified id → {shortName, fullName}.
@@ -714,10 +713,11 @@
   // Course length (nm, 1dp) for a division derived from the active race
   // duration: the slowest boat sails slowestTcf × V₀ × hours, so that's the
   // course that makes it finish in the target time. Returns null when not in
-  // duration mode, there's no calibration, or the division has no rated boats.
+  // duration mode or the division has no rated boats. V₀ (seriesV0Knots) is
+  // configured per series and always available.
   function durationDerivedCourse(divisionId) {
     if (!isPursuit || raceDurationMinutes == null) return null;
-    if (!currentCalibration || !(currentCalibration.v0Knots > 0)) return null;
+    if (!(seriesV0Knots > 0)) return null;
     let min = null;
     for (const e of entrantData) {
       if (!e || !e.division || String(e.division.id) !== String(divisionId)) continue;
@@ -725,7 +725,7 @@
       if (typeof t === 'number' && isFinite(t) && t > 0 && (min == null || t < min)) min = t;
     }
     if (min == null) return null;
-    return Math.round(min * currentCalibration.v0Knots * raceDurationMinutes / 60 * 10) / 10;
+    return Math.round(min * seriesV0Knots * raceDurationMinutes / 60 * 10) / 10;
   }
 
   // A division's course length. In duration mode the duration-derived value is
@@ -1471,7 +1471,7 @@
         const net = a.netAdjustmentMinutes || 0;
         // Tooltip lines. The top two (Penalty / Redistribution) sum to the
         // displayed Adjustment in the cell. The bottom two show what that
-        // net Δs translates to as a TCF change under the saved calibration,
+        // net Δs translates to as a TCF change under the configured V₀,
         // so the admin can sanity-check the value being saved. Labels right
         // -padded to the widest label so colons line up vertically; values
         // right-padded so the sign columns line up too.
@@ -2945,22 +2945,9 @@
       </div>`;
 
     // --- 2. Start times (pursuit pre-race group) -----------------------------
-    // Calibrate (pursuit-TCF + admin), per-division start + course inputs,
-    // Process start times, publish start times. Scratch shows only the
-    // per-division allocated-start inputs (no staggering / publish concept).
-    const calV0 = (currentCalibration && currentCalibration.v0Knots > 0)
-      ? ('Current calibration: V₀ = ' + currentCalibration.v0Knots.toFixed(3) + ' kn'
-          + (currentCalibration.computedAt
-              ? ' (measured ' + String(currentCalibration.computedAt).slice(0, 10) + ')' : '')
-          + '. ')
-      : 'No calibration saved yet. ';
-    const calibrateTip = calV0
-      + "Discover SailSys's TCF→start-offset formula. Mutates start times briefly, then restores (admin only, ~1-2 min).";
-    const calibrateRow = (admin && isPursuit && isOurHandicap)
-      ? `<div class="controls-row">
-           <button id="ctrl-calibrate" type="button" title="${esc(calibrateTip)}">Calibrate</button>
-         </div>`
-      : '';
+    // Per-division start + course inputs, Process start times, publish start
+    // times. Scratch shows only the per-division allocated-start inputs (no
+    // staggering / publish concept).
     // Process start times: pursuit only, until the start sheet is committed
     // (published or a boat marked came). Hidden once start times are published.
     const showProcessRow = isPursuit && !startTimesPublished && !anyCame;
@@ -2982,12 +2969,10 @@
            </label>
          </div>`
       : '';
-    // Race-duration → course-length calculator (pursuit, calibrated, pre-publish).
-    // One duration drives every division's course length from its slowest boat;
-    // see recomputeCoursesFromDuration. Hidden without a calibration (V₀) — then
-    // the per-division course inputs are filled in by hand as before.
-    const haveCalibrationForCourse = !!(currentCalibration && currentCalibration.v0Knots > 0);
-    const durationRow = (isPursuit && !startTimesPublished && haveCalibrationForCourse)
+    // Race-duration → course-length calculator (pursuit, pre-publish). One
+    // duration drives every division's course length from its slowest boat
+    // using the configured V₀; see recomputeCoursesFromDuration.
+    const durationRow = (isPursuit && !startTimesPublished)
       ? `<div class="controls-row">
            <label class="muted" style="min-width:8em;" for="race-duration">Race duration</label>
            <input type="text" id="race-duration" class="time-input" style="width:7ch;"
@@ -3000,7 +2985,7 @@
     // Step 2 groups the start-times action(s) with the publish toggle, the way
     // the Results step already pairs Process results + the publish selector.
     // For a scratch race this is just the per-division allocated-start inputs.
-    const startStepHtml = calibrateRow + durationRow + divisionStartRowsHtml() + processRow + startPublishRow;
+    const startStepHtml = durationRow + divisionStartRowsHtml() + processRow + startPublishRow;
 
     // --- 3. Process + publish results ----------------------------------------
     // Process Results is always present once there are entrants; greyed when
@@ -3058,9 +3043,8 @@
     // next race's TCF snapshot. The *application* of those TCFs happens on the
     // next race, through the normal SAVE bar (see snapshotPendingPush).
     const resultsReady = !!s.lastProcessedTime && !reqCalc;
-    const haveCalibration = currentCalibration && currentCalibration.v0Knots > 0;
-    const procHcDisabled = (!resultsReady || !haveCalibration) ? ' disabled' : '';
-    const v0Note = haveCalibration ? ` (V₀ = ${currentCalibration.v0Knots.toFixed(3)} kn)` : '';
+    const procHcDisabled = !resultsReady ? ' disabled' : '';
+    const v0Note = (seriesV0Knots > 0) ? ` (V₀ = ${seriesV0Knots.toFixed(3)} kn)` : '';
     const haveAdjustments = nextStartAdjustments.size > 0;
     const saveHcDisabled = (!haveAdjustments || nextStartSaved) ? ' disabled' : '';
     const saveHcLabel = nextStartSaved ? 'Saved' : 'Save Handicaps';
@@ -3069,13 +3053,11 @@
       : '';
     const procHcHint = !resultsReady
       ? 'Process results first.'
-      : !haveCalibration
-        ? 'Calibrate SailSys first — Process Handicaps needs V₀.'
-        : (admin && isOurHandicap)
-          ? `Compute next-race TCFs from this race's results${v0Note}.`
-          : !isOurHandicap
-            ? `Compute Jinx adjustments for review only — this series isn't scored against MYC TCF${v0Note}.`
-            : `Compute Jinx adjustments for review only — Save requires an admin login${v0Note}.`;
+      : (admin && isOurHandicap)
+        ? `Compute next-race TCFs from this race's results${v0Note}.`
+        : !isOurHandicap
+          ? `Compute Jinx adjustments for review only — this series isn't scored against MYC TCF${v0Note}.`
+          : `Compute Jinx adjustments for review only — Save requires an admin login${v0Note}.`;
     const handicapsRow = isPursuit
       ? `<div class="controls-row" title="${esc(procHcHint)}">
            <button id="ctrl-handicaps" class="primary" type="button"${procHcDisabled}>Process Handicaps</button>
@@ -3124,8 +3106,6 @@
     if (pubStart) pubStart.onchange = onTogglePublishStartTimes;
     const procBtn = document.getElementById('ctrl-process');
     if (procBtn) procBtn.onclick = doProcess;
-    const calBtn = document.getElementById('ctrl-calibrate');
-    if (calBtn) calBtn.onclick = doCalibrate;
     const prBtn = document.getElementById('ctrl-process-results');
     if (prBtn) prBtn.onclick = doProcessResults;
     document.querySelectorAll('button.ctrl-abandon').forEach(btn => {
@@ -3266,16 +3246,14 @@
   let suppressDirtyRerender = false;
 
   // POST the target duration + per-division slowest TCFs to the server, which
-  // applies the calibration V₀ and (when the series is configured to) the
+  // applies the configured V₀ and (when the series is configured to) the
   // sunset cap, and write the returned course lengths into divisionCourseMap.
-  // durationMinutes === null asks the server for the series default. Leaves
-  // manual entry untouched when there's no calibration (server replies 409).
+  // durationMinutes === null asks the server for the series default.
   //
   // opts.inPlace patches only the course inputs + note (keeping the duration
   // box focused as the user types); otherwise the whole workflow re-renders.
   async function recomputeCoursesFromDuration(durationMinutes, opts) {
     opts = opts || {};
-    if (!currentCalibration || !(currentCalibration.v0Knots > 0)) return;
     const divs = slowestTcfByDivision();
     if (divs.length === 0) return;
     const body = {
@@ -3288,6 +3266,7 @@
     const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/course-plan', body);
     if (seq !== coursePlanSeq) return; // superseded by a later keystroke
     if (!r.ok || !r.body) return;
+    if (typeof r.body.v0knots === 'number' && r.body.v0knots > 0) seriesV0Knots = r.body.v0knots;
     // The server call exists for the sunset cap — it returns the effective
     // (possibly capped) duration. The per-division course lengths are then
     // derived live via divisionScheduledCourse/durationDerivedCourse, so they
@@ -3334,11 +3313,10 @@
 
   // On load (or after a status refresh), populate the per-division courses from
   // the active or default duration — unless the user has already set them up
-  // manually. Called once the gates (pursuit, editable, calibrated, not
-  // published) and entrant TCFs are known.
+  // manually. Called once the gates (pursuit, editable, not published) and
+  // entrant TCFs are known.
   function initCourseDurationCalc() {
     if (!IS_EDITABLE || !isPursuit || startTimesPublished) return;
-    if (!currentCalibration || !(currentCalibration.v0Knots > 0)) return;
     // Duration mode persisted from this tab — refresh courses against it.
     if (raceDurationMinutes != null) { recomputeCoursesFromDuration(raceDurationMinutes); return; }
     // Manual courses already in play — leave them, stay in manual mode.
@@ -3734,7 +3712,6 @@
     }
   }
 
-  // Admin calibration probe: round-trip SailSys with a known
   // Process Handicaps — POSTs the current per-boat snapshot to the Jinx
   // engine and renders the returned Adjustment list into the Next Start
   // column. No persistence here: the values live in nextStartAdjustments and
@@ -3863,189 +3840,6 @@
       + (adjustments.length === 1 ? '' : 's') + ' locally.' + nextRaceMsg);
   }
 
-  // (courseLength=100nm, startTime=10:00) and read back the per-boat
-  // staggered starts. The server hides start times + entries during the
-  // run and restores them on the way out. Up to 5 minutes; in practice
-  // around 1-2 minutes.
-  async function doCalibrate() {
-    if (!confirm(
-      'Calibrate SailSys\'s TCF → start-offset formula?\n\n'
-      + 'This only needs to be done occasionally. The race\'s start times '
-      + 'and entrants list will be briefly hidden, course length set to '
-      + '100 nm, every division started at 10:00:00, and SailSys re-run. '
-      + 'Original values are restored at the end. May take up to 5 minutes.'))
-      return;
-    if (!(await ensureSaved())) return;
-    setControlsDisabled(true);
-    const startMs = Date.now();
-    const TIMEOUT_S = 300;
-    const tick = setInterval(() => {
-      const elapsed = (Date.now() - startMs) / 1000;
-      const secs = Math.floor(elapsed);
-      const pct = Math.min(100, Math.round((elapsed / TIMEOUT_S) * 100));
-      const bar = '<div class="progress"><div class="progress-bar" style="width:' + pct + '%"></div></div>';
-      ctrlMsgHtml('banner-info',
-        '<strong>Calibrating SailSys…</strong> '
-        + '<span style="color:#555;">' + secs + 's elapsed</span>' + bar);
-    }, 500);
-    try {
-      const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/calibrate', {});
-      clearInterval(tick);
-      if (!r.ok) {
-        ctrlMsg('banner-err', 'Calibration failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
-        setControlsDisabled(false);
-        return;
-      }
-      renderCalibration(r.body && r.body.calibration);
-      // Refetch entrants — their startTimeLocal values were restored but
-      // re-render keeps the table in sync with whatever SailSys settled on.
-      await loadEntrants();
-    } finally {
-      clearInterval(tick);
-      setControlsDisabled(false);
-    }
-  }
-
-  function renderCalibration(cal) {
-    if (!cal) {
-      ctrlMsg('banner-warn', 'Calibration completed but returned no data.');
-      return;
-    }
-    const d = cal.derivation;
-    if (!d || typeof d.v0Knots !== 'number') {
-      // Derivation failed — fall back to the raw per-boat table so the user
-      // can see what SailSys actually returned (offsets all 0, only one
-      // boat with a valid offset, no entrants, etc.). Better than a
-      // dead-end warning.
-      renderCalibrationFallback(cal,
-        'Could not derive V₀ from this probe. Showing raw per-boat data — '
-        + 'check whether SailSys actually staggered the starts.');
-      return;
-    }
-    const dt = d.deltaSeconds;
-    const dtH = (dt / 3600).toFixed(4);
-    const dtHMS = Math.floor(dt / 3600) + 'h '
-      + String(Math.floor((dt % 3600) / 60)).padStart(2, '0') + 'm '
-      + String(dt % 60).padStart(2, '0') + 's';
-    const courseStr = (typeof d.courseLengthNm === 'number')
-      ? d.courseLengthNm.toFixed(0) : esc(d.courseLengthNm);
-    const slowestStr = d.slowestTcf.toFixed(4);
-    const fastestStr = d.fastestTcf.toFixed(4);
-    const recipDiff = (1 / d.slowestTcf - 1 / d.fastestTcf);
-    const v0Str = d.v0Knots.toFixed(3);
-
-    // The Save button stashes the data attribute and the handler reads from
-    // it — simpler than capturing in a closure across the innerHTML
-    // assignment.
-    const payload = {
-      v0Knots: d.v0Knots,
-      courseLengthNm: d.courseLengthNm,
-      slowestTcf: d.slowestTcf,
-      slowestStartOffsetSeconds: d.slowestStartOffsetSeconds,
-      fastestTcf: d.fastestTcf,
-      fastestStartOffsetSeconds: d.fastestStartOffsetSeconds
-    };
-
-    const html = ''
-      + '<strong>Calibration complete</strong> &mdash; original timing restored.'
-      + '<div style="margin-top:0.5rem;font-family:monospace;white-space:pre;">'
-      +   (d.divisionName ? 'division       = ' + esc(d.divisionName) + ' (boats compared within one division)\n' : '')
-      +   'course D       = ' + esc(courseStr) + ' nm\n'
-      +   'fastest TCF    = ' + esc(fastestStr) + '\n'
-      +   'slowest TCF    = ' + esc(slowestStr) + '\n'
-      +   'Δt (fast−slow) = ' + esc(dtHMS) + '  (= ' + esc(dtH) + ' h)\n'
-      +   '\n'
-      +   'V₀ = D / Δt × (1/TCF_slow − 1/TCF_fast)\n'
-      +   '   = ' + esc(courseStr) + ' / ' + esc(dtH)
-              + ' × (' + (1 / d.slowestTcf).toFixed(4)
-              + ' − ' + (1 / d.fastestTcf).toFixed(4) + ')\n'
-      +   '   = ' + esc(courseStr) + ' / ' + esc(dtH)
-              + ' × ' + recipDiff.toFixed(4) + '\n'
-      +   '   = <strong>' + esc(v0Str) + ' kn</strong>'
-      + '</div>'
-      + '<div style="margin-top:0.6rem;">'
-      +   '<button id="ctrl-save-calibration" class="primary" type="button">Save calibration</button> '
-      +   '<button id="ctrl-cancel-calibration" type="button">Dismiss</button>'
-      + '</div>';
-    ctrlMsgHtml('banner-ok', html);
-
-    const saveBtn = document.getElementById('ctrl-save-calibration');
-    if (saveBtn) saveBtn.onclick = () => doSaveCalibration(payload);
-    const cancelBtn = document.getElementById('ctrl-cancel-calibration');
-    if (cancelBtn) cancelBtn.onclick = () => ctrlMsg('', '');
-  }
-
-  // Fallback path: render the per-boat per-division table so a failed V₀
-  // derivation isn't a dead end — the admin can read the offsets and
-  // diagnose why (all zero, single boat, etc.).
-  function renderCalibrationFallback(cal, banner) {
-    const parts = [];
-    parts.push('<strong>' + esc(banner) + '</strong>');
-    const divisions = Array.isArray(cal.divisions) ? cal.divisions : [];
-    if (divisions.length === 0) {
-      parts.push('<div style="margin-top:0.4rem;color:#555;">'
-        + '(SailSys returned no division data.)</div>');
-    }
-    for (const div of divisions) {
-      parts.push('<div style="margin-top:0.6rem;"><u>'
-        + esc(div.divisionName || ('Division ' + div.divisionId))
-        + '</u> (' + div.entrants.length + ' boats)</div>');
-      parts.push('<table style="border-collapse:collapse;margin:0.25rem 0;">'
-        + '<thead><tr>'
-        + '<th style="text-align:left;padding:2px 8px;">Sail#</th>'
-        + '<th style="text-align:left;padding:2px 8px;">Name</th>'
-        + '<th style="text-align:right;padding:2px 8px;">TCF</th>'
-        + '<th style="text-align:left;padding:2px 8px;">Start</th>'
-        + '<th style="text-align:right;padding:2px 8px;">Offset (s)</th>'
-        + '<th style="text-align:right;padding:2px 8px;">Offset (M:SS)</th>'
-        + '</tr></thead><tbody>');
-      for (const e of div.entrants) {
-        const sched = String(e.startTimeLocal || '');
-        // Accept HH:MM with optional seconds — SailSys returns minute-only
-        // startTimeLocal in some responses, and we'd rather display "16:06"
-        // than the raw ISO string.
-        const m = sched.match(/(?:^|[T\s])(\d{1,2}:\d{2}(?::\d{1,2})?)/);
-        const hms = m ? m[1] : sched;
-        const offS = (typeof e.startOffsetSeconds === 'number' && e.startOffsetSeconds >= 0)
-          ? e.startOffsetSeconds : null;
-        const offMs = offS == null
-          ? ''
-          : Math.floor(offS / 60) + ':' + String(offS % 60).padStart(2, '0');
-        parts.push('<tr>'
-          + '<td style="padding:2px 8px;">' + esc(e.sailNumber) + '</td>'
-          + '<td style="padding:2px 8px;">' + esc(e.name) + '</td>'
-          + '<td style="padding:2px 8px;text-align:right;font-family:monospace;">'
-            + (typeof e.tcf === 'number' ? e.tcf.toFixed(4) : esc(e.tcf)) + '</td>'
-          + '<td style="padding:2px 8px;font-family:monospace;">' + esc(hms) + '</td>'
-          + '<td style="padding:2px 8px;text-align:right;font-family:monospace;">'
-            + (offS == null ? '' : offS) + '</td>'
-          + '<td style="padding:2px 8px;text-align:right;font-family:monospace;">'
-            + esc(offMs) + '</td>'
-          + '</tr>');
-      }
-      parts.push('</tbody></table>');
-    }
-    ctrlMsgHtml('banner-warn', parts.join(''));
-  }
-
-  async function doSaveCalibration(payload) {
-    setControlsDisabled(true);
-    const r = await postJson('/api/calibration', payload);
-    setControlsDisabled(false);
-    if (!r.ok) {
-      ctrlMsg('banner-err',
-        'Save calibration failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
-      return;
-    }
-    currentCalibration = (r.body && r.body.calibration) ? r.body.calibration : payload;
-    renderControls();
-    // Close the panel — a brief confirmation, then the banner is cleared
-    // so Process Handicaps can take over the message area.
-    ctrlMsg('banner-ok',
-      'Calibration saved (V₀ = ' + currentCalibration.v0Knots.toFixed(3)
-      + ' kn). Process Handicaps is now available.');
-  }
-
   // Process start times (pursuit only). Builds the per-division payload from
   // the status-grid panel — the edited earliest start + course length where
   // the RO changed them, falling back to SailSys's current divisionTiming
@@ -4147,7 +3941,7 @@
   }
 
   function setControlsDisabled(disabled) {
-    ['ctrl-process', 'ctrl-process-results', 'ctrl-calibrate', 'ctrl-handicaps',
+    ['ctrl-process', 'ctrl-process-results', 'ctrl-handicaps',
      'ctrl-save-handicaps', 'results-status-sel'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.disabled = disabled;
@@ -4751,9 +4545,6 @@
       // Start column repaint across reloads without re-running Process
       // Handicaps. Empty/missing on a never-processed race is fine.
       fetchJson('/api/races/' + encodeURIComponent(raceId) + '/pending-handicaps'),
-      // Saved SailSys calibration (V₀). Required for Process Handicaps; if
-      // missing the button is disabled with a hint to run Calibrate first.
-      fetchJson('/api/calibration'),
       // Club-wide handicap-definition catalogue. Used to label the SailSys
       // entries in the Handicap selector.
       fetchJson('/api/handicap-definitions'),
@@ -4762,10 +4553,12 @@
       // offer Push/Reset.
       fetchJson('/api/races/' + encodeURIComponent(raceId) + '/tcf-snapshot')
     ];
-    const [statusR, entrantsR, timesR, resultsR, finishersR, pendingR, calibrationR, handicapsR, snapshotR]
+    const [statusR, entrantsR, timesR, resultsR, finishersR, pendingR, handicapsR, snapshotR]
       = await Promise.all(fetches);
-    currentCalibration = (calibrationR && calibrationR.ok && calibrationR.body)
-      ? calibrationR.body.calibration : null;
+    // V₀ (configured per series) comes back on the status payload. Default
+    // 5.5 kn until it loads.
+    if (statusR && statusR.ok && statusR.body && typeof statusR.body.v0knots === 'number'
+        && statusR.body.v0knots > 0) seriesV0Knots = statusR.body.v0knots;
     handicapDefs = (handicapsR && handicapsR.ok && handicapsR.body)
       ? (handicapsR.body.handicapDefinitions || {}) : {};
 
@@ -4997,7 +4790,7 @@
     if (currentStatus) renderStatus(currentStatus, raceIdGlobal);
 
     // Seed (or refresh) the per-division course lengths from the race-duration
-    // calculator now that status + entrants + calibration are all loaded.
+    // calculator now that status + entrants are all loaded.
     initCourseDurationCalc();
 
     // sessionRestoreForm() may have rehydrated unsaved edits from a prior

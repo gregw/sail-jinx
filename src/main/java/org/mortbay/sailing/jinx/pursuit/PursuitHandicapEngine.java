@@ -10,7 +10,6 @@ import java.util.Map;
 import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.Boat;
-import org.mortbay.sailing.jinx.model.Calibration;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.Result;
 import org.mortbay.sailing.jinx.model.StartTime;
@@ -22,26 +21,10 @@ import org.mortbay.sailing.jinx.model.StartTime;
 public class PursuitHandicapEngine implements HandicapEngine
 {
     private final JinxConfig.Algorithm config;
-    private final Calibration calibration;
 
     public PursuitHandicapEngine(JinxConfig.Algorithm config)
     {
-        this(config, null);
-    }
-
-    /**
-     * Calibration-aware constructor. When {@code calibration} is non-null,
-     * {@code newTcf} is derived from V₀ and the race's actual course distance
-     * (median over finishers of {@code TCF × V₀ × elapsed/60}) rather than
-     * from the fleet-median TCF; the underlying mechanics are equivalent (both
-     * solve {@code 1/newTcf − 1/oldTcf = −Δs × V₀ / (60·D)}), but the
-     * V₀-anchored form lets the calculation be displayed and audited against
-     * the saved SailSys calibration.
-     */
-    public PursuitHandicapEngine(JinxConfig.Algorithm config, Calibration calibration)
-    {
         this.config = config;
-        this.calibration = calibration;
     }
 
     @Override
@@ -181,45 +164,31 @@ public class PursuitHandicapEngine implements HandicapEngine
             weightSum += weights[i];
         }
 
-        // §7 — convert Δs back into TCF deltas. Two equivalent
-        //   parameterisations:
-        //     calibration-anchored (preferred when V₀ has been measured):
-        //       D_race ≈ median over finishers of (TCF × V₀ × E/60) nm
-        //       newTcf = oldTcf / (1 − net × oldTcf × V₀ / (60 × D_race))
-        //     fleet-median fallback (no calibration available):
-        //       newTcf = oldTcf / (1 − net × oldTcf / (tTarget × tcfMed))
+        // §7 — convert Δs back into TCF deltas, V₀-anchored:
+        //   D_race ≈ median over finishers of (TCF × V₀ × E/60) nm
+        //   newTcf = oldTcf / (1 − net × oldTcf × V₀ / (60 × D_race))
+        // V₀ is the configured speed of a 1.000-TCF boat (Algorithm.v0knots).
         // No fleet-wide anchor correction is applied here: the next race's
         // start-time processing pass over the updated TCFs is what brings
         // the new slowest boat back to t_earliest.
-        double tcfMed = participants.isEmpty()
-            ? 1.0
-            : median(participants.stream().map(p -> p.boat().currentTcf()).toList());
 
         // V₀-anchored "minutes for a 1.000 TCF boat over D_race". If no
         // finishers, the penalty pool is empty so all nets are zero and the
         // denominator is 1 regardless — any positive value works.
-        double tMinutesPerUnitTcf;
-        if (calibration != null)
+        double v0 = config.v0knots();
+        double dRaceNm;
+        if (finishers.isEmpty())
         {
-            double v0 = calibration.v0Knots();
-            double dRaceNm;
-            if (finishers.isEmpty())
-            {
-                dRaceNm = 1.0;
-            }
-            else
-            {
-                List<Double> dEstimates = new ArrayList<>(finishers.size());
-                for (Entry f : finishers)
-                    dEstimates.add(f.boat().currentTcf() * v0 * f.elapsedMinutes() / 60.0);
-                dRaceNm = median(dEstimates);
-            }
-            tMinutesPerUnitTcf = 60.0 * dRaceNm / v0;
+            dRaceNm = 1.0;
         }
         else
         {
-            tMinutesPerUnitTcf = tTarget * tcfMed;
+            List<Double> dEstimates = new ArrayList<>(finishers.size());
+            for (Entry f : finishers)
+                dEstimates.add(f.boat().currentTcf() * v0 * f.elapsedMinutes() / 60.0);
+            dRaceNm = median(dEstimates);
         }
+        double tMinutesPerUnitTcf = 60.0 * dRaceNm / v0;
 
         List<Adjustment> adjustments = new ArrayList<>(boats.size());
         for (int i = 0; i < participants.size(); i++)

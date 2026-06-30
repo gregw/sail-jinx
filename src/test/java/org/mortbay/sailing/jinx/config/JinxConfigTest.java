@@ -35,6 +35,7 @@ class JinxConfigTest
               latitude: -34.1234
               longitude: 150.9876
               limitBySunset: true
+              v0knots: 6.2
             server:
               port: 9090
             """);
@@ -50,6 +51,7 @@ class JinxConfigTest
         assertThat(config.algorithm().latitude(), closeTo(-34.1234, 1e-9));
         assertThat(config.algorithm().longitude(), closeTo(150.9876, 1e-9));
         assertThat(config.algorithm().limitBySunset(), is(true));
+        assertThat(config.algorithm().v0knots(), closeTo(6.2, 1e-9));
         assertThat(config.server().port(), equalTo(9090));
     }
 
@@ -99,6 +101,8 @@ class JinxConfigTest
         assertThat(config.algorithm().latitude(), closeTo(-33.8000, 1e-9));
         assertThat(config.algorithm().longitude(), closeTo(151.2833, 1e-9));
         assertThat(config.algorithm().limitBySunset(), is(false));
+        // V₀ defaults to 5.5 kn (speed of a 1.000-TCF boat) when not configured.
+        assertThat(config.algorithm().v0knots(), closeTo(5.5, 1e-9));
 
         // Server defaults
         assertThat(config.server().port(), equalTo(8080));

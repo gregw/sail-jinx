@@ -295,46 +295,6 @@ class ApiServletTest
         assertThat(course(plan, 7).courseLengthNm(), closeTo(0.0, 1e-9));
     }
 
-    // ---- deriveV0: SailSys measures each boat's start offset from the
-    // earliest (slowest) boat IN ITS OWN DIVISION, so offsets are only
-    // comparable within a division. V0 must be derived from a same-division
-    // slowest/fastest pair; mixing divisions inflates it. ----
-
-    private Map<String, Object> boatRow(double tcf, long offsetSeconds)
-    {
-        Map<String, Object> r = new LinkedHashMap<>();
-        r.put("tcf", tcf);
-        r.put("startOffsetSeconds", offsetSeconds);
-        return r;
-    }
-
-    private Map<String, Object> divisionWith(List<Map<String, Object>> rows)
-    {
-        Map<String, Object> d = new LinkedHashMap<>();
-        d.put("entrants", rows);
-        return d;
-    }
-
-    @Test
-    void deriveV0UsesWithinDivisionPairsNotCrossDivision()
-    {
-        // Two divisions, both consistent with a true V0 of 6.0 kn over a 100 nm
-        // probe course (offsets are each measured from that division's own
-        // slowest boat). Div 1 spans 0.75–1.00 with a 20000 s spread; Div 2
-        // spans 0.90–1.065 with a 10329 s spread.
-        List<Map<String, Object>> divs = new ArrayList<>();
-        divs.add(divisionWith(List.of(boatRow(0.75, 0), boatRow(1.00, 20000))));
-        divs.add(divisionWith(List.of(boatRow(0.90, 0), boatRow(1.065, 10329))));
-
-        Map<String, Object> d = ApiServlet.deriveV0(divs, 100.0);
-
-        // Picks the widest-spread division (Div 1) and stays within it: 0.75/1.00,
-        // never the cross-division 0.75/1.065 pair (which would give ~13.7 kn).
-        assertThat(((Number) d.get("slowestTcf")).doubleValue(), closeTo(0.75, 1e-9));
-        assertThat(((Number) d.get("fastestTcf")).doubleValue(), closeTo(1.00, 1e-9));
-        assertThat(((Number) d.get("v0Knots")).doubleValue(), closeTo(6.0, 0.05));
-    }
-
     @Test
     void nullSunsetOrLimitDisabledIgnoresSunset()
     {

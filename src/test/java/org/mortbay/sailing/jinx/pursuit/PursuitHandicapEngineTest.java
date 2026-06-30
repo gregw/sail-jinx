@@ -6,13 +6,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import java.time.Instant;
-
 import org.junit.jupiter.api.Test;
 import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.Boat;
-import org.mortbay.sailing.jinx.model.Calibration;
 import org.mortbay.sailing.jinx.model.FinishStatus;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceStatus;
@@ -32,7 +29,7 @@ import static org.hamcrest.Matchers.hasSize;
 class PursuitHandicapEngineTest
 {
     private static final JinxConfig.Algorithm DEFAULT_ALG = new JinxConfig.Algorithm(
-        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 5, "18:00", -33.8000, 151.2833, false);
+        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 5, "18:00", -33.8000, 151.2833, false, 6.0);
 
     private static final double TOLERANCE = 0.01;
 
@@ -189,12 +186,12 @@ class PursuitHandicapEngineTest
     }
 
     /**
-     * Calibration mode: newTcf is derived from V₀ and the race's actual course
-     * distance (median over finishers of {@code TCF × V₀ × elapsed/60}), not
-     * from the fleet-median TCF.
+     * newTcf is derived from the configured V₀ ({@code Algorithm.v0knots}) and
+     * the race's actual course distance (median over finishers of
+     * {@code TCF × V₀ × elapsed/60}).
      *
      * <p>Worked example fleet: 7 finishers @ 85,90,…,115 min + 1 DNF, all
-     * TCF=1.0. With V₀ = 6.0 kn, median over finishers' inferred
+     * TCF=1.0. With V₀ = 6.0 kn (DEFAULT_ALG), median over finishers' inferred
      * D_i = TCF × V₀ × E/60 (i.e. 8.5,9.0,9.5,10.0,10.5,11.0,11.5) is
      * 10.0 nm. p1 gets reward ≈ 1.711 (see {@link #winnerRewardScalesWithOwnElapsed}),
      * so net = 5 − 1.711 = 3.289:
@@ -205,19 +202,14 @@ class PursuitHandicapEngineTest
      * </pre>
      */
     @Test
-    void newTcfUsesCalibrationVZeroWhenProvided()
+    void newTcfUsesConfiguredVZero()
     {
-        Calibration cal = new Calibration(
-            6.0, 100.0, 0.79, 0L, 1.12, 22320L,
-            Instant.parse("2026-05-29T09:30:00Z"));
-        PursuitHandicapEngine calEngine = new PursuitHandicapEngine(DEFAULT_ALG, cal);
-
         List<Boat> boats = workedExampleFleet();
         Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
             90, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
         Map<String, Result> results = workedExampleResults();
 
-        Adjustment p1 = calEngine.processResults(boats, race, results).stream()
+        Adjustment p1 = engine.processResults(boats, race, results).stream()
             .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
             .findFirst().orElseThrow();
 
@@ -229,13 +221,8 @@ class PursuitHandicapEngineTest
      * raises TCF, negative lowers it, and DSQ boats stay frozen.
      */
     @Test
-    void calibrationModeKeepsDsqFrozenAndPreservesDirection()
+    void vZeroModeKeepsDsqFrozenAndPreservesDirection()
     {
-        Calibration cal = new Calibration(
-            6.0, 100.0, 0.79, 0L, 1.12, 22320L,
-            Instant.parse("2026-05-29T09:30:00Z"));
-        PursuitHandicapEngine calEngine = new PursuitHandicapEngine(DEFAULT_ALG, cal);
-
         List<Boat> boats = List.of(
             new Boat("a", "A", "1", "d", "Div", 1.0),
             new Boat("b", "B", "2", "d", "Div", 1.0),
@@ -248,7 +235,7 @@ class PursuitHandicapEngineTest
             "b", fin("b", start, start.plusMinutes(65)),
             "c", new Result("c", FinishStatus.DSQ, start, null, null));
 
-        Map<String, Adjustment> byId = calEngine.processResults(boats, race, results).stream()
+        Map<String, Adjustment> byId = engine.processResults(boats, race, results).stream()
             .collect(Collectors.toMap(Adjustment::boatId, a -> a));
 
         assertThat(byId.get("a").newTcf() > byId.get("a").oldTcf(), equalTo(true));

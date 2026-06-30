@@ -102,8 +102,6 @@ public class ApiServlet extends HttpServlet
         java.util.regex.Pattern.compile("/races/(\\d+)/division-starts");
     private static final java.util.regex.Pattern RACE_ABANDON =
         java.util.regex.Pattern.compile("/races/(\\d+)/abandon");
-    private static final java.util.regex.Pattern RACE_CALIBRATE =
-        java.util.regex.Pattern.compile("/races/(\\d+)/calibrate");
     private static final java.util.regex.Pattern RACE_COURSE_PLAN =
         java.util.regex.Pattern.compile("/races/(\\d+)/course-plan");
     private static final java.util.regex.Pattern RACE_PROCESS_HANDICAPS =
@@ -171,7 +169,6 @@ public class ApiServlet extends HttpServlet
                 case "/boats" -> writeJson(resp, store.boats().values());
                 case "/races" -> writeJson(resp, store.races().values());
                 case "/audit" -> writeJson(resp, store.audit());
-                case "/calibration" -> handleGetCalibration(resp);
                 default -> {
                     java.util.regex.Matcher sr = SERIES_RACES.matcher(path);
                     java.util.regex.Matcher sc = SERIES_CONFIG.matcher(path);
@@ -256,7 +253,6 @@ public class ApiServlet extends HttpServlet
             {
                 case "/auth/login" -> handleLogin(req, resp);
                 case "/auth/logout" -> handleLogout(req, resp);
-                case "/calibration" -> handleSaveCalibration(req, resp);
                 default -> {
                     java.util.regex.Matcher tcfs = SERIES_TCFS.matcher(path);
                     java.util.regex.Matcher sc = SERIES_CONFIG.matcher(path);
@@ -305,12 +301,6 @@ public class ApiServlet extends HttpServlet
                         java.util.regex.Matcher m = RACE_ABANDON.matcher(path);
                         if (m.matches())
                             handleAbandon(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (RACE_CALIBRATE.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_CALIBRATE.matcher(path);
-                        if (m.matches())
-                            handleCalibrate(req, resp, Integer.parseInt(m.group(1)));
                     }
                     else if (RACE_COURSE_PLAN.matcher(path).matches())
                     {
@@ -693,6 +683,7 @@ public class ApiServlet extends HttpServlet
         m.put("latitude", a.latitude());
         m.put("longitude", a.longitude());
         m.put("limitBySunset", a.limitBySunset());
+        m.put("v0knots", a.v0knots());
         return m;
     }
 
@@ -789,9 +780,20 @@ public class ApiServlet extends HttpServlet
             writeJson(resp, Map.of("error", "not signed in"));
             return;
         }
+        JsonNode status = sailsys.fetchRaceStatus(session.token(), raceId);
+
+        // V₀ (speed of a 1.000-TCF boat) is configuration, resolved per series:
+        // the per-series override if one is saved, else the system default. The
+        // race page uses it to size courses from a target duration.
+        String seriesId = (status != null && status.hasNonNull("seriesId"))
+            ? status.get("seriesId").asText() : null;
+        JinxConfig.Algorithm alg = (seriesId != null) ? store.seriesConfig(seriesId) : null;
+        if (alg == null) alg = config.algorithm();
+
         writeJson(resp, Map.of(
             "raceId", raceId,
-            "status", sailsys.fetchRaceStatus(session.token(), raceId)));
+            "v0knots", alg.v0knots(),
+            "status", status));
     }
 
     /**
@@ -1861,395 +1863,6 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
-     * Calibration probe: discover how SailSys converts (courseLength, TCF)
-     * into per-boat start-time offsets for a pursuit race.
-     *
-     * <p>Admin-only. Mutates SailSys state, then restores it in a finally
-     * block. Flow:
-     * <ol>
-     *   <li>Snapshot current divisionTiming + entrants/start-times
-     *       visibility flags.</li>
-     *   <li>Hide both visibilities so the calibration probe doesn't leak
-     *       to public spectators mid-flight.</li>
-     *   <li>PUT calibration timing: every division gets
-     *       {@code courseLength=100} (nm) and
-     *       {@code startTimeLocal=raceDate@10:00:00} with the matching
-     *       {@code startTimeUtc} computed from the original local→UTC
-     *       offset.</li>
-     *   <li>Wait for SailSys-side start-time processing.</li>
-     *   <li>Fetch entrants — each carries the SailSys-computed
-     *       per-boat {@code startTimeLocal} for this calibration setup.
-     *       Build a per-division view with TCF + start time + offset
-     *       from the earliest start in the division.</li>
-     *   <li>Restore divisionTiming to its original values (PUT + wait).
-     *       Restore visibility flags. All restore steps run inside a
-     *       finally block so a mid-flight failure still attempts to
-     *       roll back.</li>
-     * </ol>
-     *
-     * <p>Per-division output sorts entrants by TCF descending (slowest
-     * first), with {@code startOffsetSeconds} measured from the earliest
-     * (typically slowest) boat's start. Reading the offset-vs-TCF
-     * relationship reveals the speed/length conversion SailSys applies.
-     */
-    private void handleCalibrate(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        if (adminLevelForClub(session.user(), config.sailsys().clubId()) != 0)
-        {
-            resp.setStatus(403);
-            writeJson(resp, Map.of("error", "admin required"));
-            return;
-        }
-        String token = session.token();
-
-        // 1. Snapshot original state.
-        JsonNode status = sailsys.fetchRaceStatus(token, raceId);
-        JsonNode origDivisionTiming = status.path("divisionTiming");
-        if (!origDivisionTiming.isArray() || origDivisionTiming.isEmpty())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "race has no divisionTiming to calibrate"));
-            return;
-        }
-        int origEntrantsVis = status.path("raceEntrantVisibility").asInt(0);
-        int origStartTimesVis = status.path("handicapAndStartTimeVisibility").asInt(0);
-        String raceDate = status.path("dateTime").asText("");
-        if (raceDate.length() >= 10) raceDate = raceDate.substring(0, 10);
-        else raceDate = java.time.LocalDate.now().toString();
-
-        Map<String, Object> calibration = null;
-        Exception failure = null;
-        // Track the "fresh processing completed" marker. SailSys bumps
-        // startTimeLastProcessedTime after each /timing PUT settles. We
-        // capture it before each PUT so the wait helper can detect a
-        // genuine new completion (status==2 AND timestamp moved) rather
-        // than racing with the pre-PUT processed=2 state.
-        String preCalProcessedTime = status.path("startTimeLastProcessedTime").asText("");
-        try
-        {
-            // 2. Hide visibilities (only if currently visible — preserves
-            //    "already hidden" state on restore).
-            if (origEntrantsVis == 1)
-                sailsys.setEntrantsVisibility(token, raceId, false);
-            if (origStartTimesVis == 1)
-                sailsys.setStartTimesVisibility(token, raceId, false);
-
-            // 3. Build calibration divisionTiming. Course 100nm, start
-            //    10:00:00 on the race date. UTC computed via the same
-            //    helper as the user-driven start time edits.
-            String calStartLocal = raceDate + "T10:00:00.000";
-            JsonNode calibTiming = origDivisionTiming.deepCopy();
-            for (JsonNode dt : calibTiming)
-            {
-                if (!(dt instanceof ObjectNode on)) continue;
-                String origLocal = on.path("startTimeLocal").asText("");
-                String origUtc = on.path("startTimeUtc").asText("");
-                on.put("courseLength", 100.0);
-                on.put("startTimeLocal", calStartLocal);
-                on.put("startTimeUtc", recomputeUtc(origLocal, origUtc, calStartLocal));
-            }
-            sailsys.setRaceTiming(token, raceId, calibTiming);
-
-            // 4. Wait for SailSys to actually finish processing — must
-            //    see status==2 AND a fresh startTimeLastProcessedTime.
-            if (!waitForFreshStartTimeProcessing(token, raceId,
-                    preCalProcessedTime, 120_000L))
-                throw new IllegalStateException(
-                    "SailSys did not finish processing calibration timing within 2 min");
-
-            // 5. Read back the per-boat staggered start times.
-            JsonNode entrants = sailsys.fetchRaceEntrants(token, raceId);
-            calibration = buildCalibrationView(entrants, origDivisionTiming, calStartLocal);
-        }
-        catch (Exception e)
-        {
-            LOG.warn("Calibration failed for race {}: {}", raceId, e.toString());
-            failure = e;
-        }
-        finally
-        {
-            // 6. Restore divisionTiming + visibility — best effort, log
-            //    on failure so a partial restore is at least diagnosable.
-            //    The PUT here re-triggers SailSys start-time processing
-            //    (every successful /timing PUT does), so when this wait
-            //    returns the race's per-boat start times will reflect the
-            //    original courseLength + start gun, not the calibration
-            //    values. Capture the "before" timestamp from a fresh
-            //    status fetch so the wait detects this restore's
-            //    completion rather than the calibration's.
-            try
-            {
-                JsonNode preRestoreStatus = sailsys.fetchRaceStatus(token, raceId);
-                String preRestoreProcessedTime = preRestoreStatus
-                    .path("startTimeLastProcessedTime").asText("");
-                sailsys.setRaceTiming(token, raceId, origDivisionTiming);
-                if (!waitForFreshStartTimeProcessing(token, raceId,
-                        preRestoreProcessedTime, 120_000L))
-                    LOG.warn("Calibration timing restore did not finish " +
-                        "processing for race {} within 2 min — leaving the " +
-                        "polling to settle; race state may be transient.",
-                        raceId);
-            }
-            catch (Exception e)
-            {
-                LOG.error("Calibration timing restore failed for race {}: {}",
-                    raceId, e.toString());
-            }
-            try
-            {
-                if (origEntrantsVis == 1)
-                    sailsys.setEntrantsVisibility(token, raceId, true);
-            }
-            catch (Exception e)
-            {
-                LOG.error("Calibration entrants-visibility restore failed: {}", e.toString());
-            }
-            try
-            {
-                if (origStartTimesVis == 1)
-                    sailsys.setStartTimesVisibility(token, raceId, true);
-            }
-            catch (Exception e)
-            {
-                LOG.error("Calibration start-times-visibility restore failed: {}", e.toString());
-            }
-        }
-
-        if (failure != null)
-        {
-            resp.setStatus(500);
-            writeJson(resp, Map.of("error", "Calibration failed: " + failure.getMessage()));
-            return;
-        }
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("ok", true);
-        out.put("raceId", raceId);
-        out.put("calibration", calibration);
-        writeJson(resp, out);
-    }
-
-    /**
-     * Poll {@code /races/{id}/status} until SailSys has finished a
-     * <em>fresh</em> start-time processing pass — i.e.
-     * {@code handicapAndStartTimeProcessingStatus == 2 (processed)} AND
-     * {@code startTimeLastProcessedTime} has changed from the captured
-     * pre-PUT value. Both conditions matter:
-     * <ul>
-     *   <li>SailSys takes a moment to flip status from the prior
-     *       {@code 2} into {@code 0/1} after a PUT; polling on
-     *       status alone can return prematurely against the stale
-     *       {@code 2}.</li>
-     *   <li>{@code startTimeLastProcessedTime} only updates when a
-     *       processing pass actually completes, so a fresh timestamp is
-     *       the authoritative "we're done" signal.</li>
-     * </ul>
-     * Returns true on a fresh completion, false on timeout.
-     */
-    private boolean waitForFreshStartTimeProcessing(String token, int raceId,
-                                                    String previousProcessedTime,
-                                                    long timeoutMs) throws Exception
-    {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline)
-        {
-            Thread.sleep(500L);
-            JsonNode s = sailsys.fetchRaceStatus(token, raceId);
-            int proc = s.path("handicapAndStartTimeProcessingStatus").asInt(2);
-            String now = s.path("startTimeLastProcessedTime").asText("");
-            if (proc == 2 && !now.isEmpty() && !now.equals(previousProcessedTime))
-                return true;
-        }
-        return false;
-    }
-
-    /**
-     * Group entrants by division and assemble the calibration view: per
-     * division, a sorted list of entrants (descending TCF — slowest
-     * first) with their TCF, computed startTimeLocal, and offset (in
-     * seconds) from the earliest start in that division.
-     */
-    private Map<String, Object> buildCalibrationView(JsonNode entrants,
-                                                     JsonNode origDivisionTiming,
-                                                     String calStartLocal)
-    {
-        Map<Integer, List<Map<String, Object>>> byDivision = new LinkedHashMap<>();
-        if (entrants != null && entrants.isArray())
-        {
-            for (JsonNode e : entrants)
-            {
-                int divId = e.path("division").path("id").asInt(0);
-                int boatId = e.path("boat").path("id").asInt(0);
-                if (boatId == 0) continue;
-                String sail = e.path("boat").path("sailNumber").asText("");
-                String name = e.path("boat").path("name").asText("");
-                String startTimeLocal = e.path("startTimeLocal").asText("");
-                double tcf = 0;
-                JsonNode hc = e.path("handicap").path("currentHandicaps");
-                if (hc.isArray() && hc.size() > 0)
-                    tcf = hc.get(0).path("value").asDouble(0);
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("boatId", boatId);
-                row.put("sailNumber", sail);
-                row.put("name", name);
-                row.put("tcf", tcf);
-                row.put("startTimeLocal", startTimeLocal);
-                byDivision.computeIfAbsent(divId, k -> new ArrayList<>()).add(row);
-            }
-        }
-
-        // Resolve division names from origDivisionTiming so the response
-        // is self-describing.
-        Map<Integer, String> divisionNames = new HashMap<>();
-        for (JsonNode dt : origDivisionTiming)
-        {
-            int id = dt.path("divisionId").asInt(0);
-            if (id != 0) divisionNames.put(id, dt.path("divisionName").asText(""));
-        }
-
-        List<Map<String, Object>> divisionsOut = new ArrayList<>();
-        for (var entry : byDivision.entrySet())
-        {
-            int divId = entry.getKey();
-            List<Map<String, Object>> rows = entry.getValue();
-            // Find earliest start in this division (in seconds).
-            long earliest = Long.MAX_VALUE;
-            for (var r : rows)
-            {
-                long t = parseTimeOfDaySeconds((String) r.get("startTimeLocal"));
-                if (t >= 0 && t < earliest) earliest = t;
-            }
-            // Annotate each row with the offset from earliest.
-            for (var r : rows)
-            {
-                long t = parseTimeOfDaySeconds((String) r.get("startTimeLocal"));
-                r.put("startOffsetSeconds", (t < 0 || earliest == Long.MAX_VALUE) ? -1 : (t - earliest));
-            }
-            // Sort by TCF descending (slowest first — they start earliest).
-            rows.sort((a, b) -> Double.compare(
-                ((Number) b.get("tcf")).doubleValue(),
-                ((Number) a.get("tcf")).doubleValue()));
-            Map<String, Object> divOut = new LinkedHashMap<>();
-            divOut.put("divisionId", divId);
-            divOut.put("divisionName", divisionNames.getOrDefault(divId, ""));
-            divOut.put("entrants", rows);
-            divisionsOut.add(divOut);
-        }
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        double courseLengthNm = 100.0;
-        out.put("courseLength", courseLengthNm);
-        out.put("earliestStart", "10:00:00");
-        out.put("divisions", divisionsOut);
-        out.put("derivation", deriveV0(divisionsOut, courseLengthNm));
-        return out;
-    }
-
-    /**
-     * Solve for V₀ — the speed at which SailSys assumes a 1.000-TCF boat sails:
-     * <pre>
-     *   v0 [kn] = D [nm] / Δt [h] × (1/TCF_slow − 1/TCF_fast)
-     * </pre>
-     * <p><strong>Within a single division.</strong> SailSys staggers each boat
-     * relative to the earliest (slowest) boat <em>in its own division</em>, so
-     * {@code startOffsetSeconds} is only comparable between boats in the same
-     * division. We therefore compute V₀ from each division's slowest/fastest
-     * pair and keep the one with the widest offset spread (best precision);
-     * pairing a slow boat in one division with a fast boat in another mixes
-     * incompatible reference points and inflates V₀.
-     *
-     * <p>Returns the chosen pair + result so the UI can render the working and
-     * Save can persist exactly what the user saw. {@code null} when no single
-     * division yielded two distinct, offset-bearing TCFs.
-     */
-    static Map<String, Object> deriveV0(List<Map<String, Object>> divisionsOut,
-                                        double courseLengthNm)
-    {
-        Map<String, Object> best = null;
-        long bestDelta = 0;
-        for (Map<String, Object> div : divisionsOut)
-        {
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> rows = (List<Map<String, Object>>) div.get("entrants");
-            if (rows == null) continue;
-
-            // Slowest (min TCF) and fastest (max TCF) offset-bearing boats in
-            // THIS division only.
-            Map<String, Object> slowest = null;
-            Map<String, Object> fastest = null;
-            for (Map<String, Object> r : rows)
-            {
-                Object offObj = r.get("startOffsetSeconds");
-                Object tcfObj = r.get("tcf");
-                if (!(offObj instanceof Number offN) || !(tcfObj instanceof Number tcfN))
-                    continue;
-                if (offN.longValue() < 0 || tcfN.doubleValue() <= 0) continue;
-                if (slowest == null || tcfN.doubleValue() < ((Number) slowest.get("tcf")).doubleValue())
-                    slowest = r;
-                if (fastest == null || tcfN.doubleValue() > ((Number) fastest.get("tcf")).doubleValue())
-                    fastest = r;
-            }
-            if (slowest == null || fastest == null || slowest == fastest) continue;
-
-            long slowestOff = ((Number) slowest.get("startOffsetSeconds")).longValue();
-            long fastestOff = ((Number) fastest.get("startOffsetSeconds")).longValue();
-            long deltaSeconds = fastestOff - slowestOff;
-            if (deltaSeconds <= 0) continue;
-
-            // Keep the division with the largest spread — most boats / least
-            // relative rounding error in SailSys's minute-quantised offsets.
-            if (deltaSeconds <= bestDelta) continue;
-            bestDelta = deltaSeconds;
-
-            double slowestTcf = ((Number) slowest.get("tcf")).doubleValue();
-            double fastestTcf = ((Number) fastest.get("tcf")).doubleValue();
-            double v0 = courseLengthNm / (deltaSeconds / 3600.0) * (1.0 / slowestTcf - 1.0 / fastestTcf);
-
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("courseLengthNm", courseLengthNm);
-            out.put("slowestTcf", slowestTcf);
-            out.put("slowestStartOffsetSeconds", slowestOff);
-            out.put("fastestTcf", fastestTcf);
-            out.put("fastestStartOffsetSeconds", fastestOff);
-            out.put("deltaSeconds", deltaSeconds);
-            out.put("v0Knots", v0);
-            if (div.get("divisionId") != null) out.put("divisionId", div.get("divisionId"));
-            if (div.get("divisionName") != null) out.put("divisionName", div.get("divisionName"));
-            best = out;
-        }
-        return best;
-    }
-
-    /**
-     * Extract HH:MM[:SS] from an ISO local datetime (or any string containing
-     * it after a {@code T}, space, or start-of-string) and return the total
-     * seconds-from-midnight. Seconds default to zero when absent — SailSys
-     * has been observed returning per-entrant {@code startTimeLocal} values
-     * with minute-only precision (e.g. {@code 2026-05-29T16:06}), and a
-     * stricter regex would silently fail the whole calibration probe.
-     * Returns -1 if no time can be extracted.
-     */
-    private static long parseTimeOfDaySeconds(String iso)
-    {
-        if (iso == null) return -1;
-        java.util.regex.Matcher m = java.util.regex.Pattern
-            .compile("(?:^|[T\\s])(\\d{1,2}):(\\d{1,2})(?::(\\d{1,2}))?").matcher(iso);
-        if (!m.find()) return -1;
-        long ss = (m.group(3) != null) ? Long.parseLong(m.group(3)) : 0L;
-        return Long.parseLong(m.group(1)) * 3600L
-             + Long.parseLong(m.group(2)) * 60L
-             + ss;
-    }
-
-    /**
      * Read the RO-captured times for a race. Returns {@code {raceId, times:null}}
      * (with {@code times:null}) when nothing has been saved yet, so the client
      * can distinguish "never saved" from "saved empty".
@@ -2355,8 +1968,8 @@ public class ApiServlet extends HttpServlet
      *
      * <p>The client supplies each division's slowest (min) TCF — so unsaved TCF
      * edits are honoured and no SailSys round-trip is needed. The server applies
-     * the saved calibration's V₀, the per-series sunset cap (when configured),
-     * and {@link #computeCoursePlan}. Returns the effective (possibly capped)
+     * the configured V₀ ({@code v0knots}), the per-series sunset cap (when
+     * configured), and {@link #computeCoursePlan}. Returns the effective (possibly capped)
      * duration, the sunset cutoff, and per-division course lengths (0.1 nm).
      */
     private void handleCoursePlan(HttpServletRequest req, HttpServletResponse resp, String raceId)
@@ -2367,17 +1980,6 @@ public class ApiServlet extends HttpServlet
         {
             resp.setStatus(401);
             writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-
-        // Same gate as Process Handicaps: the TCF → course conversion needs V₀.
-        org.mortbay.sailing.jinx.model.Calibration calibration = store.calibration();
-        if (calibration == null)
-        {
-            resp.setStatus(409);
-            writeJson(resp, Map.of("error",
-                "No calibration on file. Run Calibrate first to measure "
-                + "SailSys's TCF → start-offset conversion (V₀)."));
             return;
         }
 
@@ -2427,7 +2029,7 @@ public class ApiServlet extends HttpServlet
             }
         }
 
-        CoursePlan plan = computeCoursePlan(calibration.v0Knots(), duration,
+        CoursePlan plan = computeCoursePlan(alg.v0knots(), duration,
             alg.limitBySunset(), earliestStart, sunset, divisions);
 
         List<Map<String, Object>> divOut = new ArrayList<>(plan.divisions().size());
@@ -2441,7 +2043,7 @@ public class ApiServlet extends HttpServlet
         out.put("limitedBySunset", plan.limitedBySunset());
         out.put("sunsetLocal", sunset == null ? null
             : String.format("%02d:%02d", sunset.getHour(), sunset.getMinute()));
-        out.put("v0Knots", calibration.v0Knots());
+        out.put("v0knots", alg.v0knots());
         out.put("divisions", divOut);
         writeJson(resp, out);
     }
@@ -2467,19 +2069,6 @@ public class ApiServlet extends HttpServlet
     private void handleProcessHandicaps(HttpServletRequest req, HttpServletResponse resp, String raceId)
         throws Exception
     {
-        // Gate: the V₀-based TCF projection requires a saved calibration. The
-        // UI mirrors this — Process Handicaps is only enabled when GET
-        // /api/calibration returned non-null on page load.
-        org.mortbay.sailing.jinx.model.Calibration calibration = store.calibration();
-        if (calibration == null)
-        {
-            resp.setStatus(409);
-            writeJson(resp, Map.of("error",
-                "No calibration on file. Run Calibrate first to measure "
-                + "SailSys's TCF → start-offset conversion (V₀)."));
-            return;
-        }
-
         JsonNode body = MAPPER.readTree(req.getInputStream());
 
         String seriesId = body.path("seriesId").isMissingNode()
@@ -2537,7 +2126,7 @@ public class ApiServlet extends HttpServlet
         }
 
         Race race = new Race(raceId, 0, "", null, tTarget, null, RaceStatus.RESULTS_ENTERED);
-        PursuitHandicapEngine engine = new PursuitHandicapEngine(alg, calibration);
+        PursuitHandicapEngine engine = new PursuitHandicapEngine(alg);
         List<Adjustment> adjustments = engine.processResults(boats, race, results);
 
         Map<String, Object> out = new LinkedHashMap<>();
@@ -2549,7 +2138,7 @@ public class ApiServlet extends HttpServlet
             "idealRaceDuration", alg.idealRaceDuration(),
             "dnfAllowance", alg.dnfAllowance(),
             "earliestStart", alg.earliestStart()));
-        out.put("calibration", Map.of("v0Knots", calibration.v0Knots()));
+        out.put("v0knots", alg.v0knots());
         out.put("adjustments", adjustments);
         writeJson(resp, out);
     }
@@ -2891,69 +2480,6 @@ public class ApiServlet extends HttpServlet
                 sortObj.put("value", v.doubleValue());
         }
         sailsys.updateRaceHandicaps(token, raceId, entrants);
-    }
-
-    /**
-     * GET /api/calibration — return the saved SailSys calibration ({@code null}
-     * when never probed). The race page uses the presence of a calibration to
-     * decide whether to enable the Process Handicaps button.
-     */
-    private void handleGetCalibration(HttpServletResponse resp) throws Exception
-    {
-        org.mortbay.sailing.jinx.model.Calibration cal = store.calibration();
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("calibration", cal);
-        writeJson(resp, out);
-    }
-
-    /**
-     * POST /api/calibration — persist a calibration computed from a probe
-     * response. Admin-only. Body shape:
-     * <pre>{@code
-     *   {
-     *     "v0Knots": 6.107,
-     *     "courseLengthNm": 100.0,
-     *     "slowestTcf": 0.79, "slowestStartOffsetSeconds": 0,
-     *     "fastestTcf": 1.12, "fastestStartOffsetSeconds": 21960
-     *   }
-     * }</pre>
-     * {@code computedAt} is stamped server-side.
-     */
-    private void handleSaveCalibration(HttpServletRequest req, HttpServletResponse resp) throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        if (adminLevelForClub(session.user(), config.sailsys().clubId()) != 0)
-        {
-            resp.setStatus(403);
-            writeJson(resp, Map.of("error", "admin required"));
-            return;
-        }
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        double v0 = body.path("v0Knots").asDouble(0);
-        double courseLengthNm = body.path("courseLengthNm").asDouble(0);
-        double slowestTcf = body.path("slowestTcf").asDouble(0);
-        long slowestOff = body.path("slowestStartOffsetSeconds").asLong(0);
-        double fastestTcf = body.path("fastestTcf").asDouble(0);
-        long fastestOff = body.path("fastestStartOffsetSeconds").asLong(0);
-        if (v0 <= 0 || courseLengthNm <= 0 || slowestTcf <= 0 || fastestTcf <= 0)
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error",
-                "v0Knots, courseLengthNm, slowestTcf and fastestTcf must all be positive"));
-            return;
-        }
-        org.mortbay.sailing.jinx.model.Calibration cal =
-            new org.mortbay.sailing.jinx.model.Calibration(
-                v0, courseLengthNm, slowestTcf, slowestOff,
-                fastestTcf, fastestOff, java.time.Instant.now());
-        store.putCalibration(cal);
-        writeJson(resp, Map.of("ok", true, "calibration", cal));
     }
 
     private static int adminLevelForClub(SailSysClient.User u, int clubId)

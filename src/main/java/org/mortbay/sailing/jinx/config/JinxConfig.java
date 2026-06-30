@@ -75,6 +75,12 @@ public record JinxConfig(
      * {@code limitBySunset} caps the race duration so the slowest boat is
      * expected to finish by sunset on the race date.
      *
+     * <p>{@code v0knots} is V₀ — the speed (knots) at which a 1.000-TCF boat is
+     * assumed to sail. It converts a target race duration into a per-division
+     * course length ({@code course = slowestTcf × V₀ × hours}) and anchors the
+     * post-race TCF adjustment. It defaults to 5.5 kn and may be overridden
+     * per series via the Series Configure form.
+     *
      * <p>Sunset is computed locally by
      * {@link org.mortbay.sailing.jinx.pursuit.SolarTimes#sunsetLocal} (no
      * external API) and converted to local wall-clock using the configured
@@ -88,7 +94,8 @@ public record JinxConfig(
         @JsonProperty("earliestStart") String earliestStart,
         @JsonProperty("latitude") Double latitude,
         @JsonProperty("longitude") Double longitude,
-        @JsonProperty("limitBySunset") boolean limitBySunset)
+        @JsonProperty("limitBySunset") boolean limitBySunset,
+        @JsonProperty("v0knots") Double v0knots)
     {
         public Algorithm
         {
@@ -104,6 +111,8 @@ public record JinxConfig(
                 latitude = -33.8000;
             if (longitude == null)
                 longitude = 151.2833;
+            if (v0knots == null || v0knots <= 0)
+                v0knots = 5.5;
         }
     }
 
