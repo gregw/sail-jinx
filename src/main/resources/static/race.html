@@ -237,6 +237,10 @@
   // string 'scratch' | 'pursuit' | 'tcf'. Persisted per-race via
   // SESSION_KEY('form'). null until the first populate.
   let selectedHandicap = null;
+  // True once the user has explicitly picked a handicap via the selector
+  // THIS page-load. Distinguishes a deliberate choice (always honoured) from
+  // a restored/derived value, which the pursuit-default rule may override.
+  let userPickedHandicap = false;
 
   function isAnyDirty() {
     return dirtyTcf.size > 0 || dirtyFlags.size > 0 || isTimesDirty();
@@ -803,6 +807,14 @@
   //   OCS  — actualStart earlier than scheduled start. Added IN ADDITION to
   //          any other flag (per spec: "no matter what other flags it might
   //          get (it doesn't need a finish time to get it)").
+  //
+  // NONE of the DNC/DNS/DNF derivations fire when an explicit status flag
+  // (SailSys-supplied or manually added, minus manual removals) already
+  // classifies the boat — a boat marked RET or DSQ mustn't also pick up an
+  // auto DNC/DNS/DNF that would contradict (and, in jinxStatusForEntrant's
+  // precedence, could even override) the explicit call.
+  const STATUS_FLAGS = ['DNC', 'DNS', 'DNF', 'DSQ', 'RET', 'ABD', 'AVG'];
+
   function flagsForEntrant(entrant) {
     const id = entrant && entrant.boat && entrant.boat.id;
     const flags = [];
@@ -814,27 +826,25 @@
 
     const t = getTimes(id);
     const actualStr = actualStartFor(entrant);
-    if (!t || !t.came) {
-      flags.push('DNC');
-    } else if (!t.finish) {
-      // Came + no finish defaults to DNF (if we have an actual start) or
-      // DNS (no actual start). Suppress the DNS default when an external
-      // status flag (SailSys or manual add, minus manual removal) has
-      // already classified the boat as having raced / withdrawn: a boat
-      // marked DNF / RET / DSQ / ABD did start, so DNS would contradict
-      // the existing flag. Checked here (not via effectiveFlagsForEntrant)
-      // to avoid recursion — that helper itself calls flagsForEntrant.
-      const sidStr = String(id);
-      const ssFlags = (sailsysResults[sidStr] && sailsysResults[sidStr].flags) || [];
-      const ov = dirtyFlags.get(sidStr);
-      const added = (ov && ov.added) || [];
-      const removed = new Set((ov && ov.removed) || []);
-      const externalSet = new Set();
-      for (const f of ssFlags) if (!removed.has(f)) externalSet.add(f);
-      for (const f of added) externalSet.add(f);
-      const startedFlags = ['DNF', 'RET', 'DSQ', 'ABD'];
-      const alreadyClassified = startedFlags.some(f => externalSet.has(f));
-      if (!alreadyClassified) {
+    // The explicit flag set: SailSys ∪ manual additions \ manual removals.
+    // Built here (not via effectiveFlagsForEntrant) to avoid recursion —
+    // that helper itself calls flagsForEntrant.
+    const sidStr = String(id);
+    const ssFlags = (sailsysResults[sidStr] && sailsysResults[sidStr].flags) || [];
+    const ov = dirtyFlags.get(sidStr);
+    const added = (ov && ov.added) || [];
+    const removed = new Set((ov && ov.removed) || []);
+    const externalSet = new Set();
+    for (const f of ssFlags) if (!removed.has(f)) externalSet.add(f);
+    for (const f of added) externalSet.add(f);
+    const explicitlyClassified = STATUS_FLAGS.some(f => externalSet.has(f));
+
+    if (!explicitlyClassified) {
+      if (!t || !t.came) {
+        flags.push('DNC');
+      } else if (!t.finish) {
+        // Came + no finish defaults to DNF (if we have an actual start) or
+        // DNS (no actual start).
         flags.push(actualStr ? 'DNF' : 'DNS');
       }
     }
@@ -1765,6 +1775,14 @@
         && /^\d+$/.test(selectedHandicap)) {
       selectedHandicap = Number(selectedHandicap);
     }
+    // A pursuit race's results mean finish order — Scratch (elapsed) must
+    // never be its DEFAULT view. A Scratch selection restored from an
+    // earlier visit is dropped back to the default; one the user picked
+    // via the selector this page-load sticks.
+    if (isPursuit && !userPickedHandicap && selectedHandicap != null
+        && (selectedHandicap === 'scratch' || isScratchHandicap(selectedHandicap))) {
+      selectedHandicap = null;
+    }
     const validValues = new Set(options.map(o => String(o.value)));
     if (selectedHandicap == null || !validValues.has(String(selectedHandicap))) {
       selectedHandicap = defaultValue;
@@ -1778,6 +1796,9 @@
       const raw = sel.value;
       selectedHandicap = (raw === 'scratch' || raw === 'pursuit' || raw === 'tcf')
         ? raw : Number(raw);
+      // An explicit pick is honoured for the rest of this page-load, even
+      // where the default logic would override it (Scratch on a pursuit).
+      userPickedHandicap = true;
       sessionSaveForm();
       renderEntrants();
     };
@@ -2858,18 +2879,21 @@
 
   // The "Dirty" readout: clean, or an enumerated list of why local state
   // diverges from SailSys (so the RO knows what an implicit/explicit SAVE
-  // would push, and why a banner/lock is in effect). Includes unsaved Jinx
-  // handicap adjustments, which a SAVE now persists alongside everything else.
+  // would push, and why a banner/lock is in effect).
   function dirtyStatusHtml() {
     const reasons = [];
     if (dirtyTcf.size > 0) reasons.push(dirtyTcf.size + ' TCF edit' + (dirtyTcf.size === 1 ? '' : 's'));
     if (isTimesDirty()) reasons.push('times changed');
     if (isDivisionStartsDirty()) reasons.push('start times / course changed');
     if (dirtyFlags.size > 0) reasons.push('flag overrides');
-    // Computed-but-unsaved Jinx adjustments on THIS race (persisted by the
-    // Save Handicaps button — see renderControls).
-    if (nextStartAdjustments.size > 0 && !nextStartSaved) {
-      reasons.push('unsaved handicap adjustments');
+    // Computed-but-unsaved Jinx adjustments on THIS race. Process Handicaps
+    // saves implicitly, so this only survives a failed save — re-running
+    // Process Handicaps is the retry. For a review-only viewer (not admin,
+    // or not our handicap) the adjustments are never saveable, so their
+    // unsaved-ness isn't a divergence worth nagging about.
+    if (nextStartAdjustments.size > 0 && !nextStartSaved
+        && ((typeof isAdmin === 'function') && isAdmin()) && isOurHandicap) {
+      reasons.push('handicap adjustments not saved — rerun Process Handicaps');
     }
     // A divergent local TCF snapshot pending application to SailSys for this
     // race (the next-race TCFs from the previous race's saved handicaps, or a
@@ -3038,30 +3062,28 @@
     const abandonRow = abandonBtns ? `<div class="controls-row">${abandonBtns}</div>` : '';
 
     // --- 4. Process handicaps (pursuit) --------------------------------------
-    // Process Handicaps computes the next race's TCF adjustments; Save
-    // Handicaps (admin + our-handicap) persists them locally and queues the
-    // next race's TCF snapshot. The *application* of those TCFs happens on the
-    // next race, through the normal SAVE bar (see snapshotPendingPush).
-    const resultsReady = !!s.lastProcessedTime && !reqCalc;
+    // Process Handicaps computes the next race's TCF adjustments AND (for an
+    // admin on a race scored against our handicap) implicitly persists them,
+    // queueing the next race's TCF snapshot — there is no separate Save step.
+    // The *application* of those TCFs happens on the next race, through the
+    // normal SAVE bar (see snapshotPendingPush). It is offered only once the
+    // results have been PUBLISHED (Provisional or Final) — the published
+    // finish order is what the reward ladder is computed against.
+    const resultsReady = resultsPublished && !reqCalc;
     const procHcDisabled = !resultsReady ? ' disabled' : '';
     const v0Note = (seriesV0Knots > 0) ? ` (V₀ = ${seriesV0Knots.toFixed(3)} kn)` : '';
-    const haveAdjustments = nextStartAdjustments.size > 0;
-    const saveHcDisabled = (!haveAdjustments || nextStartSaved) ? ' disabled' : '';
-    const saveHcLabel = nextStartSaved ? 'Saved' : 'Save Handicaps';
-    const saveHcBtnHtml = (admin && isOurHandicap)
-      ? `<button id="ctrl-save-handicaps" type="button"${saveHcDisabled}>${esc(saveHcLabel)}</button>`
-      : '';
-    const procHcHint = !resultsReady
-      ? 'Process results first.'
-      : (admin && isOurHandicap)
-        ? `Compute next-race TCFs from this race's results${v0Note}.`
-        : !isOurHandicap
-          ? `Compute Jinx adjustments for review only — this series isn't scored against MYC TCF${v0Note}.`
-          : `Compute Jinx adjustments for review only — Save requires an admin login${v0Note}.`;
+    const procHcHint = !resultsPublished
+      ? 'Publish the results (Provisional or Final) first.'
+      : reqCalc
+        ? 'Process results first.'
+        : (admin && isOurHandicap)
+          ? `Compute and save next-race TCFs from this race's results${v0Note}.`
+          : !isOurHandicap
+            ? `Compute Jinx adjustments for review only — this series isn't scored against MYC TCF${v0Note}.`
+            : `Compute Jinx adjustments for review only — saving requires an admin login${v0Note}.`;
     const handicapsRow = isPursuit
       ? `<div class="controls-row" title="${esc(procHcHint)}">
            <button id="ctrl-handicaps" class="primary" type="button"${procHcDisabled}>Process Handicaps</button>
-           ${saveHcBtnHtml}
          </div>`
       : '';
 
@@ -3115,8 +3137,6 @@
     if (rsSel) rsSel.onchange = () => doSetResultsStatus(Number(rsSel.value));
     const hcBtn = document.getElementById('ctrl-handicaps');
     if (hcBtn) hcBtn.onclick = doProcessHandicaps;
-    const saveHcBtn = document.getElementById('ctrl-save-handicaps');
-    if (saveHcBtn) saveHcBtn.onclick = doSaveHandicaps;
     document.getElementById('ctrl-duty-boat').onchange = () => {
       const sel = document.getElementById('ctrl-duty-boat');
       const val = sel.value;
@@ -3713,10 +3733,13 @@
   }
 
   // Process Handicaps — POSTs the current per-boat snapshot to the Jinx
-  // engine and renders the returned Adjustment list into the Next Start
-  // column. No persistence here: the values live in nextStartAdjustments and
-  // register as a pending edit until a SAVE flushes them (saveHandicaps, via
-  // doSave).
+  // engine, renders the returned Adjustment list into the Next Start column,
+  // and (for an admin on a race scored against our handicap) implicitly
+  // saves the adjustments locally, writing the next race's TCF snapshot from
+  // Adjustment.newTcf. The application to SailSys happens on the NEXT race,
+  // where the snapshot diverges from SailSys and surfaces through the normal
+  // SAVE bar (see snapshotPendingPush / doSave). For everyone else the
+  // computed adjustments are review-only.
   async function doProcessHandicaps() {
     if (!entrantData || entrantData.length === 0) {
       ctrlMsg('banner-warn', 'No entrants loaded yet.');
@@ -3795,49 +3818,40 @@
       : (r.body.targetElapsedMinutes
           ? (' (mean elapsed ' + r.body.targetElapsedMinutes + ' min)')
           : '');
-    // Only point at [Save Handicaps] when that button is actually offered —
-    // it renders only for an admin on a race scored against our handicap
-    // (same gate as saveHcBtnHtml in renderControls). For everyone else the
-    // adjustments are review-only, so don't promise a save that can't happen.
+    const nAdj = list.length + ' handicap adjustment' + (list.length === 1 ? '' : 's');
+    // Review-only cases (not admin, or the series isn't scored against our
+    // handicap) — and an empty adjustment list — have nothing to persist, so
+    // computing is the whole job.
     const canSave = ((typeof isAdmin === 'function') && isAdmin()) && isOurHandicap;
-    ctrlMsg('banner-ok',
-      'Computed ' + list.length + ' handicap adjustment' + (list.length === 1 ? '' : 's')
-      + tMsg + '. Hover the [Adjustment] column for the breakdown.'
-      + (canSave ? ' Press [Save Handicaps] to persist locally.' : ''));
-  }
-
-  // Save Handicaps — persist the currently-displayed adjustments locally AND
-  // write the next race's TCF snapshot (server-side) from Adjustment.newTcf.
-  // The application to SailSys happens on the NEXT race, where the snapshot
-  // diverges from SailSys and surfaces through the normal SAVE bar (see
-  // snapshotPendingPush / doSave). seriesId is required so the server can
-  // locate race N+1 in this series.
-  async function doSaveHandicaps() {
-    if (nextStartAdjustments.size === 0) {
-      ctrlMsg('banner-warn', 'Nothing to save — run Process Handicaps first.');
+    if (!canSave || list.length === 0) {
+      ctrlMsg('banner-ok', 'Computed ' + nAdj + tMsg
+        + '. Hover the [Adjustment] column for the breakdown.');
       return;
     }
-    if (!(await ensureSaved())) return;
-    const adjustments = Array.from(nextStartAdjustments.values());
+    // Implicit save — persist the adjustments locally AND write the next
+    // race's TCF snapshot (server-side) from Adjustment.newTcf, the job the
+    // old [Save Handicaps] button did. seriesId is required so the server
+    // can locate race N+1 in this series.
     setControlsDisabled(true);
-    ctrlMsg('banner-info', 'Saving ' + adjustments.length + ' handicap adjustment'
-      + (adjustments.length === 1 ? '' : 's') + '…');
-    const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/save-handicaps',
-      { adjustments, seriesId: seriesIdForSave });
+    ctrlMsg('banner-info', 'Saving ' + nAdj + '…');
+    const sr = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/save-handicaps',
+      { adjustments: list, seriesId: seriesIdForSave });
     setControlsDisabled(false);
-    if (!r.ok) {
-      ctrlMsg('banner-err', 'Save failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+    if (!sr.ok) {
+      ctrlMsg('banner-err', 'Computed ' + nAdj + tMsg + ' BUT saving them failed: '
+        + ((sr.body && sr.body.error) || ('HTTP ' + sr.status))
+        + ' — run Process Handicaps again to retry.');
       return;
     }
     nextStartSaved = true;
     renderControls();
-    const nextRaceMsg = (r.body && r.body.nextRaceId)
-      ? (' Next-race TCFs queued for race ' + r.body.nextRaceId + ' — open that race and SAVE to apply.')
-      : (r.body && r.body.nextRaceSnapshotError
-          ? (' (Could not queue next-race TCFs: ' + r.body.nextRaceSnapshotError + ')')
+    const nextRaceMsg = (sr.body && sr.body.nextRaceId)
+      ? (' Next-race TCFs queued for race ' + sr.body.nextRaceId + ' — open that race and SAVE to apply.')
+      : (sr.body && sr.body.nextRaceSnapshotError
+          ? (' (Could not queue next-race TCFs: ' + sr.body.nextRaceSnapshotError + ')')
           : '');
-    ctrlMsg('banner-ok', 'Saved ' + adjustments.length + ' handicap adjustment'
-      + (adjustments.length === 1 ? '' : 's') + ' locally.' + nextRaceMsg);
+    ctrlMsg('banner-ok', 'Computed and saved ' + nAdj + tMsg + '.' + nextRaceMsg
+      + ' Hover the [Adjustment] column for the breakdown.');
   }
 
   // Process start times (pursuit only). Builds the per-division payload from
@@ -3942,7 +3956,7 @@
 
   function setControlsDisabled(disabled) {
     ['ctrl-process', 'ctrl-process-results', 'ctrl-handicaps',
-     'ctrl-save-handicaps', 'results-status-sel'].forEach(id => {
+     'results-status-sel'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.disabled = disabled;
     });
@@ -4216,7 +4230,7 @@
   }
 
   // Applies the divergent local TCF snapshot to SailSys — the next-race TCFs
-  // queued by the previous race's Save Handicaps, or a manual TCF edit saved
+  // queued by the previous race's Process Handicaps, or a manual TCF edit saved
   // locally — the job the old TCF-mismatch banner's Push button did. Refreshes
   // in place (no reload) so an implicit save can carry on with the applied
   // TCFs. On success the snapshot matches SailSys, so the SAVE bar clears.
