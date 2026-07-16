@@ -12,6 +12,18 @@
     /* Ensure number inputs show red digits when invalid in browsers that
        support styling of number inputs. */
     input[type="number"].invalid { color: red !important; }
+    /* Pulse the Publish-results selector when publishing is the next
+       workflow step (results processed but still Hidden). */
+    label.next-step {
+      outline: 2px solid #2b7de9;
+      outline-offset: 3px;
+      border-radius: 4px;
+      animation: next-step-pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes next-step-pulse {
+      0%, 100% { outline-color: #2b7de9; }
+      50%      { outline-color: rgba(43, 125, 233, 0.2); }
+    }
   </style>
 </head>
 <body>
@@ -30,9 +42,11 @@
          side by side on a wide screen and stack on a narrow one (see
          #status-layout in style.css). -->
     <div id="status-layout">
-      <!-- Ordered workflow controls (publish entrants, start times / course /
-           process, publish start times, process results / publish results,
-           process handicaps, duty boat) on the left. Built by renderControls(). -->
+      <!-- Ordered workflow controls (save handicaps, publish entrants,
+           start times / course / process, publish start times, duty boat,
+           process results / publish results) on the left. Built by
+           renderControls(). Handicap processing is implicit in Process
+           results — it is not a separate step. -->
       <div id="workflow"></div>
 
       <!-- Status box on the right: readouts (race type, processing, results
@@ -200,15 +214,28 @@
   // AND nothing dirty locally).
   let sailsysResults = {};
 
-  // Jinx handicap adjustments produced by the Process Handicaps button (or
-  // restored from /api/races/{id}/pending-handicaps on page load). Map of
-  // boatId(string) -> Adjustment { boatId, finishPosition, penaltyMinutes,
-  // rewardMinutes, netAdjustmentMinutes, oldTcf, newTcf }. While this map is
-  // non-empty the entrants table grows an "Adjustment" column and the
-  // Process Handicaps panel offers a SAVE button.
+  // Jinx handicap adjustments produced by handicap processing (implicit in
+  // Process results, or restored from /api/races/{id}/pending-handicaps on
+  // page load). Map of boatId(string) -> Adjustment { boatId, finishPosition,
+  // penaltyMinutes, rewardMinutes, netAdjustmentMinutes, oldTcf, newTcf }.
+  // While this map is non-empty the entrants table grows an "Adjustment"
+  // column.
   let nextStartAdjustments = new Map();
   let nextStartSaved = false;     // true once these adjustments have been
                                   // saved locally (so SAVE flips to "Saved.")
+  // Reminder that the saved adjustments queued next-race TCFs still to be
+  // applied ("Next-race TCFs queued for race N — ..."). Kept in a variable
+  // so later operation banners (e.g. publishing the results) can re-append
+  // it instead of losing it; cleared whenever the adjustments themselves
+  // are invalidated.
+  let nextRaceHandicapMsg = '';
+
+  // True once TCFs have been pushed to SailSys (Save handicaps / SAVE-bar
+  // snapshot apply) AFTER the start sheet was last staggered — the signal
+  // that the staggered starts are stale and [Process start times] should
+  // re-arm. Cleared when Process start times succeeds. Persisted in the
+  // session form so a reload doesn't lose the re-arm.
+  let tcfSavedSinceProcess = false;
 
   // Local per-race TCF snapshot — see wiki §6 "Local TCF history". When a
   // snapshot exists, currentTcf() prefers it over the SailSys-supplied
@@ -258,6 +285,14 @@
   function snapshotPendingPush() {
     const admin = (typeof isAdmin === 'function') && isAdmin();
     return admin && snapshotDivergent();
+  }
+  // A divergent snapshot the signed-in user CANNOT apply (race officer, not
+  // admin). The changed handicaps are displayed, but further race processing
+  // is blocked — staggering starts or scoring results now would silently run
+  // against the OLD TCFs still in SailSys.
+  function snapshotBlockedNonAdmin() {
+    const admin = (typeof isAdmin === 'function') && isAdmin();
+    return !admin && snapshotDivergent();
   }
 
   // True when SailSys's computed results can be displayed as the
@@ -453,7 +488,8 @@
         hideDnc: hideDnc,
         hideFinished: hideFinished,
         showSailsys: showSailsys,
-        selectedHandicap: selectedHandicap
+        selectedHandicap: selectedHandicap,
+        tcfSavedSinceProcess: tcfSavedSinceProcess
       }));
     } catch (_) { /* private mode or quota — silent best effort */ }
   }
@@ -488,6 +524,7 @@
       // the saved value against the currently-available options and falls
       // back to the per-mode default if it no longer applies.
       if (p.selectedHandicap !== undefined) selectedHandicap = p.selectedHandicap;
+      tcfSavedSinceProcess = !!p.tcfSavedSinceProcess;
       // Manual flag overrides — restore as a Map so size + lookups work.
       // Skip entries that are empty (both added and removed empty arrays)
       // since they shouldn't have been persisted in the first place.
@@ -812,7 +849,9 @@
   // (SailSys-supplied or manually added, minus manual removals) already
   // classifies the boat — a boat marked RET or DSQ mustn't also pick up an
   // auto DNC/DNS/DNF that would contradict (and, in jinxStatusForEntrant's
-  // precedence, could even override) the explicit call.
+  // precedence, could even override) the explicit call. Exception: a
+  // SailSys-supplied DNC on a boat whose came box is ticked is stale by
+  // definition and is ignored, so the auto layer stays live for it.
   const STATUS_FLAGS = ['DNC', 'DNS', 'DNF', 'DSQ', 'RET', 'ABD', 'AVG'];
 
   function flagsForEntrant(entrant) {
@@ -835,7 +874,17 @@
     const added = (ov && ov.added) || [];
     const removed = new Set((ov && ov.removed) || []);
     const externalSet = new Set();
-    for (const f of ssFlags) if (!removed.has(f)) externalSet.add(f);
+    // A SailSys-supplied DNC is stale the moment the came box is ticked
+    // (including by the replay loader) — drop it here so it neither counts
+    // as an explicit classification nor blocks the auto layer from
+    // reclassifying the boat (DNS/DNF as the times imply, or nothing once
+    // it has a finish). A manually ADDED DNC is a deliberate call and is
+    // kept regardless.
+    const came = !!(t && t.came);
+    for (const f of ssFlags) {
+      if (f === 'DNC' && came) continue;
+      if (!removed.has(f)) externalSet.add(f);
+    }
     for (const f of added) externalSet.add(f);
     const explicitlyClassified = STATUS_FLAGS.some(f => externalSet.has(f));
 
@@ -884,7 +933,14 @@
     const set = new Set();
     for (const f of flagsForEntrant(entrant)) set.add(f);
     const ss = sailsysResults[id] && sailsysResults[id].flags;
-    if (Array.isArray(ss)) for (const f of ss) set.add(f);
+    // Mirror flagsForEntrant: a SailSys DNC doesn't survive the came box
+    // being ticked — otherwise the stale flag would sit in the effective
+    // set until the results were reprocessed.
+    const came = !!(getTimes(id) || {}).came;
+    if (Array.isArray(ss)) for (const f of ss) {
+      if (f === 'DNC' && came) continue;
+      set.add(f);
+    }
     const override = dirtyFlags.get(id);
     if (override) {
       for (const f of override.added || []) set.add(f);
@@ -1278,10 +1334,14 @@
         const fmt = (n) => (typeof n === 'number' && !isNaN(n)) ? n.toFixed(4) : '';
         // TCF input is editable until TCF editing locks (pursuit: start times
         // published; fleet: results published) AND only when the race is scored
-        // against the handicap definition this app manages. Locked races, or any
-        // race whose series uses a different default handicap, see the value
-        // read-only — we have no business writing those TCFs.
-        if (tcfEditingLocked() || !isOurHandicap || isEntrantAbandoned(e)) {
+        // against the handicap definition this app manages AND the user is an
+        // admin (the column normally only shows for admins, but a race officer
+        // gets it read-only while unsaved handicaps are pending — see
+        // activeCols). Locked races, or any race whose series uses a different
+        // default handicap, see the value read-only — we have no business
+        // writing those TCFs.
+        const adminUser = (typeof isAdmin === 'function') && isAdmin();
+        if (!adminUser || tcfEditingLocked() || !isOurHandicap || isEntrantAbandoned(e)) {
           return esc(fmt(cur));
         }
         const orig = originalTcf(e);
@@ -1518,10 +1578,14 @@
       if (!IS_EDITABLE && c.editableOnly) return false;
       // No point showing Division when every boat is in the same one.
       if (c.key === 'division' && oneDivision) return false;
-      // TCF column is admin-only. Race officers can't edit it (SailSys
-      // returns 403 on the underlying handicap PUT) and shouldn't see it
-      // either — keep the table focused on the timing affordances they need.
-      if (c.key === 'tcf' && !admin) return false;
+      // TCF column is normally admin-only. Race officers can't edit it
+      // (SailSys returns 403 on the underlying handicap PUT) and usually
+      // shouldn't see it either — keep the table focused on the timing
+      // affordances they need. EXCEPT while the race carries unsaved
+      // handicaps from the previous race's processing: then the RO must be
+      // able to SEE the changed (but blocked — see snapshotBlockedNonAdmin)
+      // TCFs, read-only.
+      if (c.key === 'tcf' && !admin && !snapshotDivergent()) return false;
       // Non-pursuit races: per-entrant Allocated, per-entrant Start, and
       // Late columns are meaningless (every boat in a division shares one
       // gun time, so Late would be identical for every boat in a division
@@ -1539,8 +1603,8 @@
         if (!isPursuit && c.nowField === 'actualStart') return false;
       }
       // Next Start column only shows once the Jinx algorithm has produced
-      // adjustments — populated by the Process Handicaps button or
-      // restored on load from /api/races/{id}/pending-handicaps.
+      // adjustments — populated by the implicit handicap pass in Process
+      // results or restored on load from /api/races/{id}/pending-handicaps.
       if (c.key === 'nextStart' && nextStartAdjustments.size === 0) return false;
       // Sailsys Elapsed / Corrected are noisy debug columns — hidden by
       // default; the "Show sailsys" toggle reveals them.
@@ -1705,6 +1769,53 @@
     if (!def) return false;
     return SCRATCH_NAME_RE.test(def.shortName || '')
         || SCRATCH_NAME_RE.test(def.fullName || '');
+  }
+
+  // First real (non-scratch) SailSys handicap calc id present in the current
+  // results — the same option populateHandicapSelector puts first after
+  // Scratch, and the one it defaults to. Null when SailSys has no handicap
+  // calc (results never processed).
+  function firstNonScratchHandicapId() {
+    for (const id in sailsysResults) {
+      const bh = sailsysResults[id] && sailsysResults[id].byHandicap;
+      if (!bh) continue;
+      for (const key of Object.keys(bh)) {
+        if (key === 'scratch' || isScratchHandicap(key)) continue;
+        return Number(key);
+      }
+    }
+    return null;
+  }
+
+  // Pure pursuit = raceType 1 with no shortened-course division. It is the
+  // one format SailSys scores by finish time; a shortened course promotes
+  // the race to Pursuit TCF, which is scored by corrected time like a
+  // scratch start.
+  function isPurePursuit() {
+    if (!currentStatus || currentStatus.raceType !== 1) return false;
+    const dts = Array.isArray(currentStatus.divisionTiming) ? currentStatus.divisionTiming : [];
+    return !dts.some(d => d && (d.shortenedCourse === true || d.isShortened === true));
+  }
+
+  // The Handicap-selector value under which the displayed places ARE finish
+  // order, for the current race type + results mode:
+  //   scratch start          → 'scratch' — off a shared gun, elapsed order IS
+  //                            finish order within a division, and it's
+  //                            offered in both local and SailSys modes.
+  //   pure pursuit, SailSys  → the handicap calc (SailSys scores pure pursuit
+  //                            by finish time).
+  //   any other pursuit case → local 'pursuit' (scored finish time). For a
+  //                            Pursuit TCF race in SailSys mode this isn't a
+  //                            selector option — the POST still reads finish
+  //                            order via the local placeMap, and the selector
+  //                            snaps back to a valid option on re-render.
+  function finishOrderHandicap() {
+    if (!isPursuit) return 'scratch';
+    if (isResultsClean() && isPurePursuit()) {
+      const id = firstNonScratchHandicapId();
+      if (id != null) return id;
+    }
+    return 'pursuit';
   }
 
   // Recompute the Handicap-selector options for the current mode and race
@@ -2013,11 +2124,8 @@
         t.came = inp.checked;
         // Re-render this row so the time inputs enable/disable.
         renderEntrants();
-        // The Course length / Process start times row hides as soon as
-        // any boat is marked came (re-processing once boats have arrived
-        // at the start would shuffle their staggered times). Re-render
-        // the controls panel so that row hides immediately rather than
-        // waiting for the next status refresh.
+        // Keep the controls panel in step with the entrants state (e.g.
+        // division Abandon buttons depend on which boats have times).
         renderControls();
         updateSaveBar();
         sessionSaveForm();
@@ -2606,6 +2714,8 @@
     if (el.id === 'race-duration') selector = '#race-duration';
     else if (ds.boatId != null && ds.field)
       selector = 'input[data-boat-id="' + ds.boatId + '"][data-field="' + ds.field + '"]';
+    else if (el.classList.contains('tcf-input') && ds.boatId != null)
+      selector = 'input.tcf-input[data-boat-id="' + ds.boatId + '"]';
     else if (el.classList.contains('came-input') && ds.boatId != null)
       selector = 'input.came-input[data-boat-id="' + ds.boatId + '"]';
     else if (el.classList.contains('division-start') && ds.divId != null)
@@ -2633,15 +2743,17 @@
     const summary = document.getElementById('save-summary');
     const tcfN = dirtyTcf.size;
     const timesD = isTimesDirty();
+    const flagsN = dirtyFlags.size;
     // A divergent local TCF snapshot (next-race handicaps, or a saved manual
     // edit) is pending application to SailSys — surface it through the normal
     // SAVE bar instead of a separate banner. SAVE pushes it; RESET reverts.
     const snapPending = snapshotPendingPush();
-    if (tcfN > 0 || timesD || snapPending) {
+    if (tcfN > 0 || timesD || flagsN > 0 || snapPending) {
       bar.style.display = '';
       const parts = [];
       if (tcfN > 0) parts.push(tcfN + ' TCF edit' + (tcfN === 1 ? '' : 's'));
       if (timesD) parts.push('times changed');
+      if (flagsN > 0) parts.push(flagsN + ' flag override' + (flagsN === 1 ? '' : 's'));
       if (snapPending) parts.push('updated TCFs to apply');
       summary.textContent = parts.join(', ') + '.';
     } else {
@@ -2651,8 +2763,17 @@
     // Any local edit invalidates the computed Jinx adjustments — they were
     // derived from the pre-edit results, so saving or displaying them now
     // would be misleading. Drop them and re-render so the Adjustment column
-    // vanishes until Process Handicaps is re-run.
+    // vanishes until results are reprocessed.
     clearAdjustmentsOnEdit();
+    // Division start/course edits don't ride isAnyDirty(), but they re-arm
+    // [Process start times] — patch its disabled state in place (a full
+    // renderControls here would rebuild the very input mid-keystroke).
+    const procBtnEl = document.getElementById('ctrl-process');
+    if (procBtnEl) {
+      const inFlight = !!(currentStatus
+        && currentStatus.handicapAndStartTimeProcessingStatus === 1);
+      procBtnEl.disabled = inFlight || processStartTimesStale() || snapshotBlockedNonAdmin();
+    }
     // Mirror the dirtiness change into the status-box Results source + Dirty
     // rows so they track the SAVE bar — flip to "Local — pending push" the
     // moment editing starts, back to "SailSys (authoritative)" / "clean" once
@@ -2676,9 +2797,9 @@
       if (!suppressDirtyRerender) {
         const focusDesc = captureFocus();
         renderEntrants();
-        // The controls panel gates Process Handicaps on isAnyDirty() — repaint
-        // it so the button flips between enabled and "SAVE the pending edits
-        // first" as the user edits and saves.
+        // The controls panel gates Save handicaps + Process start times on
+        // dirty TCFs — repaint it so those buttons arm/disarm as the user
+        // edits and saves.
         renderControls();
         restoreFocus(focusDesc);
       }
@@ -2690,9 +2811,16 @@
     if (!isAnyDirty()) return;
     nextStartAdjustments.clear();
     nextStartSaved = false;
+    nextRaceHandicapMsg = '';
+    // This fires mid-keystroke (the edit that invalidates the adjustments is
+    // the one being typed), and the repaints below rebuild the very input
+    // being edited — preserve focus + caret across them, like the dirty-flip
+    // repaint in updateSaveBar does.
+    const focusDesc = captureFocus();
     renderEntrantsHead();
     renderEntrants();
     renderControls();
+    restoreFocus(focusDesc);
   }
 
   function updateResultsSource() {
@@ -2886,14 +3014,15 @@
     if (isTimesDirty()) reasons.push('times changed');
     if (isDivisionStartsDirty()) reasons.push('start times / course changed');
     if (dirtyFlags.size > 0) reasons.push('flag overrides');
-    // Computed-but-unsaved Jinx adjustments on THIS race. Process Handicaps
-    // saves implicitly, so this only survives a failed save — re-running
-    // Process Handicaps is the retry. For a review-only viewer (not admin,
-    // or not our handicap) the adjustments are never saveable, so their
-    // unsaved-ness isn't a divergence worth nagging about.
+    // Computed-but-unsaved Jinx adjustments on THIS race. Handicap
+    // processing (implicit in Process results) saves as it goes, so this
+    // only survives a failed save — reprocessing results is the retry. For
+    // a review-only viewer (not admin, or not our handicap) the adjustments
+    // are never saveable, so their unsaved-ness isn't a divergence worth
+    // nagging about.
     if (nextStartAdjustments.size > 0 && !nextStartSaved
         && ((typeof isAdmin === 'function') && isAdmin()) && isOurHandicap) {
-      reasons.push('handicap adjustments not saved — rerun Process Handicaps');
+      reasons.push('handicap adjustments not saved — reprocess results to retry');
     }
     // A divergent local TCF snapshot pending application to SailSys for this
     // race (the next-race TCFs from the previous race's saved handicaps, or a
@@ -2929,15 +3058,17 @@
 
   // Controls panel: course length + process start times, duty boat selector.
   // The course-length row is for the PRE-RACE start-time computation step;
-  // once the race is under way (any boat ticked as came) or its results have
-  // been published (Provisional/Final), there's no point re-running it, so
-  // it's hidden in those states.
+  // it hides once the start times are published (the sheet is locked), and
+  // the process button disarms once staggered until a TCF/start/course
+  // change re-arms it (processStartTimesStale).
   // The ordered #workflow panel. Controls appear top-to-bottom in the order
-  // an RO works a race: publish entrants → (pursuit) set + process + publish
-  // start times → process + publish results → process handicaps → duty boat.
-  // Each flavour (scratch / pursuit / pursuit-TCF) shows only the steps it
-  // needs. Every action button saves dirty edits implicitly first (ensureSaved
-  // inside the handlers), so there are no "SAVE first" gates here.
+  // an RO works a race: set + save handicaps → publish entrants → (pursuit)
+  // set + process + publish start times → duty boat → process + publish
+  // results. Handicap processing for the NEXT race is implicit in Process
+  // results — not a separate step. Each flavour (scratch / pursuit /
+  // pursuit-TCF) shows only the steps it needs. Every action button saves
+  // dirty edits implicitly first (ensureSaved inside the handlers), so there
+  // are no "SAVE first" gates here.
   function renderControls() {
     const panel = document.getElementById('workflow');
     if (!IS_EDITABLE || !currentStatus) {
@@ -2950,7 +3081,42 @@
     const procStatus = s.handicapAndStartTimeProcessingStatus ?? 0;
     const processing = procStatus === 1;
     const reqCalc = !!s.requiresResultCalculation;
-    const anyCame = Array.from(timesMap.values()).some(t => t && t.came);
+    const canSaveHc = admin && isOurHandicap;
+
+    // --- 0. Set & save handicaps ---------------------------------------------
+    // The first thing done for a race: put the TCFs the fleet will race off
+    // into SailSys — the adjustments queued by the previous race's result
+    // processing (a divergent local TCF snapshot) and/or manual TCF edits
+    // typed into the table. One click flushes both all the way to SailSys.
+    // A race officer (non-admin) can't do the save: they see the changed
+    // handicaps in the table and a disabled button with a message that an
+    // admin must save them before any further race processing.
+    const hcPending = snapshotPendingPush();
+    const hcUnsaved = hcPending || dirtyTcf.size > 0;
+    const hcBlocked = snapshotBlockedNonAdmin();
+    let saveHcRow = '';
+    if (canSaveHc) {
+      let saveHcHint;
+      if (dirtyTcf.size > 0) {
+        saveHcHint = 'Save the edited TCFs to SailSys.';
+      } else if (hcPending) {
+        saveHcHint = (snapshotMeta && snapshotMeta.source === 'PROCESS_HANDICAPS')
+          ? 'Handicap adjustments from the previous race are ready — save them to SailSys.'
+          : 'Locally saved TCFs differ from SailSys — save them to SailSys.';
+      } else {
+        saveHcHint = 'Handicaps are up to date — edit TCF values in the table to change them.';
+      }
+      saveHcRow = `<div class="controls-row" title="${esc(saveHcHint)}">
+           <button id="ctrl-save-handicaps" class="primary" type="button"${(hcUnsaved && !processing) ? '' : ' disabled'}>Save handicaps</button>
+         </div>`;
+    } else if (hcBlocked) {
+      saveHcRow = `<div class="controls-row">
+           <button id="ctrl-save-handicaps" class="primary" type="button" disabled>Save handicaps</button>
+         </div>
+         <div class="hint">The updated handicaps are shown in the table but are NOT saved to
+           SailSys — an authorised (admin) user must sign in and save them before any
+           further race processing.</div>`;
+    }
 
     // --- 1. Publish entrants -------------------------------------------------
     // Publishes/unpublishes the entrant list. TCF editing is NOT affected by
@@ -2972,13 +3138,25 @@
     // Per-division start + course inputs, Process start times, publish start
     // times. Scratch shows only the per-division allocated-start inputs (no
     // staggering / publish concept).
-    // Process start times: pursuit only, until the start sheet is committed
-    // (published or a boat marked came). Hidden once start times are published.
-    const showProcessRow = isPursuit && !startTimesPublished && !anyCame;
+    // Process start times: pursuit only, hidden once start times are
+    // published (the start sheet is locked). Once the sheet has been
+    // staggered it DISARMS until something that feeds it changes: a TCF
+    // edit/save, a pushed TCF snapshot, or a division start/course edit
+    // (see processStartTimesStale). Boats being marked came no longer hides
+    // it — the disarm gate covers accidental re-staggering, and recovery
+    // flows (fix a TCF, re-stagger, reprocess) legitimately re-run it after
+    // boats have arrived.
+    const showProcessRow = isPursuit && !startTimesPublished;
+    const processStale = processStartTimesStale();
+    const processTip = hcBlocked
+      ? 'Updated handicaps must be saved by an admin before start times can be processed.'
+      : processStale
+        ? 'Start times are already processed — edit and save TCFs (or change a start / course) to re-stagger.'
+        : 'Stagger the per-boat start sheet from the earliest start + course length above.';
     const processRow = showProcessRow
       ? `<div class="controls-row">
-           <button id="ctrl-process" class="primary"${processing ? ' disabled' : ''}
-                   title="Stagger the per-boat start sheet from the earliest start + course length above.">
+           <button id="ctrl-process" class="primary"${(processing || processStale || hcBlocked) ? ' disabled' : ''}
+                   title="${esc(processTip)}">
              ${processing ? 'Processing…' : 'Process start times'}</button>
          </div>`
       : '';
@@ -3020,14 +3198,17 @@
     // button is always shown (disabled with a tooltip explaining why) rather
     // than hidden, so the workflow step stays visible.
     const startsNotPublished = isPursuit && !startTimesPublished;
-    const processResultsTip = resultsPublished
-      ? 'Results are published — unpublish to reprocess.'
-      : startsNotPublished
-        ? 'Publish the start times before processing results.'
-        : !reqCalc
-          ? 'No results changes to process.'
-          : '';
-    const processResultsDisabled = (resultsPublished || !reqCalc || startsNotPublished) ? ' disabled' : '';
+    const processResultsTip = hcBlocked
+      ? 'Updated handicaps must be saved by an admin before results can be processed.'
+      : resultsPublished
+        ? 'Results are published — unpublish to reprocess.'
+        : startsNotPublished
+          ? 'Publish the start times before processing results.'
+          : !reqCalc
+            ? 'No results changes to process.'
+            : '';
+    const processResultsDisabled =
+      (resultsPublished || !reqCalc || startsNotPublished || hcBlocked) ? ' disabled' : '';
     const processResultsBtn =
       `<button id="ctrl-process-results" class="primary"${processResultsDisabled}`
       + (processResultsTip ? ` title="${esc(processResultsTip)}"` : '')
@@ -3040,10 +3221,32 @@
         + '>' + esc(opt[1]) + '</option>';
     }
     resultsSel += '</select>';
+    // Highlight the publish selector when publishing IS the next step:
+    // results have been processed (SailSys holds computed results, nothing
+    // pending recalc, nothing dirty locally) but are still Hidden. "Computed"
+    // means at least one boat carries a byHandicap placing — a results push
+    // seeds sailsysResults with flags-only baseline entries (byHandicap:{}),
+    // and those must NOT light the selector up (e.g. right after Process
+    // start times, whose implicit save pushes results).
+    const haveComputedResults = Object.values(sailsysResults || {})
+      .some(br => br && br.byHandicap && Object.keys(br.byHandicap).length > 0);
+    const publishIsNext = !resultsPublished && !reqCalc && !isAnyDirty()
+      && haveComputedResults;
     const resultsRow = `
       <div class="controls-row">
         ${processResultsBtn}
-        <label>Publish results: ${resultsSel}</label>
+        <label${publishIsNext ? ' class="next-step" title="Results are processed — publishing them is the next step."' : ''}>Publish results: ${resultsSel}</label>
+      </div>`;
+
+    // TEMPORARY season-replay loader — top of the Results step: feed a
+    // sailing-pf imported race JSON (real elapsed times per finisher) into
+    // the table WITHOUT saving, so a past season can be re-run against the
+    // Jinx handicaps. Remove (with applyReplayFile + wireReplayLoader) once
+    // the 2025-2026 twilight replay testing is done.
+    const replayRow = `
+      <div class="controls-row hint">
+        Replay elapsed times from file:
+        <input type="file" id="replay-file" accept=".json,application/json">
       </div>`;
 
     // Per-division Abandon (one-way) — offered only for a division with no
@@ -3061,33 +3264,7 @@
       }).join(' ');
     const abandonRow = abandonBtns ? `<div class="controls-row">${abandonBtns}</div>` : '';
 
-    // --- 4. Process handicaps (pursuit) --------------------------------------
-    // Process Handicaps computes the next race's TCF adjustments AND (for an
-    // admin on a race scored against our handicap) implicitly persists them,
-    // queueing the next race's TCF snapshot — there is no separate Save step.
-    // The *application* of those TCFs happens on the next race, through the
-    // normal SAVE bar (see snapshotPendingPush). It is offered only once the
-    // results have been PUBLISHED (Provisional or Final) — the published
-    // finish order is what the reward ladder is computed against.
-    const resultsReady = resultsPublished && !reqCalc;
-    const procHcDisabled = !resultsReady ? ' disabled' : '';
-    const v0Note = (seriesV0Knots > 0) ? ` (V₀ = ${seriesV0Knots.toFixed(3)} kn)` : '';
-    const procHcHint = !resultsPublished
-      ? 'Publish the results (Provisional or Final) first.'
-      : reqCalc
-        ? 'Process results first.'
-        : (admin && isOurHandicap)
-          ? `Compute and save next-race TCFs from this race's results${v0Note}.`
-          : !isOurHandicap
-            ? `Compute Jinx adjustments for review only — this series isn't scored against MYC TCF${v0Note}.`
-            : `Compute Jinx adjustments for review only — saving requires an admin login${v0Note}.`;
-    const handicapsRow = isPursuit
-      ? `<div class="controls-row" title="${esc(procHcHint)}">
-           <button id="ctrl-handicaps" class="primary" type="button"${procHcDisabled}>Process Handicaps</button>
-         </div>`
-      : '';
-
-    // --- 5. Duty boat --------------------------------------------------------
+    // --- 4. Duty boat --------------------------------------------------------
     const dutyOptions = ['<option value="">(none)</option>']
       .concat(entrantData.map(e => {
         const id = e.boat && e.boat.id;
@@ -3107,11 +3284,11 @@
     // sits immediately before Results — it's nominated before results are
     // processed so the duty boat's AVG points are in place.
     const steps = [
+      { title: 'Set handicaps', html: saveHcRow },
       { title: 'Entrants',    html: entrantsRow },
       { title: 'Start times', html: startStepHtml },
       { title: 'Duty boat',   html: dutyRow },
-      { title: 'Results',     html: resultsRow + abandonRow },
-      { title: 'Handicaps',   html: handicapsRow }
+      { title: 'Results',     html: replayRow + resultsRow + abandonRow }
     ].filter(st => st.html && st.html.trim());
 
     panel.style.display = '';
@@ -3135,8 +3312,9 @@
     });
     const rsSel = document.getElementById('results-status-sel');
     if (rsSel) rsSel.onchange = () => doSetResultsStatus(Number(rsSel.value));
-    const hcBtn = document.getElementById('ctrl-handicaps');
-    if (hcBtn) hcBtn.onclick = doProcessHandicaps;
+    const saveHcBtn = document.getElementById('ctrl-save-handicaps');
+    if (saveHcBtn) saveHcBtn.onclick = doSaveHandicaps;
+    wireReplayLoader();
     document.getElementById('ctrl-duty-boat').onchange = () => {
       const sel = document.getElementById('ctrl-duty-boat');
       const val = sel.value;
@@ -3586,6 +3764,20 @@
     return false;
   }
 
+  // True when [Process start times] should be disabled because the start
+  // sheet has already been staggered (handicapAndStartTimeProcessingStatus
+  // === 2) and nothing that feeds it has changed since: no TCF change
+  // (a save/push since the last process, dirty TCF edits, or a pending
+  // snapshot — doProcess flushes the latter two via ensureSaved) and no
+  // division start / course edit.
+  function processStartTimesStale() {
+    const procStatus = (currentStatus
+      && currentStatus.handicapAndStartTimeProcessingStatus) || 0;
+    if (procStatus !== 2) return false;
+    if (tcfSavedSinceProcess || dirtyTcf.size > 0 || snapshotPendingPush()) return false;
+    return !isDivisionStartsDirty();
+  }
+
   // Operation feedback line, inside the fixed-height status box. We never
   // toggle display (that would collapse the reserved height and make the
   // layout jump); empty text just clears the colour class.
@@ -3653,8 +3845,10 @@
     }
     renderStatus(r.body.status, raceIdGlobal);
     // Publication state gates input editability (TCF on entrants-publish,
-    // finish/flags on results-publish) — re-render the entrants table so the
-    // inputs flip between editable and read-only.
+    // finish/flags on results-publish) AND the column set (publishing can
+    // flip isCurrentRace, which adds/removes the NOW columns) — re-render
+    // header + body together so they never disagree on the columns.
+    renderEntrantsHead();
     renderEntrants();
     ctrlMsg('banner-ok', (published ? 'Published.' : 'Unpublished.'));
     return true;
@@ -3684,10 +3878,15 @@
       return;
     }
     renderStatus(r.body.status, raceIdGlobal);
-    // Results-publish gates finish / flag / came / actualStart editability —
-    // re-render so those inputs flip between editable and read-only.
+    // Results-publish gates input editability AND the column set (the NOW
+    // columns exist only while the race is live and results unpublished) —
+    // re-render the header too, or it keeps columns the body just dropped.
+    renderEntrantsHead();
     renderEntrants();
-    ctrlMsg('banner-ok', 'Results status set to ' + label + '.');
+    // Carry forward the queued-handicaps reminder — publishing right after
+    // processing must not bury "TCFs queued for race N, go apply them".
+    ctrlMsg('banner-ok', 'Results status set to ' + label + '.'
+      + (nextRaceHandicapMsg ? ' ' + nextRaceHandicapMsg : ''));
   }
 
   async function doProcessResults() {
@@ -3723,32 +3922,68 @@
         return;
       }
       sailsysResults = parseSailsysResults(r.body.results);
+      // Fresh results invalidate any previously computed Jinx adjustments.
+      // (Time edits already invalidate via clearAdjustmentsOnEdit; this
+      // covers the reprocess-without-edits path.) They are recomputed —
+      // and, when saveable, resaved — by the implicit handicap pass below.
+      nextStartAdjustments.clear();
+      nextStartSaved = false;
+      nextRaceHandicapMsg = '';
       renderStatus(r.body.status, raceIdGlobal);
-      renderEntrants();
       const took = Math.round((Date.now() - startMs) / 100) / 10;
-      ctrlMsg('banner-ok', 'Results processed in ' + took + 's.');
+      // Implicit handicap processing (pursuit only): computing — and, for an
+      // admin on a race scored against our handicap, saving — the next-race
+      // Jinx adjustments is part of processing results, not a separate
+      // workflow step. processHandicaps forces the selector to finish order
+      // while it computes; the display order is set right below.
+      if (isPursuit && entrantData.length > 0) {
+        await processHandicaps('Results processed in ' + took + 's. ');
+      } else {
+        ctrlMsg('banner-ok', 'Results processed in ' + took + 's.');
+      }
+      // Match how SailSys presents freshly processed results: a pure pursuit
+      // race is scored by finish time, anything else (scratch start, pursuit
+      // TCF) by corrected time. In SailSys-clean mode both are the handicap
+      // calc — SailSys computes it in exactly that order — so this overrides
+      // whatever order (e.g. Scratch) the selector was showing before.
+      selectedHandicap = isResultsClean()
+        ? (firstNonScratchHandicapId() ?? 'scratch')
+        : (isPurePursuit() ? 'pursuit' : 'tcf');
+      sessionSaveForm();
+      renderEntrantsHead();
+      renderEntrants();
     } finally {
       clearInterval(tick);
     }
   }
 
-  // Process Handicaps — POSTs the current per-boat snapshot to the Jinx
+  // Handicap processing — POSTs the current per-boat snapshot to the Jinx
   // engine, renders the returned Adjustment list into the Next Start column,
   // and (for an admin on a race scored against our handicap) implicitly
   // saves the adjustments locally, writing the next race's TCF snapshot from
   // Adjustment.newTcf. The application to SailSys happens on the NEXT race,
-  // where the snapshot diverges from SailSys and surfaces through the normal
-  // SAVE bar (see snapshotPendingPush / doSave). For everyone else the
-  // computed adjustments are review-only.
-  async function doProcessHandicaps() {
+  // through that race's [Save handicaps] step / SAVE bar (see
+  // snapshotPendingPush). For everyone else the computed adjustments are
+  // review-only. This is no longer a workflow button of its own — it runs
+  // implicitly from doProcessResults; msgPrefix threads that caller's
+  // outcome ("Results processed in Xs. ") into the banners shown here.
+  async function processHandicaps(msgPrefix = '') {
     if (!entrantData || entrantData.length === 0) {
-      ctrlMsg('banner-warn', 'No entrants loaded yet.');
+      ctrlMsg('banner-warn', msgPrefix + 'No entrants loaded yet.');
       return;
     }
     if (!(await ensureSaved())) return;
-    // Make sure placeMap reflects the current entrant state — doProcessHandicaps
-    // can be triggered before any render pass has called recomputePlaces (e.g.,
-    // immediately after loading a SailSys-authoritative race).
+    // The Jinx reward ladder (wiki §5) is defined on FINISH order, but the
+    // finishPosition lookups below follow the Handicap selector — computing
+    // against whatever order happened to be displayed (Elapsed / Corrected)
+    // would silently mis-rank the fleet. Force the selector to finish order;
+    // the visible table repaints under it in the post-POST render below
+    // (and doProcessResults sets the display order after this returns).
+    selectedHandicap = finishOrderHandicap();
+    sessionSaveForm();
+    // Recompute placeMap under the forced order — processHandicaps can run
+    // before any render pass has called recomputePlaces (e.g., immediately
+    // after loading a SailSys-authoritative race).
     recomputePlaces();
     // Build the boat snapshot. Boats with no usable TCF or no finish
     // status get DNC (engine excludes them with frozen TCF). For FIN
@@ -3798,11 +4033,11 @@
     if (targetElapsedMinutes != null) payload.targetElapsedMinutes = targetElapsedMinutes;
 
     setControlsDisabled(true);
-    ctrlMsg('banner-info', 'Computing Jinx adjustments…');
+    ctrlMsg('banner-info', msgPrefix + 'Computing Jinx adjustments…');
     const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/process-handicaps', payload);
     setControlsDisabled(false);
     if (!r.ok) {
-      ctrlMsg('banner-err', 'Process Handicaps failed: '
+      ctrlMsg('banner-err', msgPrefix + 'Handicap processing failed: '
         + ((r.body && r.body.error) || ('HTTP ' + r.status)));
       return;
     }
@@ -3824,33 +4059,38 @@
     // computing is the whole job.
     const canSave = ((typeof isAdmin === 'function') && isAdmin()) && isOurHandicap;
     if (!canSave || list.length === 0) {
-      ctrlMsg('banner-ok', 'Computed ' + nAdj + tMsg
+      ctrlMsg('banner-ok', msgPrefix + 'Computed ' + nAdj + tMsg
         + '. Hover the [Adjustment] column for the breakdown.');
       return;
     }
     // Implicit save — persist the adjustments locally AND write the next
-    // race's TCF snapshot (server-side) from Adjustment.newTcf, the job the
-    // old [Save Handicaps] button did. seriesId is required so the server
-    // can locate race N+1 in this series.
+    // race's TCF snapshot (server-side) from Adjustment.newTcf. seriesId is
+    // required so the server can locate race N+1 in this series.
     setControlsDisabled(true);
-    ctrlMsg('banner-info', 'Saving ' + nAdj + '…');
+    ctrlMsg('banner-info', msgPrefix + 'Saving ' + nAdj + '…');
     const sr = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/save-handicaps',
       { adjustments: list, seriesId: seriesIdForSave });
     setControlsDisabled(false);
     if (!sr.ok) {
-      ctrlMsg('banner-err', 'Computed ' + nAdj + tMsg + ' BUT saving them failed: '
+      ctrlMsg('banner-err', msgPrefix + 'Computed ' + nAdj + tMsg + ' BUT saving them failed: '
         + ((sr.body && sr.body.error) || ('HTTP ' + sr.status))
-        + ' — run Process Handicaps again to retry.');
+        + ' — run Process results again to retry.');
       return;
     }
     nextStartSaved = true;
     renderControls();
-    const nextRaceMsg = (sr.body && sr.body.nextRaceId)
-      ? (' Next-race TCFs queued for race ' + sr.body.nextRaceId + ' — open that race and SAVE to apply.')
+    // Remember the queued-for-next-race reminder so later banners (e.g.
+    // publishing the results) can carry it forward rather than lose it.
+    nextRaceHandicapMsg = (sr.body && sr.body.nextRaceId)
+      ? ('Next-race TCFs queued for race ' + sr.body.nextRaceId
+         + ' — open that race and use [Save handicaps] to apply.')
+      : '';
+    const nextRaceMsg = nextRaceHandicapMsg
+      ? (' ' + nextRaceHandicapMsg)
       : (sr.body && sr.body.nextRaceSnapshotError
           ? (' (Could not queue next-race TCFs: ' + sr.body.nextRaceSnapshotError + ')')
           : '');
-    ctrlMsg('banner-ok', 'Computed and saved ' + nAdj + tMsg + '.' + nextRaceMsg
+    ctrlMsg('banner-ok', msgPrefix + 'Computed and saved ' + nAdj + tMsg + '.' + nextRaceMsg
       + ' Hover the [Adjustment] column for the breakdown.');
   }
 
@@ -3917,9 +4157,12 @@
       return;
     }
     // Values are now committed to SailSys — clear the local edit maps so the
-    // re-render against the fresh status de-dirties cleanly.
+    // re-render against the fresh status de-dirties cleanly. The start sheet
+    // now reflects the current TCFs, so the process button disarms until the
+    // next TCF change (see processStartTimesStale).
     divisionStartsMap.clear();
     divisionCourseMap.clear();
+    tcfSavedSinceProcess = false;
     sessionSaveForm();
     if (r.body && r.body.error) {
       // Timed out waiting for SailSys; still re-render with whatever status we got.
@@ -3955,7 +4198,7 @@
   }
 
   function setControlsDisabled(disabled) {
-    ['ctrl-process', 'ctrl-process-results', 'ctrl-handicaps',
+    ['ctrl-process', 'ctrl-process-results', 'ctrl-save-handicaps',
      'results-status-sel'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.disabled = disabled;
@@ -4002,6 +4245,65 @@
     location.reload();
   }
 
+  // The spinnaker type a TCF update should carry for a boat: its current
+  // handicap row's, falling back to its division's, defaulting to 1 (spin).
+  function spinnakerTypeFor(boatId) {
+    const e = entrantData.find(x => x.boat && x.boat.id === boatId);
+    if (!e) return 1;
+    const h = e.handicap && e.handicap.currentHandicaps && e.handicap.currentHandicaps[0];
+    if (h && h.spinnakerType != null) return h.spinnakerType;
+    if (e.division && e.division.spinnakerType != null) return e.division.spinnakerType;
+    return 1;
+  }
+
+  // Step-0 [Save handicaps] — one click flushes handicap state to SailSys:
+  // TCF edits typed into the table are saved to the local snapshot, then a
+  // divergent snapshot (those edits, and/or the next-race adjustments queued
+  // by the previous race's result processing) is pushed to SailSys. Unlike
+  // the bottom SAVE bar this touches ONLY handicaps — no results push.
+  async function doSaveHandicaps() {
+    const btn = document.getElementById('ctrl-save-handicaps');
+    if (btn) btn.disabled = true;
+    try {
+      if (dirtyTcf.size > 0 && isOurHandicap) {
+        if (!seriesIdForSave) {
+          ctrlMsg('banner-err', 'Internal: seriesId not yet known. Reload and try again.');
+          return;
+        }
+        const updates = [];
+        for (const [boatId, value] of dirtyTcf) {
+          updates.push({ boatId, value, spinnakerType: spinnakerTypeFor(boatId) });
+        }
+        ctrlMsg('banner-info', 'Saving ' + updates.length + ' TCF update'
+          + (updates.length === 1 ? '' : 's') + '…');
+        const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/save-tcfs',
+          { updates, seriesId: seriesIdForSave });
+        if (!r.ok) {
+          ctrlMsg('banner-err', 'TCF save failed: '
+            + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+          return;
+        }
+        dirtyTcf.clear();
+        sessionSaveForm();
+        await refreshTcfSnapshot();
+      }
+      if (snapshotPendingPush()) {
+        // applyPendingSnapshot pushes to SailSys, refetches entrants +
+        // snapshot, repaints, and marks the start sheet stale
+        // (tcfSavedSinceProcess) so Process start times re-arms.
+        await applyPendingSnapshot();
+      } else {
+        // The saved values already match SailSys (e.g. an edit typed back to
+        // the current value) — nothing to push, just repaint clean.
+        renderEntrants();
+        updateSaveBar();
+        ctrlMsg('banner-ok', 'Handicaps saved — SailSys already matches.');
+      }
+    } finally {
+      renderControls();
+    }
+  }
+
   async function doSave() {
     const btn = document.getElementById('save-btn');
     const summary = document.getElementById('save-summary');
@@ -4032,25 +4334,18 @@
         btn.disabled = false;
         return { ok: false };
       }
-      function spinnakerTypeFor(boatId) {
-        const e = entrantData.find(x => x.boat && x.boat.id === boatId);
-        if (!e) return 1;
-        const h = e.handicap && e.handicap.currentHandicaps && e.handicap.currentHandicaps[0];
-        if (h && h.spinnakerType != null) return h.spinnakerType;
-        if (e.division && e.division.spinnakerType != null) return e.division.spinnakerType;
-        return 1;
-      }
       const updates = [];
       for (const [boatId, value] of dirtyTcf) {
         updates.push({ boatId, value, spinnakerType: spinnakerTypeFor(boatId) });
       }
       summary.textContent = 'Saving ' + updates.length + ' TCF update'
         + (updates.length === 1 ? '' : 's') + '...';
-      // Writes a local snapshot (source=MANUAL_EDIT). The push to SailSys
-      // is NOT automatic — the SAVE/RESET banner that surfaces after this
-      // call (snapshot now diverges from SailSys's entrants payload) is the
-      // confirmation step before publishing. seriesId rides along so the
-      // server can persist context alongside the snapshot.
+      // Merge-saves into the local snapshot (see the server's
+      // mergeTcfSnapshot), then pushes the snapshot straight to SailSys —
+      // ONE SAVE click goes all the way. (The old deliberate two-step —
+      // save locally, then SAVE again to apply — read as a broken save
+      // button.) seriesId rides along so the server can persist context
+      // alongside the snapshot.
       const r = await postJson('/api/races/' + encodeURIComponent(raceIdGlobal) + '/save-tcfs',
         { updates, seriesId: seriesIdForSave });
       if (!r.ok) {
@@ -4058,15 +4353,30 @@
         anyError = true;
       } else {
         const saved = (r.body && r.body.saved) || updates.length;
-        messages.push('Saved ' + saved + ' TCF update'
-          + (saved === 1 ? '' : 's') + ' locally — press SAVE on the '
-          + 'banner below the entrants table to publish to SailSys.');
         dirtyTcf.clear();
         // Persist the cleared dirtyTcf so a later navigation back to this
         // race doesn't rehydrate the now-saved values as fresh edits — the
         // values would just match SailSys, masking any newer snapshot
-        // (e.g. one written by Process Handicaps on the previous race).
+        // (e.g. one written by the previous race's handicap processing).
         sessionSaveForm();
+        await refreshTcfSnapshot();
+        const savedMsg = 'Saved ' + saved + ' TCF update' + (saved === 1 ? '' : 's');
+        if (snapshotPendingPush()) {
+          const pr = await applyPendingSnapshot();
+          if (pr && pr.ok) {
+            messages.push(savedMsg + ' and applied the updated TCFs to SailSys.');
+          } else {
+            anyError = true;
+            messages.push(savedMsg + ' locally BUT applying them to SailSys failed'
+              + ' — press SAVE to retry.');
+          }
+        } else {
+          // Saved values already match SailSys (e.g. edited back to the
+          // current value) — nothing to push, just refresh the display.
+          messages.push(savedMsg + '.');
+          await loadEntrants();
+          renderTcfMismatchBanner();
+        }
       }
     }
 
@@ -4145,9 +4455,13 @@
         boats[String(id)] = {
           came: !!t.came,
           finish: t.finish || null,
-          // AVG is intentionally included so the server can choose to drop
-          // it (no SailSys penalty); other flags map 1:1 to penalty defs.
-          flags: flagsForEntrant(e)
+          // EFFECTIVE flags (auto ∪ SailSys ∪ manual adds \ manual removals)
+          // — not just the auto-derived set. A manual override (e.g. RET in
+          // place of the auto DNF) must reach SailSys, and SailSys-side
+          // penalties must survive the server's replace-style penalties PUT.
+          // AVG is intentionally included so the server can map it to the
+          // averagePoints penalty stub.
+          flags: effectiveFlagsForEntrant(e)
         };
       }
       summary.textContent = 'Pushing results to SailSys...';
@@ -4159,9 +4473,20 @@
       } else {
         messages.push('Pushed results to SailSys.');
         // SailSys-computed results are now stale (requiresResultCalculation
-        // will be true). Clear the cache so the columns fall back to local
-        // values, and re-render status so the Process Results button appears.
-        sailsysResults = {};
+        // will be true), so drop the calc data — columns fall back to local
+        // values until Process Results runs. But SailSys now holds EXACTLY
+        // the penalties we just pushed, so re-seed the per-boat flag
+        // baseline from them and absorb the manual overrides into it: the
+        // dirty "flag overrides" state clears while the displayed flags
+        // stay put (a cleared dirtyFlags with no baseline would revert an
+        // overridden RET to its auto-derived DNF until reprocessing).
+        const seeded = {};
+        for (const [bid, bs] of Object.entries(boats)) {
+          seeded[bid] = { flags: bs.flags, elapsedTime: null, byHandicap: {}, casual: false };
+        }
+        sailsysResults = seeded;
+        dirtyFlags.clear();
+        sessionSaveForm();
         if (r.body && r.body.status) {
           renderStatus(r.body.status, raceIdGlobal);
         }
@@ -4172,16 +4497,6 @@
 
     ctrlMsg(anyError ? 'banner-warn' : 'banner-ok', messages.join(' '));
 
-    // Refresh TCFs from server only if any TCFs were saved (cheap re-fetch).
-    // Also re-fetch the local TCF snapshot so the SAVE/RESET mismatch banner
-    // can surface — /save-tcfs writes the snapshot locally but does NOT push
-    // to SailSys, so on success the snapshot diverges from the entrants
-    // payload and the banner should appear.
-    if (dirtyTcf.size === 0 && messages.some(m => m.startsWith('Saved') && m.includes('TCF'))) {
-      await loadEntrants();
-      await refreshTcfSnapshot();
-      renderTcfMismatchBanner();
-    }
     updateSaveBar();
     return { ok: !anyError };
   }
@@ -4191,11 +4506,9 @@
   // no-op (returns success) when there is nothing to save, so a workflow button
   // never triggers a spurious SailSys push.
   //
-  // Unlike the explicit Save button (which keeps the deliberate two-step for
-  // manual TCF edits — save locally, then SAVE again to publish), the implicit
-  // save flushes ALL the way to SailSys: it pushes any divergent snapshot too,
-  // since clicking a workflow button is itself the RO's commitment. That clears
-  // the SAVE bar and lets the action run against the applied TCFs.
+  // Like the explicit Save button, this flushes ALL the way to SailSys —
+  // including any divergent TCF snapshot — so the action runs against the
+  // applied TCFs and the SAVE bar clears.
   async function ensureSaved() {
     if (!isAnyDirty() && !snapshotPendingPush()) return true;
     setSaveBusy(true);
@@ -4230,8 +4543,8 @@
   }
 
   // Applies the divergent local TCF snapshot to SailSys — the next-race TCFs
-  // queued by the previous race's Process Handicaps, or a manual TCF edit saved
-  // locally — the job the old TCF-mismatch banner's Push button did. Refreshes
+  // queued by the previous race's handicap processing, or a manual TCF edit
+  // saved locally — the job the old TCF-mismatch banner's Push button did. Refreshes
   // in place (no reload) so an implicit save can carry on with the applied
   // TCFs. On success the snapshot matches SailSys, so the SAVE bar clears.
   async function applyPendingSnapshot() {
@@ -4245,11 +4558,19 @@
     }
     // SailSys now holds the new TCFs. Refetch entrants so sailsysTcf reflects
     // them, re-read the snapshot (now matching, or gone), and repaint so the
-    // divergence highlight and SAVE bar clear.
+    // divergence highlight and SAVE bar clear. Any already-staggered start
+    // sheet was computed off the OLD TCFs, so re-arm Process start times.
+    tcfSavedSinceProcess = true;
+    sessionSaveForm();
     await loadEntrants();
     recomputeSailsysTcf();
     await refreshTcfSnapshot();
     renderEntrants();
+    // loadEntrants repainted the controls BEFORE the snapshot re-read, so
+    // the [Save handicaps] button was computed against the stale divergent
+    // snapshot — repaint now that snapshotPendingPush() is current, so the
+    // button disarms after a successful push.
+    renderControls();
     setSaveBusy(false);
     ctrlMsg('banner-ok', 'Updated TCFs applied to SailSys.');
     updateSaveBar();
@@ -4521,6 +4842,128 @@
     }
   }
 
+  // ------------------------------------------------------------------
+  // TEMPORARY season-replay loader (rendered at the top of the Results step
+  // by renderControls). Reads a sailing-pf imported race file —
+  // divisions[].finishers[] with {boatId:"SAIL-nameslug-modelslug",
+  // elapsedTime:"PT1H2M3S"} — and applies it to the local edit state:
+  // matched boats get came + a finish time of allocated_start + real elapsed
+  // (actual start cleared so effective_start is the allocated start and the
+  // handicap elapsed equals the file's); everything else is set came=false
+  // so it auto-derives DNC. Nothing is saved — the normal SAVE/RESET bar
+  // takes over. The files carry no OCS/AVG flags, so those are added by
+  // hand via the Flags column after loading. Applying is silent (the table
+  // updating is the feedback); only failures surface, via the status-box
+  // message line. Remove this whole block with the replayRow markup in
+  // renderControls when replay testing is done.
+
+  // "PT1H35M38S" → seconds (fractional seconds rounded). Null if unparseable.
+  function parseIsoDurationSeconds(s) {
+    const m = String(s || '').match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i);
+    if (!m || (m[1] == null && m[2] == null && m[3] == null)) return null;
+    return Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Math.round(Number(m[3] || 0));
+  }
+
+  // sailing-pf slug: lowercase alphanumerics only ("Farr N Away" → "farrnaway").
+  function pfSlug(s) {
+    return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  function applyReplayFile(data) {
+    const finishers = [];
+    const divs = Array.isArray(data && data.divisions) ? data.divisions : [];
+    for (const d of divs) for (const f of (d && d.finishers) || []) {
+      if (f && f.boatId) finishers.push(f);
+    }
+    if (finishers.length === 0) {
+      ctrlMsg('banner-warn', 'Replay: no divisions[].finishers[] found in that file.');
+      return;
+    }
+
+    // Match each finisher to an entrant. The pf boatId is
+    // "SAIL-nameslug-modelslug"; boat name (2 points) outranks sail number
+    // (1 point) since sail numbers drift between seasons. Ambiguous ties and
+    // no-score finishers are reported, not guessed.
+    const matches = new Map();   // entrant boatId (string) -> finisher
+    const unmatched = [];
+    for (const f of finishers) {
+      const parts = String(f.boatId).split('-');
+      const sail = (parts[0] || '').toLowerCase();
+      const name = (parts[1] || '').toLowerCase();
+      let best = null, bestScore = 0, tie = false;
+      for (const e of entrantData) {
+        const id = String(e.boat && e.boat.id);
+        if (matches.has(id)) continue;
+        let score = 0;
+        if (name && pfSlug(e.boat && e.boat.name) === name) score += 2;
+        if (sail && pfSlug(e.boat && e.boat.sailNumber) === sail) score += 1;
+        if (score > bestScore) { best = e; bestScore = score; tie = false; }
+        else if (score > 0 && score === bestScore) tie = true;
+      }
+      if (!best || tie) { unmatched.push(f.boatId); continue; }
+      matches.set(String(best.boat.id), f);
+    }
+
+    // Manual flag overrides are cleared so the table reflects the file alone
+    // (OCS/AVG get re-added by hand afterwards).
+    dirtyFlags.clear();
+    const noStart = [], badElapsed = [];
+    for (const e of entrantData) {
+      const id = String(e.boat && e.boat.id);
+      const t = getTimes(id);
+      const f = matches.get(id);
+      if (!f) { t.came = false; t.actualStart = null; t.finish = null; continue; }
+      t.came = true;
+      t.actualStart = null;
+      t.finish = null;
+      const secs = parseIsoDurationSeconds(f.elapsedTime);
+      if (secs == null) { badElapsed.push(e.boat.name || f.boatId); continue; }
+      const start = allocatedStartSeconds(e);
+      if (start == null) { noStart.push(e.boat.name || f.boatId); continue; }
+      t.finish = fmtTimeOfDay(start + secs);
+    }
+
+    renderEntrantsHead();
+    renderEntrants();
+    renderControls();
+    updateSaveBar();
+    sessionSaveForm();
+
+    // A clean apply is silent — the updated table is the feedback. Only the
+    // boats the loader could NOT apply are worth a message.
+    const problems = [];
+    if (unmatched.length) problems.push('no matching entrant: ' + unmatched.join(', '));
+    if (noStart.length) problems.push('no allocated start (process start times first): ' + noStart.join(', '));
+    if (badElapsed.length) problems.push('unparseable elapsed time: ' + badElapsed.join(', '));
+    if (problems.length) ctrlMsg('banner-warn', 'Replay: ' + problems.join(' — '));
+  }
+
+  // (Re-)attach the loader's onchange after each renderControls repaint —
+  // the file input lives inside the rebuilt Results step.
+  function wireReplayLoader() {
+    const replayInput = document.getElementById('replay-file');
+    if (!replayInput) return;
+    replayInput.onchange = async () => {
+      const file = replayInput.files && replayInput.files[0];
+      if (!file) return;
+      let data = null;
+      try {
+        data = JSON.parse(await file.text());
+      } catch (err) {
+        ctrlMsg('banner-err', 'Replay: could not parse ' + file.name + ': ' + err.message);
+      }
+      // Reset so re-picking the same file (after processing start times,
+      // say) fires onchange again.
+      replayInput.value = '';
+      if (!data) return;
+      if (!Array.isArray(entrantData) || entrantData.length === 0) {
+        ctrlMsg('banner-warn', 'Replay: entrants not loaded yet — try again in a moment.');
+        return;
+      }
+      applyReplayFile(data);
+    };
+  }
+
   (async () => {
     // Reveal the status section so its message line (#status-msg) can show
     // load progress / errors before the full status arrives.
@@ -4626,8 +5069,8 @@
     // Restore any locally-saved Jinx handicap adjustments. Sets the Next
     // Start column up before the first render so the column appears
     // immediately on reload rather than after a paint flicker. Saved =
-    // true so the SAVE button starts disabled — the user has to re-run
-    // Process Handicaps to make further changes savable.
+    // true — reprocessing the results is what recomputes (and resaves)
+    // them.
     //
     // EXCEPT when this race is currently inheriting unapplied TCFs from the
     // PREVIOUS race's handicap processing (a divergent PROCESS_HANDICAPS

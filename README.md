@@ -2,6 +2,8 @@
 
 *Race-officer companion UI for SailSys, with a punitive pursuit handicap on the side. Results may vary.*
 
+**Work on this project has been suspended after a request from SailSys.**
+
 ---
 
 ## What this is

@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sail-jinx — Entries</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- INCLUDE _nav.html -->
+
+<main>
+  <h1>Entries</h1>
+  <div id="filter-chip" style="display:none; margin: 0 0 0.5rem;"></div>
+  <div id="entries-state" class="banner banner-info">Loading…</div>
+  <table id="entries-table" style="display:none;">
+    <thead>
+      <tr id="entries-head"></tr>
+    </thead>
+    <tbody id="entries-tbody"></tbody>
+  </table>
+  <div id="save-bar" style="display:none;">
+    <button id="save-btn" class="primary">Save</button>
+    <button id="reset-btn" type="button">Reset</button>
+    <span id="save-summary" style="margin-left: 1rem; color: #555;"></span>
+  </div>
+</main>
+
+<script src="/common.js"></script>
+<script>
+  (async () => {
+    const state = document.getElementById('entries-state');
+    const table = document.getElementById('entries-table');
+    const tbody = document.getElementById('entries-tbody');
+    const head = document.getElementById('entries-head');
+    const saveBar = document.getElementById('save-bar');
+    const saveBtn = document.getElementById('save-btn');
+    const resetBtn = document.getElementById('reset-btn');
+    const saveSummary = document.getElementById('save-summary');
+
+    const params = new URLSearchParams(location.search);
+    const seriesId = params.get('seriesId');
+    if (!seriesId) {
+      state.className = 'banner banner-err';
+      state.textContent = 'No seriesId given — open this page from the Series list.';
+      return;
+    }
+
+    await awaitAuth();
+    const cfg = await getConfig();
+    const configHandicapId = cfg && cfg.sailsys ? cfg.sailsys.handicapDefinitionId : null;
+
+    // Resolve the series name and defaultHandicap from the series list. The
+    // defaultHandicap decides the TCF-edit gate (same rule as the race page:
+    // we only write TCFs for series scored against our configured handicap).
+    // Race officers get 403 on /api/series; they fall back to a read-only TCF
+    // column and a bare "series N" title.
+    let seriesName = 'series ' + seriesId;
+    let isOurHandicap = false;
+    const sr = await fetchJson('/api/series');
+    if (sr.ok && Array.isArray(sr.body.series)) {
+      const s = sr.body.series.find(x => String(x.id) === String(seriesId));
+      if (s) {
+        seriesName = s.name;
+        isOurHandicap = s.defaultHandicap === configHandicapId;
+      }
+    }
+    document.getElementById('filter-chip').style.display = '';
+    document.getElementById('filter-chip').innerHTML =
+      '<span class="filter-chip">Series: <strong>' + esc(seriesName) + '</strong>'
+      + ' <a href="/races.html?seriesId=' + encodeURIComponent(seriesId) + '">races</a></span>';
+
+    const r = await fetchJson('/api/series/' + encodeURIComponent(seriesId) + '/entries');
+    if (r.status === 401) {
+      state.className = 'banner banner-warn';
+      state.innerHTML = 'You are not signed in. <a href="/">Sign in to SailSys</a> first.';
+      return;
+    }
+    if (!r.ok) {
+      state.className = 'banner banner-err';
+      state.textContent = 'Could not load entries: '
+        + ((r.body && r.body.error) || ('HTTP ' + r.status));
+      return;
+    }
+
+    let entries = r.body.entries || [];
+    let divisions = r.body.divisions || [];
+
+    if (!entries.length) {
+      state.className = 'banner banner-info';
+      state.textContent = 'No entries in ' + seriesName + '.';
+      return;
+    }
+
+    const SPIN = (n) => ({1: 'S', 2: 'NS'}[n] ?? '');
+    const ENTRY_TYPE = (n) => ({1: 'Casual', 2: 'Series'}[n] ?? ('type=' + n));
+    const fmtTcf = (n) => (typeof n === 'number' && !isNaN(n)) ? n.toFixed(4) : '';
+
+    // Pending edits, keyed by boatId. Values survive re-sorts and re-renders;
+    // Save commits them, Reset drops them.
+    const dirtyTcf = new Map();
+    const dirtyDiv = new Map();
+    const byBoat = new Map(entries.map(e => [String(e.boatId), e]));
+
+    function compliance(e) {
+      if (e.entryProgress === 100) return 'Complete';
+      const stages = (e.entryStagesNeeded || []).join(', ');
+      return 'Pending' + (stages ? ' (stages ' + stages + ')' : '');
+    }
+
+    const cols = [
+      { key: 'sail', label: 'Sail No', sortable: true,
+        sortValue: e => String(e.sailNumber || ''),
+        render: e => esc(e.sailNumber) },
+      { key: 'name', label: 'Boat', sortable: true,
+        sortValue: e => String(e.boatName || '').toLowerCase(),
+        render: e => esc(e.boatName) },
+      { key: 'design', label: 'Design', sortable: true,
+        sortValue: e => (String(e.make || '') + ' ' + String(e.model || '')).trim().toLowerCase(),
+        render: e => esc((String(e.make || '').trim() + ' ' + String(e.model || '').trim()).trim()) },
+      { key: 'division', label: 'Div', sortable: true,
+        sortValue: e => String(e.divisionName || ''),
+        render: e => {
+          if (!divisions.length) return esc(e.divisionName);
+          const chosen = dirtyDiv.has(String(e.boatId)) ? dirtyDiv.get(String(e.boatId)) : e.divisionId;
+          // Keep the entry's current division selectable even if it isn't in
+          // the catalogue (defensive — shouldn't happen, but a silent switch
+          // to the first option would be a phantom edit).
+          const opts = divisions.some(d => d.id === e.divisionId)
+            ? divisions
+            : [{ id: e.divisionId, name: e.divisionName }, ...divisions];
+          const dirty = dirtyDiv.has(String(e.boatId));
+          return '<select class="div-select' + (dirty ? ' dirty' : '') + '" data-boat-id="' + esc(e.boatId) + '">'
+            + opts.map(d => '<option value="' + esc(d.id) + '"'
+                + (d.id === chosen ? ' selected' : '') + '>' + esc(d.name) + '</option>').join('')
+            + '</select>';
+        } },
+      { key: 'spin', label: 'Spin', sortable: true,
+        sortValue: e => e.spinnakerType || 0,
+        render: e => '<span title="' + (e.spinnakerType === 2 ? 'Non-spinnaker' : 'Spinnaker') + '">'
+          + SPIN(e.spinnakerType) + '</span>' },
+      { key: 'entryType', label: 'Entry type', sortable: true,
+        sortValue: e => e.entryType || 0,
+        render: e => esc(ENTRY_TYPE(e.entryType)) },
+      { key: 'tcf', label: 'TCF', sortable: true,
+        sortValue: e => dirtyTcf.has(String(e.boatId)) ? dirtyTcf.get(String(e.boatId)) : (e.tcf ?? -1),
+        render: e => {
+          const id = String(e.boatId);
+          const cur = dirtyTcf.has(id) ? dirtyTcf.get(id) : e.tcf;
+          if (!isOurHandicap) return esc(fmtTcf(e.tcf));
+          return '<input type="number" step="0.0001" class="tcf-input' + (dirtyTcf.has(id) ? ' dirty' : '') + '"'
+            + ' data-boat-id="' + esc(id) + '"'
+            + ' value="' + esc(fmtTcf(cur)) + '">';
+        } },
+      { key: 'compliance', label: 'Compliance', sortable: true,
+        sortValue: e => e.entryProgress || 0,
+        render: e => esc(compliance(e)) },
+      { key: 'entered', label: 'Entered', sortable: true,
+        sortValue: e => e.seriesEntryStatus || 0,
+        render: e => {
+          const entered = e.seriesEntryStatus === 1;
+          // One-way: a pending entry can be entered by ticking the box, but an
+          // entered box is disabled — SailSys has no un-confirm.
+          return '<input type="checkbox" class="entered-input" data-boat-id="' + esc(e.boatId) + '"'
+            + (entered ? ' checked disabled' : '')
+            + ' title="' + (entered ? 'Entered' : 'Tick to enter this boat — cannot be undone') + '">';
+        } }
+    ];
+
+    let sortKey = 'sail';
+    let sortDir = 1;
+
+    function compareSortValues(a, b) {
+      if (typeof a === 'number' && typeof b === 'number') return a - b;
+      return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+    }
+
+    function sortedEntries() {
+      const col = cols.find(c => c.key === sortKey);
+      if (!col || !col.sortValue) return entries.slice();
+      return entries.slice().sort((a, b) => sortDir * compareSortValues(col.sortValue(a), col.sortValue(b)));
+    }
+
+    function renderHead() {
+      head.innerHTML = cols.map(c => {
+        if (c.sortable) {
+          const marker = (sortKey === c.key)
+            ? '<span class="sort-marker">' + (sortDir > 0 ? '▲' : '▼') + '</span>'
+            : '';
+          return '<th class="sortable" data-key="' + c.key + '">' + esc(c.label) + marker + '</th>';
+        }
+        return '<th>' + esc(c.label) + '</th>';
+      }).join('');
+      head.querySelectorAll('th.sortable').forEach(th => {
+        th.onclick = () => {
+          const k = th.dataset.key;
+          if (sortKey === k) sortDir = -sortDir;
+          else { sortKey = k; sortDir = 1; }
+          renderHead();
+          renderBody();
+        };
+      });
+    }
+
+    function updateSaveBar() {
+      const n = dirtyTcf.size + dirtyDiv.size;
+      saveBar.style.display = n ? '' : 'none';
+      saveSummary.textContent = n ? (n + ' unsaved change' + (n === 1 ? '' : 's')) : '';
+    }
+
+    function renderBody() {
+      tbody.innerHTML = sortedEntries().map(e =>
+        '<tr data-boat-id="' + esc(e.boatId) + '">'
+        + cols.map(c => '<td>' + c.render(e) + '</td>').join('')
+        + '</tr>').join('');
+
+      tbody.querySelectorAll('input.tcf-input').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const id = inp.dataset.boatId;
+          const e = byBoat.get(id);
+          const v = parseFloat(inp.value);
+          if (!isNaN(v) && v !== e.tcf) dirtyTcf.set(id, v);
+          else dirtyTcf.delete(id);
+          inp.classList.toggle('dirty', dirtyTcf.has(id));
+          updateSaveBar();
+        });
+      });
+
+      tbody.querySelectorAll('select.div-select').forEach(sel => {
+        sel.addEventListener('change', () => {
+          const id = sel.dataset.boatId;
+          const e = byBoat.get(id);
+          const v = parseInt(sel.value, 10);
+          if (v !== e.divisionId) dirtyDiv.set(id, v);
+          else dirtyDiv.delete(id);
+          sel.classList.toggle('dirty', dirtyDiv.has(id));
+          updateSaveBar();
+        });
+      });
+
+      tbody.querySelectorAll('input.entered-input:not([disabled])').forEach(box => {
+        box.addEventListener('click', async (ev) => {
+          const id = box.dataset.boatId;
+          const e = byBoat.get(id);
+          if (!confirm('Enter ' + e.boatName + ' into ' + seriesName + '? This cannot be undone.')) {
+            ev.preventDefault();
+            return;
+          }
+          box.disabled = true;
+          const cr = await postJson('/api/series/' + encodeURIComponent(seriesId)
+            + '/entries/' + encodeURIComponent(id) + '/confirm', null);
+          if (!cr.ok) {
+            state.className = 'banner banner-err';
+            state.textContent = 'Could not enter ' + e.boatName + ': '
+              + ((cr.body && cr.body.error) || ('HTTP ' + cr.status));
+            box.checked = false;
+            box.disabled = false;
+            return;
+          }
+          // Confirming can change more than the tick (compliance, TCF for a
+          // handicap-stage entry), so refresh the whole payload.
+          await refresh('Entered ' + e.boatName + '.');
+        });
+      });
+
+      updateSaveBar();
+    }
+
+    async function refresh(okMessage) {
+      const rr = await fetchJson('/api/series/' + encodeURIComponent(seriesId) + '/entries');
+      if (rr.ok) {
+        entries = rr.body.entries || [];
+        divisions = rr.body.divisions || divisions;
+        byBoat.clear();
+        for (const e of entries) byBoat.set(String(e.boatId), e);
+        // Drop pending edits that the refresh made moot (value now matches).
+        for (const [id, v] of [...dirtyTcf]) {
+          const e = byBoat.get(id);
+          if (!e || e.tcf === v) dirtyTcf.delete(id);
+        }
+        for (const [id, v] of [...dirtyDiv]) {
+          const e = byBoat.get(id);
+          if (!e || e.divisionId === v) dirtyDiv.delete(id);
+        }
+        renderBody();
+        setState(okMessage);
+      }
+    }
+
+    function setState(extra) {
+      state.className = 'banner banner-ok';
+      const entered = entries.filter(e => e.seriesEntryStatus === 1).length;
+      state.textContent = entries.length + ' entr' + (entries.length === 1 ? 'y' : 'ies')
+        + ' in ' + seriesName + ' — ' + entered + ' entered'
+        + (isOurHandicap ? '' : ' (TCF view-only: series is not scored with the configured handicap)')
+        + (extra ? ' — ' + extra : '');
+    }
+
+    saveBtn.addEventListener('click', async () => {
+      saveBtn.disabled = true;
+      const failures = [];
+      try {
+        // TCFs go through the existing bulk endpoint (the server paces the
+        // SailSys writes); division moves are one call each, spaced client-side
+        // per the SailSys write-pacing guidance.
+        if (dirtyTcf.size) {
+          const updates = [...dirtyTcf].map(([id, value]) => ({
+            boatId: Number(id), value, spinnakerType: byBoat.get(id).tcfSpinnakerType
+          }));
+          const tr = await postJson('/api/series/' + encodeURIComponent(seriesId) + '/tcfs', { updates });
+          const results = (tr.ok && tr.body && tr.body.results) || [];
+          if (!tr.ok) {
+            failures.push('TCF save failed: ' + ((tr.body && tr.body.error) || ('HTTP ' + tr.status)));
+          } else {
+            for (const res of results) {
+              const id = String(res.boatId);
+              if (res.ok) {
+                const e = byBoat.get(id);
+                if (e) e.tcf = res.value;
+                dirtyTcf.delete(id);
+              } else {
+                failures.push(byBoat.get(id).boatName + ' TCF: ' + (res.error || 'failed'));
+              }
+            }
+          }
+        }
+        let first = true;
+        for (const [id, divisionId] of [...dirtyDiv]) {
+          if (!first) await new Promise(res => setTimeout(res, 300));
+          first = false;
+          const e = byBoat.get(id);
+          const dr = await postJson('/api/series/' + encodeURIComponent(seriesId)
+            + '/entries/' + encodeURIComponent(id) + '/division',
+            { divisionId, spinnakerType: e.spinnakerType });
+          if (dr.ok) {
+            e.divisionId = divisionId;
+            const d = divisions.find(d => d.id === divisionId);
+            e.divisionName = d ? d.name : String(divisionId);
+            dirtyDiv.delete(id);
+          } else {
+            failures.push(e.boatName + ' division: '
+              + ((dr.body && dr.body.error) || ('HTTP ' + dr.status)));
+          }
+        }
+      } finally {
+        saveBtn.disabled = false;
+      }
+      renderBody();
+      if (failures.length) {
+        state.className = 'banner banner-err';
+        state.textContent = 'Some changes failed (still marked dirty — fix and Save again, or Reset): '
+          + failures.join('; ');
+      } else {
+        setState('Saved.');
+      }
+    });
+
+    resetBtn.addEventListener('click', () => {
+      dirtyTcf.clear();
+      dirtyDiv.clear();
+      renderBody();
+      setState();
+    });
+
+    setState();
+    table.style.display = '';
+    renderHead();
+    renderBody();
+  })();
+</script>
+</body>
+</html>

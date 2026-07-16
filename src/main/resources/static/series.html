@@ -30,6 +30,7 @@
         <th>Status</th>
         <th>Races</th>
         <th>Divisions</th>
+        <th>Entries</th>
         <th>Default handicap</th>
         <th>Configure</th>
       </tr>
@@ -154,6 +155,9 @@
           <td>${esc(statusLabel(s.status))}</td>
           <td>${esc(s.racesCount)}</td>
           <td>${esc(s.divisionsCount)}</td>
+          <td><a class="entries-link" data-series-id="${esc(s.id)}"
+                 href="/entries.html?seriesId=${esc(s.id)}"
+                 title="Open entries for ${esc(s.name).replace(/"/g, '&quot;')}">entries</a></td>
           <td>${esc(handicapText)}</td>
           <td class="cfg-cell" data-series-id="${esc(s.id)}">${cfgCell}</td>
         </tr>`;
@@ -198,12 +202,26 @@
         .catch(() => { probeRemaining--; updateStateText(); });
     }
 
+    // Entry counts are lazy, like the pursuit probes: one
+    // /api/series/{id}/entry-count per row, in parallel, each arrival
+    // upgrading its "entries" link to "N entries". A failed probe just
+    // leaves the plain label — the count is visible on the entries page.
+    for (const s of series) {
+      fetchJson('/api/series/' + encodeURIComponent(s.id) + '/entry-count')
+        .then(cr => {
+          if (!(cr && cr.ok && cr.body && typeof cr.body.count === 'number')) return;
+          const link = tbody.querySelector(`.entries-link[data-series-id="${CSS.escape(String(s.id))}"]`);
+          if (link) link.textContent = cr.body.count + ' entries';
+        })
+        .catch(() => {});
+    }
+
     // Clicking a row navigates to its races — but clicks landing on the
-    // Configure button should open the configure panel instead. We bind to
-    // the row and let the button stop propagation.
+    // Configure button or the entries link should not also open the races
+    // page. We bind to the row and check the click target.
     tbody.querySelectorAll('tr').forEach(tr => {
       tr.addEventListener('click', (ev) => {
-        if (ev.target.closest('.cfg-btn')) return;
+        if (ev.target.closest('.cfg-btn, a')) return;
         const id = tr.getAttribute('data-series-id');
         location.href = '/races.html?seriesId=' + id;
       });

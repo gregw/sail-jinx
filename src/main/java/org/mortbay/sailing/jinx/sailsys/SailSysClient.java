@@ -550,6 +550,66 @@ public class SailSysClient
     }
 
     /**
+     * GET /series/{seriesId}/entries/{boatId} — rich single-entry detail. The
+     * interesting part for us is {@code divisions[]}: the authoritative list of
+     * divisions an entry in this series may be assigned to ({@code {id, name,
+     * divisionType, spinnakerType, defaultHandicap}}). The list-entries payload
+     * only shows each entry's <em>current</em> division, so this is the source
+     * for the division selector on the entries page.
+     */
+    public JsonNode fetchSeriesEntryDetail(String sessionToken, int seriesId, int boatId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/series/" + seriesId + "/entries/" + boatId, sessionToken)
+                .method(HttpMethod.GET),
+            "fetchSeriesEntryDetail", null);
+        return root.path("data");
+    }
+
+    /**
+     * PUT /series/{seriesId}/entries/{boatId}/confirm — complete ("enter") a
+     * pending series entry. Flips the entry's {@code seriesEntryStatus} 0→1;
+     * there is no SailSys call to undo it. The literal
+     * {@code ?missedRacePenalty=undefined} replicates the captured SailSys-app
+     * request verbatim — it is what the JS client sends when no penalty is
+     * chosen, and it is proven to work.
+     */
+    public JsonNode confirmEntry(String sessionToken, int seriesId, int boatId) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/series/" + seriesId + "/entries/" + boatId + "/confirm?missedRacePenalty=undefined",
+                sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", "null")),
+            "confirmEntry", "null");
+        return root.path("data");
+    }
+
+    /**
+     * PUT /series/{seriesId}/entries/{boatId}/division/{divisionId} — move an
+     * entry to another division, restating its spinnaker designation (1 =
+     * spinnaker, 2 = non-spinnaker) via the query parameter. SailSys enforces
+     * business rules server-side — e.g. a boat that has already raced in the
+     * series gets HTTP 400 "…has already raced, you can't change it's division"
+     * — so callers must surface the resulting {@link SailSysException} message
+     * to the user rather than treating it as an internal fault.
+     */
+    public JsonNode updateEntryDivision(String sessionToken, int seriesId, int boatId,
+                                        int divisionId, int spinnakerType) throws Exception
+    {
+        requireToken(sessionToken);
+        JsonNode root = sendAndParse(
+            newRequest("/series/" + seriesId + "/entries/" + boatId + "/division/" + divisionId
+                + "?spinnakerType=" + spinnakerType, sessionToken)
+                .method(HttpMethod.PUT)
+                .body(new StringRequestContent("application/json", "null")),
+            "updateEntryDivision", "null");
+        return root.path("data");
+    }
+
+    /**
      * PUT /races/{raceId}/handicaps — bulk update of every entrant's TCFs in a
      * single round-trip. Body is the full entrants array (as returned by
      * {@link #fetchRaceEntrants}), with each row's

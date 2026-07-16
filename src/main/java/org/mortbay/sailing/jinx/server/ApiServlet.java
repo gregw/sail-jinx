@@ -76,6 +76,14 @@ public class ApiServlet extends HttpServlet
         java.util.regex.Pattern.compile("/series/(\\d+)/is-pursuit");
     private static final java.util.regex.Pattern SERIES_SPINNAKER =
         java.util.regex.Pattern.compile("/series/(\\d+)/spinnaker");
+    private static final java.util.regex.Pattern SERIES_ENTRIES =
+        java.util.regex.Pattern.compile("/series/(\\d+)/entries");
+    private static final java.util.regex.Pattern SERIES_ENTRY_COUNT =
+        java.util.regex.Pattern.compile("/series/(\\d+)/entry-count");
+    private static final java.util.regex.Pattern SERIES_ENTRY_CONFIRM =
+        java.util.regex.Pattern.compile("/series/(\\d+)/entries/(\\d+)/confirm");
+    private static final java.util.regex.Pattern SERIES_ENTRY_DIVISION =
+        java.util.regex.Pattern.compile("/series/(\\d+)/entries/(\\d+)/division");
     private static final java.util.regex.Pattern RACE_ENTRANTS =
         java.util.regex.Pattern.compile("/races/(\\d+)/entrants");
     private static final java.util.regex.Pattern RACE_STATUS =
@@ -191,6 +199,18 @@ public class ApiServlet extends HttpServlet
                         if (m.matches())
                             handleSeriesSpinnaker(req, resp, Integer.parseInt(m.group(1)));
                     }
+                    else if (SERIES_ENTRIES.matcher(path).matches())
+                    {
+                        java.util.regex.Matcher m = SERIES_ENTRIES.matcher(path);
+                        if (m.matches())
+                            handleSeriesEntries(req, resp, Integer.parseInt(m.group(1)));
+                    }
+                    else if (SERIES_ENTRY_COUNT.matcher(path).matches())
+                    {
+                        java.util.regex.Matcher m = SERIES_ENTRY_COUNT.matcher(path);
+                        if (m.matches())
+                            handleSeriesEntryCount(req, resp, Integer.parseInt(m.group(1)));
+                    }
                     else if (re.matches())
                         handleRaceEntrants(req, resp, Integer.parseInt(re.group(1)));
                     else if (rs.matches())
@@ -262,6 +282,20 @@ public class ApiServlet extends HttpServlet
                     java.util.regex.Matcher rp = RACE_PROCESS.matcher(path);
                     if (tcfs.matches())
                         handleSaveTcfs(req, resp, Integer.parseInt(tcfs.group(1)));
+                    else if (SERIES_ENTRY_CONFIRM.matcher(path).matches())
+                    {
+                        java.util.regex.Matcher m = SERIES_ENTRY_CONFIRM.matcher(path);
+                        if (m.matches())
+                            handleConfirmEntry(req, resp,
+                                Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)));
+                    }
+                    else if (SERIES_ENTRY_DIVISION.matcher(path).matches())
+                    {
+                        java.util.regex.Matcher m = SERIES_ENTRY_DIVISION.matcher(path);
+                        if (m.matches())
+                            handleEntryDivision(req, resp,
+                                Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)));
+                    }
                     else if (sc.matches())
                         handleSaveSeriesConfig(req, resp, sc.group(1));
                     else if (rt.matches())
@@ -556,6 +590,221 @@ public class ApiServlet extends HttpServlet
             LOG.warn("fetchSeriesEntries failed for series {}: {}", seriesId, e.toString());
         }
         writeJson(resp, Map.of("seriesId", seriesId, "spinnakerByBoat", byBoat));
+    }
+
+    /**
+     * GET /api/series/{id}/entries — the series entries table for the entries
+     * page: {@code {seriesId, count, divisions:[{id,name,spinnakerType}],
+     * entries:[...]}} (see {@link #projectSeriesEntries} for the row shape).
+     * The division catalogue comes from the first entry's detail payload —
+     * the only SailSys surface we know that lists ALL the series's divisions,
+     * not just the ones in use — with a fall-back to the distinct divisions
+     * across the entries when that call fails or the series is empty.
+     */
+    private void handleSeriesEntries(HttpServletRequest req, HttpServletResponse resp,
+                                     int seriesId) throws Exception
+    {
+        SailSysSession session = currentSession(req);
+        if (session == null)
+        {
+            resp.setStatus(401);
+            writeJson(resp, Map.of("error", "not signed in"));
+            return;
+        }
+        JsonNode entries = sailsys.fetchSeriesEntries(session.token(), seriesId);
+        List<Map<String, Object>> projected =
+            projectSeriesEntries(entries, config.sailsys().handicapDefinitionId());
+
+        List<Map<String, Object>> divisions = List.of();
+        if (entries != null && entries.isArray() && !entries.isEmpty())
+        {
+            try
+            {
+                int firstBoat = entries.get(0).path("boatId").asInt(0);
+                if (firstBoat != 0)
+                    divisions = projectDivisions(
+                        sailsys.fetchSeriesEntryDetail(session.token(), seriesId, firstBoat));
+            }
+            catch (Exception e)
+            {
+                LOG.warn("fetchSeriesEntryDetail failed for series {}: {}", seriesId, e.toString());
+            }
+        }
+        if (divisions.isEmpty())
+        {
+            Map<Integer, Map<String, Object>> seen = new LinkedHashMap<>();
+            for (Map<String, Object> row : projected)
+            {
+                Integer divId = (Integer)row.get("divisionId");
+                if (divId != null && divId != 0)
+                    seen.putIfAbsent(divId, Map.of(
+                        "id", divId,
+                        "name", String.valueOf(row.get("divisionName")),
+                        "spinnakerType", 0));
+            }
+            divisions = new ArrayList<>(seen.values());
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("seriesId", seriesId);
+        out.put("count", projected.size());
+        out.put("divisions", divisions);
+        out.put("entries", projected);
+        writeJson(resp, out);
+    }
+
+    /**
+     * GET /api/series/{id}/entry-count — just {@code {seriesId, count}}.
+     * The series page fires one of these per row (like the is-pursuit probe)
+     * to decorate the Entries links lazily; kept separate from
+     * {@code /entries} so it stays a single SailSys round-trip.
+     */
+    private void handleSeriesEntryCount(HttpServletRequest req, HttpServletResponse resp,
+                                        int seriesId) throws Exception
+    {
+        SailSysSession session = currentSession(req);
+        if (session == null)
+        {
+            resp.setStatus(401);
+            writeJson(resp, Map.of("error", "not signed in"));
+            return;
+        }
+        JsonNode entries = sailsys.fetchSeriesEntries(session.token(), seriesId);
+        int count = (entries != null && entries.isArray()) ? entries.size() : 0;
+        writeJson(resp, Map.of("seriesId", seriesId, "count", count));
+    }
+
+    /**
+     * POST /api/series/{id}/entries/{boatId}/confirm — complete ("enter") a
+     * pending entry. One-way: SailSys has no un-confirm. Returns
+     * {@code {ok, seriesId, boatId, status}} where status is the entry's
+     * post-confirm state (1 = entered).
+     */
+    private void handleConfirmEntry(HttpServletRequest req, HttpServletResponse resp,
+                                    int seriesId, int boatId) throws Exception
+    {
+        SailSysSession session = currentSession(req);
+        if (session == null)
+        {
+            resp.setStatus(401);
+            writeJson(resp, Map.of("error", "not signed in"));
+            return;
+        }
+        JsonNode data = sailsys.confirmEntry(session.token(), seriesId, boatId);
+        writeJson(resp, Map.of(
+            "ok", true,
+            "seriesId", seriesId,
+            "boatId", boatId,
+            "status", data == null ? -1 : data.path("status").asInt(-1)));
+    }
+
+    /**
+     * POST /api/series/{id}/entries/{boatId}/division — move an entry to
+     * another division. Body: {@code {divisionId, spinnakerType}} (the
+     * spinnaker designation is restated on every division write — pass the
+     * entry's current value when only the division is changing). SailSys
+     * business-rule refusals (e.g. the boat has already raced) surface as the
+     * standard {@code {error}} response via the SailSysException path.
+     */
+    private void handleEntryDivision(HttpServletRequest req, HttpServletResponse resp,
+                                     int seriesId, int boatId) throws Exception
+    {
+        SailSysSession session = currentSession(req);
+        if (session == null)
+        {
+            resp.setStatus(401);
+            writeJson(resp, Map.of("error", "not signed in"));
+            return;
+        }
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        int divisionId = body.path("divisionId").asInt(0);
+        int spinnakerType = body.path("spinnakerType").asInt(0);
+        if (divisionId == 0 || spinnakerType == 0)
+        {
+            resp.setStatus(400);
+            writeJson(resp, Map.of("error", "divisionId and spinnakerType required"));
+            return;
+        }
+        sailsys.updateEntryDivision(session.token(), seriesId, boatId, divisionId, spinnakerType);
+        writeJson(resp, Map.of(
+            "ok", true,
+            "seriesId", seriesId,
+            "boatId", boatId,
+            "divisionId", divisionId,
+            "spinnakerType", spinnakerType));
+    }
+
+    /**
+     * Pure projection of the SailSys list-entries payload
+     * ({@code PUT /series/{id}/entries}) into the rows the entries page
+     * renders. Deliberately a strict allow-list: the SailSys payload carries
+     * skipper contact details (email, phone) which must never reach the
+     * browser. {@code tcf} is the value of the handicap row matching the
+     * configured handicap definition (null when the entry has no such row
+     * yet); {@code tcfSpinnakerType} is what a TCF write for this boat must
+     * carry — the matched row's spinnakerType when one exists (writes must
+     * match it, see {@code SailSysClient.updateHandicap}), else the entry's
+     * own designation (SailSys creates the row with it).
+     */
+    static List<Map<String, Object>> projectSeriesEntries(JsonNode entries, int handicapDefinitionId)
+    {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (entries == null || !entries.isArray())
+            return out;
+        for (JsonNode e : entries)
+        {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("boatId", e.path("boatId").asInt(0));
+            row.put("sailNumber", e.path("boatSailNumber").asText(""));
+            row.put("boatName", e.path("boatName").asText(""));
+            row.put("make", e.path("boatMake").asText(""));
+            row.put("model", e.path("boatModel").asText(""));
+            row.put("divisionId", e.path("divisionId").asInt(0));
+            row.put("divisionName", e.path("divisionName").asText(""));
+            row.put("spinnakerType", e.path("spinnakerType").asInt(0));
+            row.put("entryType", e.path("entryType").asInt(0));
+            row.put("seriesEntryStatus", e.path("seriesEntryStatus").asInt(0));
+            row.put("entryProgress", e.path("entryProgress").asInt(0));
+            List<Integer> stages = new ArrayList<>();
+            for (JsonNode s : e.path("entryStagesNeeded"))
+                stages.add(s.asInt());
+            row.put("entryStagesNeeded", stages);
+            JsonNode match = null;
+            for (JsonNode h : e.path("handicaps"))
+            {
+                if (h.path("definition").path("id").asInt(0) == handicapDefinitionId)
+                {
+                    match = h;
+                    break;
+                }
+            }
+            row.put("tcf", match == null ? null : match.path("value").asDouble());
+            row.put("tcfSpinnakerType", match != null
+                ? match.path("spinnakerType").asInt(0)
+                : e.path("spinnakerType").asInt(0));
+            out.add(row);
+        }
+        return out;
+    }
+
+    /**
+     * Pure projection of the entry-detail {@code divisions[]} catalogue
+     * ({@code GET /series/{id}/entries/{boatId}}) to {@code {id, name,
+     * spinnakerType}} for the division selector.
+     */
+    static List<Map<String, Object>> projectDivisions(JsonNode entryDetail)
+    {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (entryDetail == null)
+            return out;
+        for (JsonNode d : entryDetail.path("divisions"))
+        {
+            out.add(Map.of(
+                "id", d.path("id").asInt(0),
+                "name", d.path("name").asText(""),
+                "spinnakerType", d.path("spinnakerType").asInt(0)));
+        }
+        return out;
     }
 
     /**
@@ -2292,11 +2541,42 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
+     * Merge manual TCF edits into the race's existing snapshot. The edits
+     * override matching boats and append new ones; every other boat's entry
+     * is preserved. This MUST be a merge, not a replace: when the race is
+     * carrying a {@code PROCESS_HANDICAPS} snapshot (every boat's next-race
+     * TCF queued by the previous race), a replace-style write of the one or
+     * two edited boats would silently discard all the other queued
+     * adjustments before they were ever pushed. The existing snapshot's
+     * source + provenance survive an edit riding on top of it; with no
+     * existing snapshot the result is a plain {@code MANUAL_EDIT}.
+     */
+    static RaceTcfSnapshot mergeTcfSnapshot(RaceTcfSnapshot existing, String raceId,
+                                            java.time.Instant now,
+                                            List<RaceTcfSnapshot.TcfEntry> updates)
+    {
+        if (existing == null || existing.tcfs() == null || existing.tcfs().isEmpty())
+        {
+            return new RaceTcfSnapshot(raceId, now,
+                RaceTcfSnapshot.Source.MANUAL_EDIT, null, null, updates);
+        }
+        Map<String, RaceTcfSnapshot.TcfEntry> byBoat = new LinkedHashMap<>();
+        for (RaceTcfSnapshot.TcfEntry t : existing.tcfs())
+            byBoat.put(t.boatId(), t);
+        for (RaceTcfSnapshot.TcfEntry u : updates)
+            byBoat.put(u.boatId(), u);
+        return new RaceTcfSnapshot(raceId, now,
+            existing.source(), existing.sourceRaceId(), existing.sourceRaceNumber(),
+            new ArrayList<>(byBoat.values()));
+    }
+
+    /**
      * POST /api/races/{id}/save-tcfs — admin-only. Body
      * {@code {updates:[{boatId,value,spinnakerType}], seriesId}}.
-     * Writes a {@code MANUAL_EDIT} snapshot locally. The push to SailSys
-     * is NOT automatic — the next page load surfaces the mismatch banner
-     * (Save / Reset) so the admin can confirm before publishing.
+     * Merges the edits into the race's local snapshot (see
+     * {@link #mergeTcfSnapshot}). This endpoint does NOT touch SailSys —
+     * the client immediately follows up with /push-handicaps, so a single
+     * SAVE click carries the edit all the way through.
      */
     private void handleSaveRaceTcfs(HttpServletRequest req, HttpServletResponse resp, int raceId)
         throws Exception
@@ -2323,9 +2603,9 @@ public class ApiServlet extends HttpServlet
             return;
         }
 
-        // Build the snapshot from the request body (each row already carries
+        // Build the edit rows from the request body (each row already carries
         // boatId/value/spinnakerType — the client gathered them from the
-        // entrants payload).
+        // entrants payload) and merge them into any existing snapshot.
         List<RaceTcfSnapshot.TcfEntry> tcfs = new ArrayList<>();
         for (JsonNode u : updates)
         {
@@ -2335,8 +2615,8 @@ public class ApiServlet extends HttpServlet
                 u.path("spinnakerType").isMissingNode() || u.path("spinnakerType").isNull()
                     ? 1 : u.path("spinnakerType").asInt()));
         }
-        RaceTcfSnapshot snap = new RaceTcfSnapshot(String.valueOf(raceId),
-            java.time.Instant.now(), RaceTcfSnapshot.Source.MANUAL_EDIT, null, null, tcfs);
+        RaceTcfSnapshot snap = mergeTcfSnapshot(store.raceTcfs(String.valueOf(raceId)),
+            String.valueOf(raceId), java.time.Instant.now(), tcfs);
         store.putRaceTcfs(String.valueOf(raceId), snap);
 
         writeJson(resp, Map.of(
