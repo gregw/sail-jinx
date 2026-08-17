@@ -53,11 +53,8 @@
             <artifactId>jetty-ee10-servlet</artifactId>
             <version>${jetty.version}</version>
         </dependency>
-        <dependency>
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-client</artifactId>
-            <version>${jetty.version}</version>
-        </dependency>
+        <!-- No HTTP client dependency. sail-jinx v2 makes no outbound calls;
+             if one reappears here, the standalone architecture has regressed. -->
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-slf4j-impl</artifactId>
@@ -78,6 +75,25 @@
     </dependencies>
 
     <build>
+        <resources>
+            <!-- jinx.properties carries ${project.version} through to runtime so
+                 the UI can show which build it is. Everything else is copied
+                 verbatim: the static HTML is full of ${...}-looking JS. -->
+            <resource>
+                <directory>src/main/resources</directory>
+                <includes>
+                    <include>jinx.properties</include>
+                </includes>
+                <filtering>true</filtering>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <exclude>jinx.properties</exclude>
+                </excludes>
+                <filtering>false</filtering>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

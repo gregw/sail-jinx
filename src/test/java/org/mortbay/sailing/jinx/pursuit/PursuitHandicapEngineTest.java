@@ -12,8 +12,8 @@ import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.Boat;
 import org.mortbay.sailing.jinx.model.FinishStatus;
 import org.mortbay.sailing.jinx.model.Race;
-import org.mortbay.sailing.jinx.model.RaceStatus;
 import org.mortbay.sailing.jinx.model.Result;
+import org.mortbay.sailing.jinx.model.Spinnaker;
 import org.mortbay.sailing.jinx.model.StartTime;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -35,6 +35,19 @@ class PursuitHandicapEngineTest
 
     private final PursuitHandicapEngine engine = new PursuitHandicapEngine(DEFAULT_ALG);
 
+    /** Register boat with only the fields the engine looks at: id and TCF. */
+    private static Boat boat(String id, String name, String sailNumber, double tcf)
+    {
+        return new Boat(id, sailNumber, name, "Div", Spinnaker.S, tcf, false, true, null);
+    }
+
+    /** Race carrying the one input the engine needs: the target elapsed time. */
+    private static Race race(int targetElapsedMinutes)
+    {
+        return new Race("r1", "s1", 1, "R1", LocalDate.of(2026, 5, 1),
+            LocalTime.of(18, 0), targetElapsedMinutes, null, false);
+    }
+
     /**
      * Spec §4: the slowest boat (lowest TCF) starts at {@code t_earliest_start};
      * the fastest boat starts last. Start times are rounded to the nearest minute.
@@ -43,11 +56,10 @@ class PursuitHandicapEngineTest
     void slowestBoatStartsFirstAtEarliestStart()
     {
         List<Boat> boats = List.of(
-            new Boat("slow", "Slow Turtle",   "AUS1",   "d", "Div", 0.8821),
-            new Boat("mid",  "Meridian",      "MYC12",  "d", "Div", 0.9340),
-            new Boat("fast", "Flashpoint",    "AUS5",   "d", "Div", 1.0450));
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            60, LocalTime.of(18, 0), RaceStatus.SCHEDULED);
+            boat("slow", "Slow Turtle",   "AUS1", 0.8821),
+            boat("mid",  "Meridian",      "MYC12", 0.9340),
+            boat("fast", "Flashpoint",    "AUS5", 1.0450));
+        Race race = race(60);
 
         List<StartTime> times = engine.computeStartTimes(boats, race);
 
@@ -68,8 +80,7 @@ class PursuitHandicapEngineTest
     void netAdjustmentsSumToZero()
     {
         List<Boat> boats = workedExampleFleet();
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            90, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+        Race race = race(90);
         Map<String, Result> results = workedExampleResults();
 
         List<Adjustment> adjustments = engine.processResults(boats, race, results);
@@ -97,8 +108,7 @@ class PursuitHandicapEngineTest
     void winnerRewardScalesWithOwnElapsed()
     {
         List<Boat> boats = workedExampleFleet();
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            90, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+        Race race = race(90);
         Map<String, Result> results = workedExampleResults();
 
         Adjustment first = engine.processResults(boats, race, results).stream()
@@ -117,10 +127,9 @@ class PursuitHandicapEngineTest
     void dsqBoatTcfIsFrozen()
     {
         List<Boat> boats = List.of(
-            new Boat("a", "A", "1", "d", "Div", 1.0),
-            new Boat("b", "B", "2", "d", "Div", 1.0));
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            60, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+            boat("a", "A", "1", 1.0),
+            boat("b", "B", "2", 1.0));
+        Race race = race(60);
         Map<String, Result> results = Map.of(
             "a", new Result("a", FinishStatus.FIN, LocalTime.of(18, 0), LocalTime.of(19, 0), null),
             "b", new Result("b", FinishStatus.DSQ, LocalTime.of(18, 0), null, null));
@@ -140,12 +149,11 @@ class PursuitHandicapEngineTest
     void dnfBoatsShareEqualReward()
     {
         List<Boat> boats = List.of(
-            new Boat("p1", "Pos1", "1", "d", "Div", 1.0),
-            new Boat("p2", "Pos2", "2", "d", "Div", 1.0),
-            new Boat("dnfA", "DnfA", "3", "d", "Div", 1.0),
-            new Boat("dnfB", "DnfB", "4", "d", "Div", 1.0));
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            90, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+            boat("p1", "Pos1", "1", 1.0),
+            boat("p2", "Pos2", "2", 1.0),
+            boat("dnfA", "DnfA", "3", 1.0),
+            boat("dnfB", "DnfB", "4", 1.0));
+        Race race = race(90);
         LocalTime start = LocalTime.of(18, 0);
         Map<String, Result> results = Map.of(
             "p1", fin("p1", start, start.plusMinutes(60)),
@@ -172,8 +180,7 @@ class PursuitHandicapEngineTest
     void positivePenaltyRaisesTcfAndRewardLowersIt()
     {
         List<Boat> boats = workedExampleFleet();
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            90, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+        Race race = race(90);
         Map<String, Result> results = workedExampleResults();
 
         Map<String, Adjustment> byId = engine.processResults(boats, race, results).stream()
@@ -205,8 +212,7 @@ class PursuitHandicapEngineTest
     void newTcfUsesConfiguredVZero()
     {
         List<Boat> boats = workedExampleFleet();
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            90, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+        Race race = race(90);
         Map<String, Result> results = workedExampleResults();
 
         Adjustment p1 = engine.processResults(boats, race, results).stream()
@@ -224,11 +230,10 @@ class PursuitHandicapEngineTest
     void vZeroModeKeepsDsqFrozenAndPreservesDirection()
     {
         List<Boat> boats = List.of(
-            new Boat("a", "A", "1", "d", "Div", 1.0),
-            new Boat("b", "B", "2", "d", "Div", 1.0),
-            new Boat("c", "C", "3", "d", "Div", 1.0));
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            60, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+            boat("a", "A", "1", 1.0),
+            boat("b", "B", "2", 1.0),
+            boat("c", "C", "3", 1.0));
+        Race race = race(60);
         LocalTime start = LocalTime.of(18, 0);
         Map<String, Result> results = Map.of(
             "a", fin("a", start, start.plusMinutes(55)),
@@ -255,11 +260,10 @@ class PursuitHandicapEngineTest
     void penaltiesFollowFinishPositionNotElapsedSort()
     {
         List<Boat> boats = List.of(
-            new Boat("first",  "First",  "1", "d", "Div", 1.0),
-            new Boat("ocs",    "OcsBoat", "2", "d", "Div", 1.0),
-            new Boat("third",  "Third",  "3", "d", "Div", 1.0));
-        Race race = new Race("r1", 1, "R1", LocalDate.of(2026, 5, 1),
-            60, LocalTime.of(18, 0), RaceStatus.RESULTS_ENTERED);
+            boat("first",  "First",  "1", 1.0),
+            boat("ocs",    "OcsBoat", "2", 1.0),
+            boat("third",  "Third",  "3", 1.0));
+        Race race = race(60);
         LocalTime start = LocalTime.of(18, 0);
         // OCS boat sailed for 40 min (shortest raw elapsed) but finished 3rd
         // officially. The official 1st-place boat sailed for 50 min.
@@ -284,14 +288,14 @@ class PursuitHandicapEngineTest
     private static List<Boat> workedExampleFleet()
     {
         return List.of(
-            new Boat("p1", "Pos1", "1", "d", "Div", 1.0),
-            new Boat("p2", "Pos2", "2", "d", "Div", 1.0),
-            new Boat("p3", "Pos3", "3", "d", "Div", 1.0),
-            new Boat("p4", "Pos4", "4", "d", "Div", 1.0),
-            new Boat("p5", "Pos5", "5", "d", "Div", 1.0),
-            new Boat("p6", "Pos6", "6", "d", "Div", 1.0),
-            new Boat("p7", "Pos7", "7", "d", "Div", 1.0),
-            new Boat("dnf", "Dnf", "8", "d", "Div", 1.0));
+            boat("p1", "Pos1", "1", 1.0),
+            boat("p2", "Pos2", "2", 1.0),
+            boat("p3", "Pos3", "3", 1.0),
+            boat("p4", "Pos4", "4", 1.0),
+            boat("p5", "Pos5", "5", 1.0),
+            boat("p6", "Pos6", "6", 1.0),
+            boat("p7", "Pos7", "7", 1.0),
+            boat("dnf", "Dnf", "8", 1.0));
     }
 
     private static Map<String, Result> workedExampleResults()

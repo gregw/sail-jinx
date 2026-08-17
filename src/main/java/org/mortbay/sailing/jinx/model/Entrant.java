@@ -1,0 +1,77 @@
+package org.mortbay.sailing.jinx.model;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+
+/**
+ * One boat entered in one race, with the TCF that applies to it <em>for that
+ * race</em>.
+ *
+ * <p>Identity is denormalised on purpose. {@code sailNumber}, {@code name},
+ * {@code division} and {@code spinnaker} are copied from the register at entry
+ * time rather than looked up on read, so that
+ * <ul>
+ *   <li>a one-off entrant — which has no register boat at all — renders the
+ *       same way as everyone else, and</li>
+ *   <li>renaming or retiring a boat next season doesn't quietly rewrite the
+ *       history of races it already sailed.</li>
+ * </ul>
+ *
+ * <p>{@code boatId} is null for {@link EntryType#ONE_OFF}. Every other entry
+ * type references a register boat.
+ */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public record Entrant(
+    String boatId,
+    String sailNumber,
+    String name,
+    String division,
+    Spinnaker spinnaker,
+    double tcf,
+    EntryType entryType)
+{
+    /**
+     * How this boat came to be in the race. Only affects whether the handicap
+     * engine adjusts its TCF afterwards — see {@link #scoresHandicap()}.
+     */
+    public enum EntryType
+    {
+        /** Entered for the season on the series roster. The normal case. */
+        ROSTER,
+        /** Turned up on the night and was added to the register there and then. */
+        CASUAL,
+        /** Sailed once, not in the register, carries no handicap forward. */
+        ONE_OFF
+    }
+
+    /** Entrant for a registered boat, on the roster, with the given race TCF. */
+    public static Entrant fromBoat(Boat boat, double tcf)
+    {
+        return fromBoat(boat, tcf, EntryType.ROSTER);
+    }
+
+    /** Entrant for a registered boat with an explicit entry type. */
+    public static Entrant fromBoat(Boat boat, double tcf, EntryType entryType)
+    {
+        return new Entrant(boat.id(), boat.sailNumber(), boat.name(),
+            boat.division(), boat.spinnaker(), tcf, entryType);
+    }
+
+    /**
+     * Entrant for a visitor who is not in the register and is not being added
+     * to it. Gets a TCF so it can be given a start time and be placed, but its
+     * TCF goes nowhere afterwards.
+     */
+    public static Entrant oneOff(String name, String sailNumber, double tcf)
+    {
+        return new Entrant(null, sailNumber, name, null, null, tcf, EntryType.ONE_OFF);
+    }
+
+    /**
+     * True when this entrant's TCF should be carried into the next race by the
+     * handicap engine. False for one-offs: there is nothing to carry it to.
+     */
+    public boolean scoresHandicap()
+    {
+        return boatId != null && entryType != EntryType.ONE_OFF;
+    }
+}

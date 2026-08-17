@@ -1,129 +1,103 @@
 package org.mortbay.sailing.jinx.server;
 
 import java.io.IOException;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.servlet.http.HttpSession;
 import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.model.Adjustment;
+import org.mortbay.sailing.jinx.model.AuditEntry;
 import org.mortbay.sailing.jinx.model.Boat;
+import org.mortbay.sailing.jinx.model.Entrant;
 import org.mortbay.sailing.jinx.model.FinishStatus;
 import org.mortbay.sailing.jinx.model.Race;
-import org.mortbay.sailing.jinx.model.RaceStatus;
-import org.mortbay.sailing.jinx.model.RaceTcfSnapshot;
+import org.mortbay.sailing.jinx.model.RaceEntrants;
 import org.mortbay.sailing.jinx.model.RaceTimes;
 import org.mortbay.sailing.jinx.model.Result;
+import org.mortbay.sailing.jinx.model.Roster;
+import org.mortbay.sailing.jinx.model.Series;
+import org.mortbay.sailing.jinx.model.Spinnaker;
+import org.mortbay.sailing.jinx.model.StartSheet;
+import org.mortbay.sailing.jinx.model.StartTime;
 import org.mortbay.sailing.jinx.pursuit.HandicapEngine;
 import org.mortbay.sailing.jinx.pursuit.PursuitHandicapEngine;
 import org.mortbay.sailing.jinx.pursuit.SolarTimes;
-import org.mortbay.sailing.jinx.sailsys.SailSysClient;
-import org.mortbay.sailing.jinx.sailsys.SailSysSession;
 import org.mortbay.sailing.jinx.store.JsonStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * REST API consumed by the static HTML front end. Endpoint surface is the one
- * documented in {@code CLAUDE.md}.
+ * REST API consumed by the static HTML front end. Every endpoint reads and
+ * writes the local {@link JsonStore} — sail-jinx v2 talks to nothing else.
  *
- * <p>Authentication is per browser session, backed by a Jetty
- * {@link HttpSession}. The flow is:
- * <ol>
- *   <li>User loads {@code index.html}, sees {@code /api/auth/status}
- *       reporting "not signed in" plus the configured club/series.</li>
- *   <li>User submits email + password to {@code POST /api/auth/login}.</li>
- *   <li>Servlet calls {@code SailSysClient.login(email, password)}, receives a
- *       {@link SailSysSession}, stashes it on the {@code HttpSession}, and
- *       returns the resolved user. The credentials live only as parameters of
- *       this request and are not stored anywhere.</li>
- *   <li>Subsequent API calls read the session and pass its token to the
- *       SailSys client.</li>
- *   <li>{@code POST /api/auth/logout} invalidates the {@code HttpSession},
- *       dropping the token. (The SailSys-side token is left to expire.)</li>
- * </ol>
+ * <h2>Endpoints</h2>
+ * <pre>
+ *   GET    /api/config                        server + algorithm defaults, store health
+ *   GET    /api/boats                         the fleet register
+ *   POST   /api/boats                         create or update a boat
+ *   GET    /api/series                        all series
+ *   POST   /api/series                        create or update a series
+ *   GET    /api/series/{id}/config            per-series algorithm settings
+ *   POST   /api/series/{id}/config            save them
+ *   GET    /api/series/{id}/roster            boats entered for the series
+ *   POST   /api/series/{id}/roster            save the roster
+ *   GET    /api/races                         all races
+ *   POST   /api/races                         create or update a race
+ *   GET    /api/races/{id}                    everything the race page needs, in one call
+ *   POST   /api/races/{id}/entrants           replace the entrant list
+ *   POST   /api/races/{id}/entrants/seed      seed entrants from the roster or the previous race
+ *   POST   /api/races/{id}/start-times        compute and publish the pursuit start sheet
+ *   GET    /api/races/{id}/times              RO-captured came / start / finish
+ *   POST   /api/races/{id}/times              save them
+ *   POST   /api/races/{id}/course-plan        target duration to course length
+ *   POST   /api/races/{id}/process-handicaps  run the Jinx algorithm (computes, saves nothing)
+ *   POST   /api/races/{id}/save-handicaps     save adjustments, carry TCFs to the next race
+ *   DELETE /api/races/{id}/adjustments        unlock the race for reprocessing
+ *   GET    /api/audit                         the audit log
+ * </pre>
  *
- * <p>Most handlers are TODOs. The auth and read-only stub endpoints are wired.
+ * <h2>Authorisation</h2>
+ * There is none. See {@link #currentRole} — the admin / race-officer split
+ * survives as a concept so the UI can gate destructive actions, but every
+ * request is currently treated as an admin because the app runs on one machine
+ * on one desk. This has to change before it is hosted anywhere with a network
+ * around it.
  */
 public class ApiServlet extends HttpServlet
 {
     private static final Logger LOG = LoggerFactory.getLogger(ApiServlet.class);
 
-    /** Attribute name under which the {@link SailSysSession} is stored on the HttpSession. */
-    static final String SESSION_ATTR = "sailsys.session";
-
-    private static final java.util.regex.Pattern SERIES_RACES =
-        java.util.regex.Pattern.compile("/series/(\\d+)/races");
-    private static final java.util.regex.Pattern SERIES_TCFS =
-        java.util.regex.Pattern.compile("/series/(\\d+)/tcfs");
-    private static final java.util.regex.Pattern SERIES_CONFIG =
-        java.util.regex.Pattern.compile("/series/(\\d+)/config");
-    private static final java.util.regex.Pattern SERIES_IS_PURSUIT =
-        java.util.regex.Pattern.compile("/series/(\\d+)/is-pursuit");
-    private static final java.util.regex.Pattern SERIES_SPINNAKER =
-        java.util.regex.Pattern.compile("/series/(\\d+)/spinnaker");
-    private static final java.util.regex.Pattern SERIES_ENTRIES =
-        java.util.regex.Pattern.compile("/series/(\\d+)/entries");
-    private static final java.util.regex.Pattern SERIES_ENTRY_COUNT =
-        java.util.regex.Pattern.compile("/series/(\\d+)/entry-count");
-    private static final java.util.regex.Pattern SERIES_ENTRY_CONFIRM =
-        java.util.regex.Pattern.compile("/series/(\\d+)/entries/(\\d+)/confirm");
-    private static final java.util.regex.Pattern SERIES_ENTRY_DIVISION =
-        java.util.regex.Pattern.compile("/series/(\\d+)/entries/(\\d+)/division");
-    private static final java.util.regex.Pattern RACE_ENTRANTS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/entrants");
-    private static final java.util.regex.Pattern RACE_STATUS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/status");
-    private static final java.util.regex.Pattern RACE_TIMES =
-        java.util.regex.Pattern.compile("/races/([^/]+)/times");
-    private static final java.util.regex.Pattern RACE_ENTRANTS_VIS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/entrants-visibility");
-    private static final java.util.regex.Pattern RACE_STARTTIMES_VIS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/start-times-visibility");
-    private static final java.util.regex.Pattern RACE_PROCESS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/process");
-    private static final java.util.regex.Pattern RACE_PUSH_RESULTS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/push-results");
-    private static final java.util.regex.Pattern RACE_COMPUTED_RESULTS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/computed-results");
-    private static final java.util.regex.Pattern RACE_FINISHERS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/finishers");
-    private static final java.util.regex.Pattern RACE_PROCESS_RESULTS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/process-results");
-    private static final java.util.regex.Pattern RACE_RESULTS_STATUS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/results-status");
-    private static final java.util.regex.Pattern RACE_DIVISION_STARTS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/division-starts");
-    private static final java.util.regex.Pattern RACE_ABANDON =
-        java.util.regex.Pattern.compile("/races/(\\d+)/abandon");
-    private static final java.util.regex.Pattern RACE_COURSE_PLAN =
-        java.util.regex.Pattern.compile("/races/(\\d+)/course-plan");
-    private static final java.util.regex.Pattern RACE_PROCESS_HANDICAPS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/process-handicaps");
-    private static final java.util.regex.Pattern RACE_SAVE_HANDICAPS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/save-handicaps");
-    private static final java.util.regex.Pattern RACE_PENDING_HANDICAPS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/pending-handicaps");
-    private static final java.util.regex.Pattern RACE_TCF_SNAPSHOT =
-        java.util.regex.Pattern.compile("/races/(\\d+)/tcf-snapshot");
-    private static final java.util.regex.Pattern RACE_SAVE_TCFS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/save-tcfs");
-    private static final java.util.regex.Pattern RACE_PUSH_HANDICAPS =
-        java.util.regex.Pattern.compile("/races/(\\d+)/push-handicaps");
+    private static final Pattern SERIES_CONFIG = Pattern.compile("/series/([^/]+)/config");
+    private static final Pattern SERIES_ROSTER = Pattern.compile("/series/([^/]+)/roster");
+    private static final Pattern SERIES_RACES = Pattern.compile("/series/([^/]+)/races");
+    private static final Pattern RACE = Pattern.compile("/races/([^/]+)");
+    private static final Pattern RACE_ENTRANTS = Pattern.compile("/races/([^/]+)/entrants");
+    private static final Pattern RACE_ENTRANTS_SEED = Pattern.compile("/races/([^/]+)/entrants/seed");
+    private static final Pattern RACE_START_TIMES = Pattern.compile("/races/([^/]+)/start-times");
+    private static final Pattern RACE_TIMES = Pattern.compile("/races/([^/]+)/times");
+    private static final Pattern RACE_COURSE_PLAN = Pattern.compile("/races/([^/]+)/course-plan");
+    private static final Pattern RACE_PROCESS_HANDICAPS = Pattern.compile("/races/([^/]+)/process-handicaps");
+    private static final Pattern RACE_SAVE_HANDICAPS = Pattern.compile("/races/([^/]+)/save-handicaps");
+    private static final Pattern RACE_ADJUSTMENTS = Pattern.compile("/races/([^/]+)/adjustments");
 
     private static final JsonMapper MAPPER = JsonMapper.builder()
         .addModule(new JavaTimeModule())
@@ -132,765 +106,237 @@ public class ApiServlet extends HttpServlet
 
     private final JinxConfig config;
     private final JsonStore store;
-    private final SailSysClient sailsys;
     private final HandicapEngine engine;
+    private final String version;
 
-    // In-memory cache of the SailSys handicap-definition catalogue, keyed by
-    // clubId. The catalogue is club-wide (the per-series endpoint returns the
-    // same data for any series at the same club), so the first request
-    // populates the cache and every subsequent reader — handleSeries, the
-    // new handleGetHandicapDefinitions, etc. — reads from it.
-    private final java.util.Map<Integer, Map<String, Map<String, String>>> handicapDefsCache
-        = new java.util.concurrent.ConcurrentHashMap<>();
-
-    // In-memory cache of per-series pursuit determination, keyed by seriesId.
-    // A series's race type is fixed (Twilight = all pursuit, Championship = all
-    // scratch), so the first probe settles it; every later series-page load
-    // reads the cached answer instead of re-hitting SailSys.
-    private final java.util.Map<Integer, Boolean> pursuitCache
-        = new java.util.concurrent.ConcurrentHashMap<>();
-
-    public ApiServlet(JinxConfig config, JsonStore store, SailSysClient sailsys, HandicapEngine engine)
+    public ApiServlet(JinxConfig config, JsonStore store, HandicapEngine engine, String version)
     {
         this.config = config;
         this.store = store;
-        this.sailsys = sailsys;
         this.engine = engine;
+        this.version = version;
+    }
+
+    /**
+     * Who is asking. Always {@link Role#ADMIN}: sail-jinx has no login, and the
+     * single machine it runs on is the security boundary.
+     *
+     * <p>This exists as a seam rather than being inlined so that adding
+     * authentication later is one method, not a hunt through the servlet. The
+     * role checks it feeds are real and are already in the right places.
+     */
+    static Role currentRole(HttpServletRequest req)
+    {
+        return Role.ADMIN;
+    }
+
+    /** What a caller is allowed to do. */
+    public enum Role
+    {
+        /** Can do everything, including editing TCFs and processing handicaps. */
+        ADMIN,
+        /** Can capture times and results, but not touch handicaps. */
+        RACE_OFFICER
     }
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException
     {
-        String path = req.getPathInfo();
-        if (path == null) path = "/";
+        String path = path(req);
         resp.setContentType("application/json");
-
         try
         {
             switch (path)
             {
-                case "/auth/status" -> writeJson(resp, authStatus(req));
                 case "/config" -> writeJson(resp, publicConfig());
-                case "/series" -> handleSeries(req, resp);
-                case "/handicap-definitions" -> handleGetHandicapDefinitions(req, resp);
-                case "/races/current" -> handleCurrentRaces(req, resp);
-                case "/boats" -> writeJson(resp, store.boats().values());
-                case "/races" -> writeJson(resp, store.races().values());
+                case "/boats" -> writeJson(resp, sortedBoats());
+                case "/series" -> writeJson(resp, sortedSeries());
+                case "/races" -> writeJson(resp, allRaces());
                 case "/audit" -> writeJson(resp, store.audit());
-                default -> {
-                    java.util.regex.Matcher sr = SERIES_RACES.matcher(path);
-                    java.util.regex.Matcher sc = SERIES_CONFIG.matcher(path);
-                    java.util.regex.Matcher re = RACE_ENTRANTS.matcher(path);
-                    java.util.regex.Matcher rs = RACE_STATUS.matcher(path);
-                    java.util.regex.Matcher rt = RACE_TIMES.matcher(path);
-                    if (sr.matches())
-                        handleSeriesRaces(req, resp, Integer.parseInt(sr.group(1)));
-                    else if (sc.matches())
-                        handleGetSeriesConfig(resp, sc.group(1));
-                    else if (SERIES_IS_PURSUIT.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = SERIES_IS_PURSUIT.matcher(path);
-                        if (m.matches())
-                            handleIsSeriesPursuit(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (SERIES_SPINNAKER.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = SERIES_SPINNAKER.matcher(path);
-                        if (m.matches())
-                            handleSeriesSpinnaker(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (SERIES_ENTRIES.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = SERIES_ENTRIES.matcher(path);
-                        if (m.matches())
-                            handleSeriesEntries(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (SERIES_ENTRY_COUNT.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = SERIES_ENTRY_COUNT.matcher(path);
-                        if (m.matches())
-                            handleSeriesEntryCount(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (re.matches())
-                        handleRaceEntrants(req, resp, Integer.parseInt(re.group(1)));
-                    else if (rs.matches())
-                        handleRaceStatus(req, resp, Integer.parseInt(rs.group(1)));
-                    else if (rt.matches())
-                        handleGetRaceTimes(resp, rt.group(1));
-                    else if (RACE_COMPUTED_RESULTS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_COMPUTED_RESULTS.matcher(path);
-                        if (m.matches())
-                            handleComputedResults(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (RACE_FINISHERS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_FINISHERS.matcher(path);
-                        if (m.matches())
-                            handleFinishers(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (RACE_PENDING_HANDICAPS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_PENDING_HANDICAPS.matcher(path);
-                        if (m.matches())
-                            handleGetPendingHandicaps(resp, m.group(1));
-                    }
-                    else if (RACE_TCF_SNAPSHOT.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_TCF_SNAPSHOT.matcher(path);
-                        if (m.matches())
-                            handleGetRaceTcfSnapshot(resp, m.group(1));
-                    }
-                    else if (path.matches("/races/[^/]+/startTimes"))
-                        todo(resp, "GET " + path + " — compute start sheet");
-                    else
-                        resp.sendError(404);
-                }
+                default -> doGetPath(path, resp);
             }
-        }
-        catch (SailSysClient.SailSysException e)
-        {
-            resp.setStatus(502);
-            writeJson(resp, Map.of("error", e.getMessage()));
         }
         catch (Exception e)
         {
-            resp.setStatus(500);
-            writeJson(resp, Map.of("error", e.getMessage()));
+            fail(resp, e);
         }
+    }
+
+    private void doGetPath(String path, HttpServletResponse resp) throws Exception
+    {
+        Matcher m;
+        if ((m = SERIES_CONFIG.matcher(path)).matches())
+            writeJson(resp, seriesConfigBody(m.group(1)));
+        else if ((m = SERIES_ROSTER.matcher(path)).matches())
+            writeJson(resp, rosterBody(m.group(1)));
+        else if ((m = SERIES_RACES.matcher(path)).matches())
+            writeJson(resp, store.racesInSeries(m.group(1)));
+        else if ((m = RACE_TIMES.matcher(path)).matches())
+            writeJson(resp, mapOf("raceId", m.group(1), "times", store.raceTimes(m.group(1))));
+        else if ((m = RACE.matcher(path)).matches())
+            writeRaceBundle(resp, m.group(1));
+        else
+            resp.sendError(404);
     }
 
     @Override
     protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws IOException
     {
-        String path = req.getPathInfo();
-        if (path == null) path = "/";
+        String path = path(req);
         resp.setContentType("application/json");
-
         try
         {
             switch (path)
             {
-                case "/auth/login" -> handleLogin(req, resp);
-                case "/auth/logout" -> handleLogout(req, resp);
-                default -> {
-                    java.util.regex.Matcher tcfs = SERIES_TCFS.matcher(path);
-                    java.util.regex.Matcher sc = SERIES_CONFIG.matcher(path);
-                    java.util.regex.Matcher rt = RACE_TIMES.matcher(path);
-                    java.util.regex.Matcher ev = RACE_ENTRANTS_VIS.matcher(path);
-                    java.util.regex.Matcher sv = RACE_STARTTIMES_VIS.matcher(path);
-                    java.util.regex.Matcher rp = RACE_PROCESS.matcher(path);
-                    if (tcfs.matches())
-                        handleSaveTcfs(req, resp, Integer.parseInt(tcfs.group(1)));
-                    else if (SERIES_ENTRY_CONFIRM.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = SERIES_ENTRY_CONFIRM.matcher(path);
-                        if (m.matches())
-                            handleConfirmEntry(req, resp,
-                                Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)));
-                    }
-                    else if (SERIES_ENTRY_DIVISION.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = SERIES_ENTRY_DIVISION.matcher(path);
-                        if (m.matches())
-                            handleEntryDivision(req, resp,
-                                Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)));
-                    }
-                    else if (sc.matches())
-                        handleSaveSeriesConfig(req, resp, sc.group(1));
-                    else if (rt.matches())
-                        handleSaveRaceTimes(req, resp, rt.group(1));
-                    else if (ev.matches())
-                        handleVisibility(req, resp, Integer.parseInt(ev.group(1)), false);
-                    else if (sv.matches())
-                        handleVisibility(req, resp, Integer.parseInt(sv.group(1)), true);
-                    else if (rp.matches())
-                        handleProcessRace(req, resp, Integer.parseInt(rp.group(1)));
-                    else if (RACE_PUSH_RESULTS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_PUSH_RESULTS.matcher(path);
-                        if (m.matches())
-                            handlePushResults(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (RACE_PROCESS_RESULTS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_PROCESS_RESULTS.matcher(path);
-                        if (m.matches())
-                            handleProcessResults(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (RACE_RESULTS_STATUS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_RESULTS_STATUS.matcher(path);
-                        if (m.matches())
-                            handleResultsStatus(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (RACE_DIVISION_STARTS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_DIVISION_STARTS.matcher(path);
-                        if (m.matches())
-                            handleDivisionStarts(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (RACE_ABANDON.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_ABANDON.matcher(path);
-                        if (m.matches())
-                            handleAbandon(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (RACE_COURSE_PLAN.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_COURSE_PLAN.matcher(path);
-                        if (m.matches())
-                            handleCoursePlan(req, resp, m.group(1));
-                    }
-                    else if (RACE_PROCESS_HANDICAPS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_PROCESS_HANDICAPS.matcher(path);
-                        if (m.matches())
-                            handleProcessHandicaps(req, resp, m.group(1));
-                    }
-                    else if (RACE_SAVE_HANDICAPS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_SAVE_HANDICAPS.matcher(path);
-                        if (m.matches())
-                            handleSaveHandicaps(req, resp, m.group(1));
-                    }
-                    else if (RACE_SAVE_TCFS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_SAVE_TCFS.matcher(path);
-                        if (m.matches())
-                            handleSaveRaceTcfs(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (RACE_PUSH_HANDICAPS.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_PUSH_HANDICAPS.matcher(path);
-                        if (m.matches())
-                            handlePushRaceHandicaps(req, resp, Integer.parseInt(m.group(1)));
-                    }
-                    else if (RACE_TCF_SNAPSHOT.matcher(path).matches())
-                    {
-                        java.util.regex.Matcher m = RACE_TCF_SNAPSHOT.matcher(path);
-                        if (m.matches())
-                            handleSaveRaceTcfSnapshot(req, resp, m.group(1));
-                    }
-                    else if (path.matches("/races/[^/]+/results"))
-                        todo(resp, "POST " + path + " — save results");
-                    else if (path.matches("/races/[^/]+/push"))
-                        todo(resp, "POST " + path + " — push to SailSys");
-                    else
-                        resp.sendError(404);
-                }
+                case "/boats" -> handleSaveBoat(req, resp);
+                case "/series" -> handleSaveSeries(req, resp);
+                case "/races" -> handleSaveRace(req, resp);
+                default -> doPostPath(path, req, resp);
             }
-        }
-        catch (SailSysClient.SailSysException e)
-        {
-            resp.setStatus(502);
-            writeJson(resp, Map.of("error", e.getMessage()));
         }
         catch (Exception e)
         {
-            resp.setStatus(500);
-            writeJson(resp, Map.of("error", e.getMessage()));
+            fail(resp, e);
         }
+    }
+
+    private void doPostPath(String path, HttpServletRequest req, HttpServletResponse resp)
+        throws Exception
+    {
+        Matcher m;
+        // Longest patterns first: /entrants/seed would otherwise be shadowed.
+        if ((m = RACE_ENTRANTS_SEED.matcher(path)).matches())
+            handleSeedEntrants(resp, m.group(1));
+        else if ((m = RACE_ENTRANTS.matcher(path)).matches())
+            handleSaveEntrants(req, resp, m.group(1));
+        else if ((m = RACE_START_TIMES.matcher(path)).matches())
+            handleComputeStartTimes(req, resp, m.group(1));
+        else if ((m = RACE_TIMES.matcher(path)).matches())
+            handleSaveRaceTimes(req, resp, m.group(1));
+        else if ((m = RACE_COURSE_PLAN.matcher(path)).matches())
+            handleCoursePlan(req, resp, m.group(1));
+        else if ((m = RACE_PROCESS_HANDICAPS.matcher(path)).matches())
+            handleProcessHandicaps(req, resp, m.group(1));
+        else if ((m = RACE_SAVE_HANDICAPS.matcher(path)).matches())
+            handleSaveHandicaps(req, resp, m.group(1));
+        else if ((m = SERIES_CONFIG.matcher(path)).matches())
+            handleSaveSeriesConfig(req, resp, m.group(1));
+        else if ((m = SERIES_ROSTER.matcher(path)).matches())
+            handleSaveRoster(req, resp, m.group(1));
+        else
+            resp.sendError(404);
     }
 
     @Override
     protected void doDelete(HttpServletRequest req, HttpServletResponse resp) throws IOException
     {
-        String path = req.getPathInfo();
-        if (path == null) path = "/";
+        String path = path(req);
         resp.setContentType("application/json");
-
         try
         {
-            java.util.regex.Matcher snap = RACE_TCF_SNAPSHOT.matcher(path);
-            if (snap.matches())
-                handleDeleteRaceTcfSnapshot(req, resp, snap.group(1));
+            Matcher m = RACE_ADJUSTMENTS.matcher(path);
+            if (m.matches())
+                handleUnlockRace(req, resp, m.group(1));
             else
                 resp.sendError(404);
         }
-        catch (SailSysClient.SailSysException e)
-        {
-            resp.setStatus(502);
-            writeJson(resp, Map.of("error", e.getMessage()));
-        }
         catch (Exception e)
         {
-            resp.setStatus(500);
-            writeJson(resp, Map.of("error", e.getMessage()));
+            fail(resp, e);
         }
     }
 
-    // --- handlers ---
+    // --- Config --------------------------------------------------------------
 
-    private void handleLogin(HttpServletRequest req, HttpServletResponse resp) throws Exception
+    private Map<String, Object> publicConfig()
     {
-        Map<String, String> body = readJson(req);
-        String email = body.get("email");
-        String password = body.get("password");
-        if (email == null || email.isBlank() || password == null || password.isEmpty())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "email and password are required"));
-            return;
-        }
-
-        // Hand the credentials straight to SailSysClient.login. They go out of
-        // scope as soon as this method returns — nothing else captures them.
-        SailSysSession session = sailsys.login(email, password);
-
-        HttpSession httpSession = req.getSession(true);
-        httpSession.setAttribute(SESSION_ATTR, session);
-
-        writeJson(resp, Map.of(
-            "ok", true,
-            "user", userSummary(session)));
-    }
-
-    private void handleLogout(HttpServletRequest req, HttpServletResponse resp) throws IOException
-    {
-        HttpSession httpSession = req.getSession(false);
-        if (httpSession != null)
-            httpSession.invalidate();
-        writeJson(resp, Map.of("ok", true));
-    }
-
-    private void handleSeries(HttpServletRequest req, HttpServletResponse resp) throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        var series = sailsys.fetchClubSeries(session.token(), config.sailsys().clubId());
-        // Ship the numeric-id → shortName/fullName catalogue so the Series
-        // page can render handicap names instead of bare ids. Cached
-        // server-side via loadHandicapDefinitions so subsequent series-page
-        // loads (and the new /handicap-definitions endpoint) don't re-hit
-        // SailSys.
-        Integer firstSeriesId = series.isEmpty() ? null : series.get(0).id();
-        Map<String, Map<String, String>> handicapNames =
-            loadHandicapDefinitions(session.token(), firstSeriesId);
-        // Pursuit detection is intentionally NOT done here — it requires
-        // two SailSys round-trips per series and adds 1–2s to the page
-        // load. The client fires per-series checks against
-        // /api/series/{id}/is-pursuit after rendering the table, so
-        // Configure buttons populate progressively.
-        writeJson(resp, Map.of(
-            "clubId", config.sailsys().clubId(),
-            "handicapDefinitionId", config.sailsys().handicapDefinitionId(),
-            "handicapDefinitions", handicapNames,
-            "series", series));
-    }
-
-    /**
-     * GET /api/handicap-definitions — returns the club-wide catalogue as
-     * {@code { "<id>": {shortName, fullName} }}. The race page uses this to
-     * label the entries in its Handicap selector with friendly names.
-     * Reads/populates {@link #handicapDefsCache}; the first call into the
-     * cache for a given club fetches via any series the user can see.
-     */
-    private void handleGetHandicapDefinitions(HttpServletRequest req, HttpServletResponse resp)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        Map<String, Map<String, String>> defs =
-            loadHandicapDefinitions(session.token(), null);
-        writeJson(resp, Map.of(
-            "clubId", config.sailsys().clubId(),
-            "handicapDefinitions", defs));
-    }
-
-    /**
-     * Returns the cached club handicap-definition catalogue, fetching once
-     * if absent. {@code seriesIdHint} may be supplied when the caller has
-     * already loaded the series list (avoids a redundant /series/all call);
-     * pass {@code null} to discover a series id on demand.
-     */
-    private Map<String, Map<String, String>> loadHandicapDefinitions(
-        String token, Integer seriesIdHint)
-    {
-        int clubId = config.sailsys().clubId();
-        Map<String, Map<String, String>> cached = handicapDefsCache.get(clubId);
-        if (cached != null) return cached;
-        try
-        {
-            Integer seriesId = seriesIdHint;
-            if (seriesId == null)
-            {
-                var s = sailsys.fetchClubSeries(token, clubId);
-                if (!s.isEmpty()) seriesId = s.get(0).id();
-            }
-            if (seriesId == null)
-                return Map.of();
-            JsonNode defs = sailsys.fetchHandicapDefinitions(token, seriesId);
-            Map<String, Map<String, String>> out = new LinkedHashMap<>();
-            if (defs != null && defs.isArray())
-            {
-                for (JsonNode def : defs)
-                {
-                    out.put(
-                        String.valueOf(def.path("id").asInt()),
-                        Map.of(
-                            "shortName", def.path("shortName").asText(""),
-                            "fullName", def.path("fullName").asText("")));
-                }
-            }
-            handicapDefsCache.put(clubId, out);
-            return out;
-        }
-        catch (Exception x)
-        {
-            LOG.warn("loadHandicapDefinitions failed; returning empty catalogue", x);
-            return Map.of();
-        }
-    }
-
-    /**
-     * GET /api/series/{id}/spinnaker — the per-boat spinnaker designation for
-     * the series, as {@code { seriesId, spinnakerByBoat: { "<boatId>": 1|2 } }}
-     * (1 = spinnaker, 2 = non-spinnaker). SailSys keeps this on the series ENTRY
-     * (not the per-race entrants payload), so the race page joins it in to show
-     * the S / NS column.
-     */
-    private void handleSeriesSpinnaker(HttpServletRequest req, HttpServletResponse resp,
-                                       int seriesId) throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        Map<String, Integer> byBoat = new LinkedHashMap<>();
-        try
-        {
-            JsonNode entries = sailsys.fetchSeriesEntries(session.token(), seriesId);
-            if (entries != null && entries.isArray())
-            {
-                for (JsonNode it : entries)
-                {
-                    int boatId = it.path("boatId").asInt(0);
-                    if (boatId == 0 || it.path("spinnakerType").isMissingNode()
-                        || it.path("spinnakerType").isNull()) continue;
-                    byBoat.put(String.valueOf(boatId), it.path("spinnakerType").asInt());
-                }
-            }
-        }
-        catch (Exception e)
-        {
-            LOG.warn("fetchSeriesEntries failed for series {}: {}", seriesId, e.toString());
-        }
-        writeJson(resp, Map.of("seriesId", seriesId, "spinnakerByBoat", byBoat));
-    }
-
-    /**
-     * GET /api/series/{id}/entries — the series entries table for the entries
-     * page: {@code {seriesId, count, divisions:[{id,name,spinnakerType}],
-     * entries:[...]}} (see {@link #projectSeriesEntries} for the row shape).
-     * The division catalogue comes from the first entry's detail payload —
-     * the only SailSys surface we know that lists ALL the series's divisions,
-     * not just the ones in use — with a fall-back to the distinct divisions
-     * across the entries when that call fails or the series is empty.
-     */
-    private void handleSeriesEntries(HttpServletRequest req, HttpServletResponse resp,
-                                     int seriesId) throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        JsonNode entries = sailsys.fetchSeriesEntries(session.token(), seriesId);
-        List<Map<String, Object>> projected =
-            projectSeriesEntries(entries, config.sailsys().handicapDefinitionId());
-
-        List<Map<String, Object>> divisions = List.of();
-        if (entries != null && entries.isArray() && !entries.isEmpty())
-        {
-            try
-            {
-                int firstBoat = entries.get(0).path("boatId").asInt(0);
-                if (firstBoat != 0)
-                    divisions = projectDivisions(
-                        sailsys.fetchSeriesEntryDetail(session.token(), seriesId, firstBoat));
-            }
-            catch (Exception e)
-            {
-                LOG.warn("fetchSeriesEntryDetail failed for series {}: {}", seriesId, e.toString());
-            }
-        }
-        if (divisions.isEmpty())
-        {
-            Map<Integer, Map<String, Object>> seen = new LinkedHashMap<>();
-            for (Map<String, Object> row : projected)
-            {
-                Integer divId = (Integer)row.get("divisionId");
-                if (divId != null && divId != 0)
-                    seen.putIfAbsent(divId, Map.of(
-                        "id", divId,
-                        "name", String.valueOf(row.get("divisionName")),
-                        "spinnakerType", 0));
-            }
-            divisions = new ArrayList<>(seen.values());
-        }
-
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("seriesId", seriesId);
-        out.put("count", projected.size());
-        out.put("divisions", divisions);
-        out.put("entries", projected);
-        writeJson(resp, out);
+        out.put("version", version);
+        out.put("club", mapOf("name", config.club().name(), "timezone", config.club().timezone()));
+        out.put("algorithm", algorithmMap(config.algorithm()));
+        // Surfaced so a corrupt store file is visible in the UI instead of
+        // quietly presenting as missing data.
+        out.put("storeErrors", store.loadErrors());
+        return out;
+    }
+
+    // --- Fleet register ------------------------------------------------------
+
+    private List<Boat> sortedBoats()
+    {
+        return store.boats().values().stream()
+            .sorted(Comparator.comparing(Boat::sailNumber, String.CASE_INSENSITIVE_ORDER))
+            .toList();
     }
 
     /**
-     * GET /api/series/{id}/entry-count — just {@code {seriesId, count}}.
-     * The series page fires one of these per row (like the is-pursuit probe)
-     * to decorate the Entries links lazily; kept separate from
-     * {@code /entries} so it stays a single SailSys round-trip.
+     * Create or update a register boat. A body without an {@code id} mints one;
+     * with an {@code id} it overwrites. There is no delete — retiring a boat is
+     * {@code active: false}, because races it already sailed still name it.
      */
-    private void handleSeriesEntryCount(HttpServletRequest req, HttpServletResponse resp,
-                                        int seriesId) throws Exception
+    private void handleSaveBoat(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        JsonNode entries = sailsys.fetchSeriesEntries(session.token(), seriesId);
-        int count = (entries != null && entries.isArray()) ? entries.size() : 0;
-        writeJson(resp, Map.of("seriesId", seriesId, "count", count));
-    }
-
-    /**
-     * POST /api/series/{id}/entries/{boatId}/confirm — complete ("enter") a
-     * pending entry. One-way: SailSys has no un-confirm. Returns
-     * {@code {ok, seriesId, boatId, status}} where status is the entry's
-     * post-confirm state (1 = entered).
-     */
-    private void handleConfirmEntry(HttpServletRequest req, HttpServletResponse resp,
-                                    int seriesId, int boatId) throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        JsonNode data = sailsys.confirmEntry(session.token(), seriesId, boatId);
-        writeJson(resp, Map.of(
-            "ok", true,
-            "seriesId", seriesId,
-            "boatId", boatId,
-            "status", data == null ? -1 : data.path("status").asInt(-1)));
-    }
-
-    /**
-     * POST /api/series/{id}/entries/{boatId}/division — move an entry to
-     * another division. Body: {@code {divisionId, spinnakerType}} (the
-     * spinnaker designation is restated on every division write — pass the
-     * entry's current value when only the division is changing). SailSys
-     * business-rule refusals (e.g. the boat has already raced) surface as the
-     * standard {@code {error}} response via the SailSysException path.
-     */
-    private void handleEntryDivision(HttpServletRequest req, HttpServletResponse resp,
-                                     int seriesId, int boatId) throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
+        requireAdmin(resp);
         JsonNode body = MAPPER.readTree(req.getInputStream());
-        int divisionId = body.path("divisionId").asInt(0);
-        int spinnakerType = body.path("spinnakerType").asInt(0);
-        if (divisionId == 0 || spinnakerType == 0)
+        String sailNumber = text(body, "sailNumber");
+        String name = text(body, "name");
+        if (isBlank(sailNumber) && isBlank(name))
         {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "divisionId and spinnakerType required"));
+            badRequest(resp, "a boat needs at least a sail number or a name");
             return;
         }
-        sailsys.updateEntryDivision(session.token(), seriesId, boatId, divisionId, spinnakerType);
-        writeJson(resp, Map.of(
-            "ok", true,
-            "seriesId", seriesId,
-            "boatId", boatId,
-            "divisionId", divisionId,
-            "spinnakerType", spinnakerType));
+        String id = text(body, "id");
+        if (isBlank(id))
+            id = mintId("b");
+
+        Boat boat = new Boat(
+            id,
+            sailNumber == null ? "" : sailNumber.trim(),
+            name == null ? "" : name.trim(),
+            text(body, "division"),
+            spinnakerOf(body.path("spinnaker")),
+            body.path("currentTcf").asDouble(1.0),
+            body.path("casual").asBoolean(false),
+            !body.has("active") || body.path("active").asBoolean(true),
+            text(body, "notes"));
+        store.putBoat(boat);
+        writeJson(resp, mapOf("ok", true, "boat", boat));
     }
 
-    /**
-     * Pure projection of the SailSys list-entries payload
-     * ({@code PUT /series/{id}/entries}) into the rows the entries page
-     * renders. Deliberately a strict allow-list: the SailSys payload carries
-     * skipper contact details (email, phone) which must never reach the
-     * browser. {@code tcf} is the value of the handicap row matching the
-     * configured handicap definition (null when the entry has no such row
-     * yet); {@code tcfSpinnakerType} is what a TCF write for this boat must
-     * carry — the matched row's spinnakerType when one exists (writes must
-     * match it, see {@code SailSysClient.updateHandicap}), else the entry's
-     * own designation (SailSys creates the row with it).
-     */
-    static List<Map<String, Object>> projectSeriesEntries(JsonNode entries, int handicapDefinitionId)
+    // --- Series --------------------------------------------------------------
+
+    private List<Series> sortedSeries()
     {
-        List<Map<String, Object>> out = new ArrayList<>();
-        if (entries == null || !entries.isArray())
-            return out;
-        for (JsonNode e : entries)
-        {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("boatId", e.path("boatId").asInt(0));
-            row.put("sailNumber", e.path("boatSailNumber").asText(""));
-            row.put("boatName", e.path("boatName").asText(""));
-            row.put("make", e.path("boatMake").asText(""));
-            row.put("model", e.path("boatModel").asText(""));
-            row.put("divisionId", e.path("divisionId").asInt(0));
-            row.put("divisionName", e.path("divisionName").asText(""));
-            row.put("spinnakerType", e.path("spinnakerType").asInt(0));
-            row.put("entryType", e.path("entryType").asInt(0));
-            row.put("seriesEntryStatus", e.path("seriesEntryStatus").asInt(0));
-            row.put("entryProgress", e.path("entryProgress").asInt(0));
-            List<Integer> stages = new ArrayList<>();
-            for (JsonNode s : e.path("entryStagesNeeded"))
-                stages.add(s.asInt());
-            row.put("entryStagesNeeded", stages);
-            JsonNode match = null;
-            for (JsonNode h : e.path("handicaps"))
-            {
-                if (h.path("definition").path("id").asInt(0) == handicapDefinitionId)
-                {
-                    match = h;
-                    break;
-                }
-            }
-            row.put("tcf", match == null ? null : match.path("value").asDouble());
-            row.put("tcfSpinnakerType", match != null
-                ? match.path("spinnakerType").asInt(0)
-                : e.path("spinnakerType").asInt(0));
-            out.add(row);
-        }
-        return out;
+        return store.series().values().stream()
+            .sorted(Comparator.comparing(Series::name, String.CASE_INSENSITIVE_ORDER))
+            .toList();
     }
 
-    /**
-     * Pure projection of the entry-detail {@code divisions[]} catalogue
-     * ({@code GET /series/{id}/entries/{boatId}}) to {@code {id, name,
-     * spinnakerType}} for the division selector.
-     */
-    static List<Map<String, Object>> projectDivisions(JsonNode entryDetail)
+    private void handleSaveSeries(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
-        List<Map<String, Object>> out = new ArrayList<>();
-        if (entryDetail == null)
-            return out;
-        for (JsonNode d : entryDetail.path("divisions"))
+        requireAdmin(resp);
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        String name = text(body, "name");
+        if (isBlank(name))
         {
-            out.add(Map.of(
-                "id", d.path("id").asInt(0),
-                "name", d.path("name").asText(""),
-                "spinnakerType", d.path("spinnakerType").asInt(0)));
-        }
-        return out;
-    }
-
-    /**
-     * GET /api/series/{id}/is-pursuit — does the series's first race report
-     * pursuit-style? Returns {@code {seriesId, isPursuit}}. Called by the
-     * Series page client-side, one per row, in parallel, so Configure
-     * buttons populate progressively instead of blocking the page on a
-     * batch determination.
-     */
-    private void handleIsSeriesPursuit(HttpServletRequest req, HttpServletResponse resp,
-                                       int seriesId) throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
+            badRequest(resp, "name is required");
             return;
         }
-        boolean isPursuit = seriesHasPursuit(session.token(), seriesId);
-        writeJson(resp, Map.of("seriesId", seriesId, "isPursuit", isPursuit));
+        String id = text(body, "id");
+        if (isBlank(id))
+            id = mintId("s");
+
+        Series s = new Series(id, name.trim(), body.path("archived").asBoolean(false));
+        store.putSeries(s);
+        writeJson(resp, mapOf("ok", true, "series", s));
     }
 
     /**
-     * True when the given series is pursuit (top-level {@code raceType == 1}).
-     * Returns false on any error so a missing or unreadable series doesn't
-     * break the Series page.
-     *
-     * <p>Fast path: {@code GET /series/{id}} carries {@code raceType}
-     * directly — one round-trip and we're done. Race officers (adminLevel=1)
-     * are forbidden from that endpoint, so we fall back to the older path
-     * (race list + first race's status — two round-trips) on any failure.
-     * Either way we only ever look at the FIRST race in the series; a
-     * club's series is overwhelmingly homogeneous (Twilight = all pursuit,
-     * Championship = all scratch), and {@code divisionTiming[].raceType}
-     * on the race-list summaries is always 0 so it can't substitute.
+     * Per-series algorithm settings, falling back to the yaml defaults. The
+     * response also carries the defaults so the Configure form can offer
+     * "restore defaults" without a second round trip.
      */
-    private boolean seriesHasPursuit(String token, int seriesId)
-    {
-        Boolean cached = pursuitCache.get(seriesId);
-        if (cached != null)
-            return cached;
-        boolean result = computeSeriesHasPursuit(token, seriesId);
-        pursuitCache.put(seriesId, result);
-        return result;
-    }
-
-    private boolean computeSeriesHasPursuit(String token, int seriesId)
-    {
-        try
-        {
-            JsonNode detail = sailsys.fetchSeriesDetail(token, seriesId);
-            if (detail != null && detail.has("raceType") && !detail.path("raceType").isNull())
-                return detail.path("raceType").asInt(0) == 1;
-        }
-        catch (Exception e)
-        {
-            LOG.debug("fetchSeriesDetail failed for series {} ({}); falling back to race-list path",
-                seriesId, e.toString());
-        }
-        try
-        {
-            JsonNode races = sailsys.fetchSeriesRaces(token, seriesId);
-            if (races == null || !races.isArray() || races.isEmpty())
-                return false;
-            int firstRaceId = races.get(0).path("id").asInt(0);
-            if (firstRaceId == 0)
-                return false;
-            JsonNode status = sailsys.fetchRaceStatus(token, firstRaceId);
-            return status.path("raceType").asInt(0) == 1;
-        }
-        catch (Exception e)
-        {
-            LOG.warn("Couldn't determine pursuit status for series {}: {}",
-                seriesId, e.toString());
-            return false;
-        }
-    }
-
-    /**
-     * GET /api/series/{id}/config — return the Jinx algorithm settings for
-     * this series. Falls back to the yaml defaults when nothing is saved.
-     * Response also carries the defaults block so the UI can offer a
-     * "restore defaults" action without a second round-trip.
-     */
-    private void handleGetSeriesConfig(HttpServletResponse resp, String seriesId) throws Exception
+    private Map<String, Object> seriesConfigBody(String seriesId)
     {
         JinxConfig.Algorithm saved = store.seriesConfig(seriesId);
         JinxConfig.Algorithm defaults = config.algorithm();
@@ -899,27 +345,705 @@ public class ApiServlet extends HttpServlet
         out.put("isCustom", saved != null);
         out.put("config", algorithmMap(saved != null ? saved : defaults));
         out.put("defaults", algorithmMap(defaults));
-        writeJson(resp, out);
+        return out;
+    }
+
+    private void handleSaveSeriesConfig(HttpServletRequest req, HttpServletResponse resp,
+                                        String seriesId) throws Exception
+    {
+        requireAdmin(resp);
+        // The compact constructor fills in a safe default for every missing or
+        // invalid field, so a partial payload is fine.
+        JinxConfig.Algorithm posted =
+            MAPPER.readValue(req.getInputStream(), JinxConfig.Algorithm.class);
+        store.putSeriesConfig(seriesId, posted);
+        writeJson(resp, mapOf("ok", true, "seriesId", seriesId,
+            "isCustom", true, "config", algorithmMap(posted)));
+    }
+
+    // --- Series roster -------------------------------------------------------
+
+    /**
+     * The roster joined to the register, so the page can render sail numbers
+     * and names without a second call. A roster entry whose boat has been
+     * removed from the register is dropped rather than rendered blank.
+     */
+    private Map<String, Object> rosterBody(String seriesId)
+    {
+        Roster roster = store.roster(seriesId);
+        Map<String, Boat> boats = store.boats();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        if (roster != null)
+        {
+            for (Roster.Entry e : roster.entries())
+            {
+                Boat b = boats.get(e.boatId());
+                if (b == null)
+                    continue;
+                rows.add(mapOf("boatId", b.id(), "sailNumber", b.sailNumber(),
+                    "name", b.name(), "division", b.division(),
+                    "spinnaker", b.spinnaker(), "startingTcf", e.startingTcf()));
+            }
+        }
+        return mapOf("seriesId", seriesId, "entries", rows);
+    }
+
+    private void handleSaveRoster(HttpServletRequest req, HttpServletResponse resp,
+                                  String seriesId) throws Exception
+    {
+        requireAdmin(resp);
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        JsonNode entries = body.isArray() ? body : body.path("entries");
+        List<Roster.Entry> out = new ArrayList<>();
+        for (JsonNode e : entries)
+        {
+            String boatId = text(e, "boatId");
+            if (isBlank(boatId))
+                continue;
+            Boat boat = store.boats().get(boatId);
+            // Default a missing starting TCF to the register's seed value, so
+            // adding a boat to a roster is one click.
+            double tcf = e.hasNonNull("startingTcf")
+                ? e.path("startingTcf").asDouble()
+                : (boat != null ? boat.currentTcf() : 1.0);
+            out.add(new Roster.Entry(boatId, tcf));
+        }
+        store.putRoster(new Roster(seriesId, out));
+        writeJson(resp, mapOf("ok", true, "seriesId", seriesId, "saved", out.size()));
+    }
+
+    // --- Races ---------------------------------------------------------------
+
+    private List<Map<String, Object>> allRaces()
+    {
+        Map<String, Series> series = store.series();
+        return store.races().values().stream()
+            .sorted(Comparator.comparing(Race::date,
+                    Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparingInt(Race::number))
+            .map(r -> {
+                Series s = series.get(r.seriesId());
+                Map<String, Object> row = new LinkedHashMap<>(raceMap(r));
+                row.put("seriesName", s == null ? null : s.name());
+                row.put("locked", isLocked(r.id()));
+                row.put("hasResults", store.raceTimes(r.id()) != null);
+                return row;
+            })
+            .toList();
+    }
+
+    private void handleSaveRace(HttpServletRequest req, HttpServletResponse resp) throws Exception
+    {
+        requireAdmin(resp);
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        String seriesId = text(body, "seriesId");
+        if (isBlank(seriesId) || !store.series().containsKey(seriesId))
+        {
+            badRequest(resp, "a known seriesId is required");
+            return;
+        }
+        String id = text(body, "id");
+        if (isBlank(id))
+            id = mintId("r");
+
+        JinxConfig.Algorithm alg = algorithmFor(seriesId);
+        Race race = new Race(
+            id,
+            seriesId,
+            body.path("number").asInt(nextRaceNumber(seriesId)),
+            text(body, "name"),
+            parseDate(text(body, "date")),
+            parseTime(text(body, "earliestStart"), LocalTime.parse(alg.earliestStart())),
+            body.hasNonNull("targetElapsedMinutes")
+                ? body.path("targetElapsedMinutes").asInt() : alg.idealRaceDuration(),
+            body.hasNonNull("courseLengthNm") ? body.path("courseLengthNm").asDouble() : null,
+            body.path("abandoned").asBoolean(false));
+        store.putRace(race);
+        writeJson(resp, mapOf("ok", true, "race", raceMap(race)));
+    }
+
+    private int nextRaceNumber(String seriesId)
+    {
+        return store.racesInSeries(seriesId).stream()
+            .mapToInt(Race::number).max().orElse(0) + 1;
     }
 
     /**
-     * POST /api/series/{id}/config — persist a per-series Jinx algorithm
-     * override. The body shape matches the {@code config} block returned by
-     * the GET endpoint. Jackson's canonical-constructor pass through
-     * {@link JinxConfig.Algorithm} fills in safe defaults for any missing
-     * or invalid field, so callers can post a partial payload.
+     * Everything the race page needs, in one response: the race, its series,
+     * the entrants (with their TCFs), the captured times, the published start
+     * sheet, any saved adjustments, and the derived lock state.
+     *
+     * <p>One call rather than the eight the SailSys-era page made. There is no
+     * longer a slow remote to parallelise around — it is all one local read.
      */
-    private void handleSaveSeriesConfig(HttpServletRequest req, HttpServletResponse resp, String seriesId)
+    private void writeRaceBundle(HttpServletResponse resp, String raceId) throws Exception
+    {
+        Race race = store.races().get(raceId);
+        if (race == null)
+        {
+            resp.setStatus(404);
+            writeJson(resp, mapOf("error", "no such race: " + raceId));
+            return;
+        }
+        Series series = store.series().get(race.seriesId());
+        RaceEntrants entrants = store.entrants(raceId);
+        List<Adjustment> adjustments = store.adjustments(raceId);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("race", raceMap(race));
+        out.put("seriesName", series == null ? null : series.name());
+        out.put("algorithm", algorithmMap(algorithmFor(race.seriesId())));
+        out.put("entrants", entrants);
+        out.put("startSheet", store.startSheet(raceId));
+        out.put("times", store.raceTimes(raceId));
+        out.put("adjustments", adjustments);
+        // The lifecycle is derived, never stored: saved adjustments lock the
+        // race, and Unlock is deleting them. See Race's javadoc.
+        out.put("locked", !adjustments.isEmpty());
+        out.put("role", currentRole(null));
+        Optional<Race> next = store.nextRaceInSeries(raceId);
+        out.put("nextRaceId", next.map(Race::id).orElse(null));
+        out.put("previousRaceId", previousRaceId(race));
+        writeJson(resp, out);
+    }
+
+    private String previousRaceId(Race race)
+    {
+        Race best = null;
+        for (Race r : store.racesInSeries(race.seriesId()))
+        {
+            if (r.number() < race.number() && (best == null || r.number() > best.number()))
+                best = r;
+        }
+        return best == null ? null : best.id();
+    }
+
+    private boolean isLocked(String raceId)
+    {
+        return !store.adjustments(raceId).isEmpty();
+    }
+
+    // --- Entrants ------------------------------------------------------------
+
+    /**
+     * Replace a race's entrant list. The client sends the whole list — it is
+     * forty rows — which keeps add, remove, and TCF edit as one operation and
+     * makes it impossible to drop the TCFs of boats that weren't being edited.
+     *
+     * <p>A row with no {@code boatId} is a one-off visitor. A row whose
+     * {@code boatId} is not in the register is rejected rather than silently
+     * turned into a one-off.
+     */
+    private void handleSaveEntrants(HttpServletRequest req, HttpServletResponse resp, String raceId)
         throws Exception
     {
-        JinxConfig.Algorithm posted = MAPPER.readValue(req.getInputStream(), JinxConfig.Algorithm.class);
-        store.putSeriesConfig(seriesId, posted);
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("ok", true);
-        out.put("seriesId", seriesId);
-        out.put("isCustom", true);
-        out.put("config", algorithmMap(posted));
-        writeJson(resp, out);
+        if (rejectIfLocked(resp, raceId))
+            return;
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        JsonNode rows = body.isArray() ? body : body.path("entrants");
+        if (!rows.isArray())
+        {
+            badRequest(resp, "entrants array required");
+            return;
+        }
+
+        List<Entrant> entrants = new ArrayList<>();
+        for (JsonNode row : rows)
+        {
+            String boatId = text(row, "boatId");
+            double tcf = row.path("tcf").asDouble(1.0);
+            if (isBlank(boatId))
+            {
+                entrants.add(Entrant.oneOff(text(row, "name"), text(row, "sailNumber"), tcf));
+                continue;
+            }
+            Boat boat = store.boats().get(boatId);
+            if (boat == null)
+            {
+                badRequest(resp, "unknown boat: " + boatId);
+                return;
+            }
+            Entrant.EntryType type = entryTypeOf(row.path("entryType"),
+                boat.casual() ? Entrant.EntryType.CASUAL : Entrant.EntryType.ROSTER);
+            entrants.add(Entrant.fromBoat(boat, tcf, type));
+        }
+
+        RaceEntrants existing = store.entrants(raceId);
+        RaceEntrants saved = new RaceEntrants(raceId, Instant.now(),
+            tcfSourceOf(body.path("tcfSource"), existing),
+            existing == null ? null : existing.sourceRaceId(),
+            existing == null ? null : existing.sourceRaceNumber(),
+            entrants);
+        store.putEntrants(saved);
+        writeJson(resp, mapOf("ok", true, "raceId", raceId, "entrants", saved));
+    }
+
+    /**
+     * Seed a race's entrants. The first race of a series takes the roster and
+     * its starting TCFs; any later race carries forward the previous race's
+     * entrants at their current TCFs, which is what the fleet actually is until
+     * handicaps are processed.
+     *
+     * <p>Refuses to overwrite an existing list — re-seeding a race that already
+     * has times captured against it would be destructive, and the RO can add or
+     * remove individual boats instead.
+     */
+    private void handleSeedEntrants(HttpServletResponse resp, String raceId) throws Exception
+    {
+        Race race = store.races().get(raceId);
+        if (race == null)
+        {
+            resp.setStatus(404);
+            writeJson(resp, mapOf("error", "no such race: " + raceId));
+            return;
+        }
+        RaceEntrants existing = store.entrants(raceId);
+        if (existing != null && !existing.entrants().isEmpty())
+        {
+            badRequest(resp, "race already has entrants — add or remove boats instead");
+            return;
+        }
+
+        RaceEntrants seeded = seedFromPreviousRace(race)
+            .orElseGet(() -> seedFromRoster(race));
+        store.putEntrants(seeded);
+        writeJson(resp, mapOf("ok", true, "raceId", raceId, "entrants", seeded));
+    }
+
+    private Optional<RaceEntrants> seedFromPreviousRace(Race race)
+    {
+        String prevId = previousRaceId(race);
+        if (prevId == null)
+            return Optional.empty();
+        RaceEntrants prev = store.entrants(prevId);
+        if (prev == null || prev.entrants().isEmpty())
+            return Optional.empty();
+        Race prevRace = store.races().get(prevId);
+        // One-offs don't carry forward: they had no register boat to carry.
+        List<Entrant> carried = prev.entrants().stream()
+            .filter(Entrant::scoresHandicap)
+            .toList();
+        return Optional.of(new RaceEntrants(race.id(), Instant.now(),
+            RaceEntrants.TcfSource.CARRIED_FORWARD, prevId,
+            prevRace == null ? null : prevRace.number(), carried));
+    }
+
+    private RaceEntrants seedFromRoster(Race race)
+    {
+        Roster roster = store.roster(race.seriesId());
+        List<Entrant> entrants = new ArrayList<>();
+        if (roster != null)
+        {
+            Map<String, Boat> boats = store.boats();
+            for (Roster.Entry e : roster.entries())
+            {
+                Boat b = boats.get(e.boatId());
+                if (b != null && b.active())
+                    entrants.add(Entrant.fromBoat(b, e.startingTcf()));
+            }
+        }
+        return new RaceEntrants(race.id(), Instant.now(),
+            RaceEntrants.TcfSource.ROSTER, null, null, entrants);
+    }
+
+    // --- Start times ---------------------------------------------------------
+
+    /**
+     * Compute and publish the pursuit start sheet from the race's entrants and
+     * their TCFs — wiki §4. This is the work SailSys used to do after a timing
+     * PUT; it is now a local calculation that returns immediately.
+     *
+     * <p>Body may override {@code targetElapsedMinutes} and
+     * {@code earliestStart}; both default to the race's own values. The sheet
+     * is persisted because it gets published to the fleet: once boats know
+     * their gun, a later TCF edit must not silently move it.
+     */
+    private void handleComputeStartTimes(HttpServletRequest req, HttpServletResponse resp,
+                                         String raceId) throws Exception
+    {
+        Race race = store.races().get(raceId);
+        if (race == null)
+        {
+            resp.setStatus(404);
+            writeJson(resp, mapOf("error", "no such race: " + raceId));
+            return;
+        }
+        RaceEntrants entrants = store.entrants(raceId);
+        if (entrants == null || entrants.entrants().isEmpty())
+        {
+            badRequest(resp, "race has no entrants — seed them first");
+            return;
+        }
+
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        JinxConfig.Algorithm alg = algorithmFor(race.seriesId());
+        int target = body.hasNonNull("targetElapsedMinutes")
+            ? body.path("targetElapsedMinutes").asInt()
+            : (race.targetElapsedMinutes() != null
+                ? race.targetElapsedMinutes() : alg.idealRaceDuration());
+        LocalTime earliest = parseTime(text(body, "earliestStart"),
+            race.earliestStart() != null
+                ? race.earliestStart() : LocalTime.parse(alg.earliestStart()));
+
+        // The engine works in Boats. Entrants are not register boats — a
+        // one-off has no register entry at all — so hand it the two fields it
+        // actually reads: the id it should key the answer by, and the TCF.
+        List<Boat> forEngine = new ArrayList<>();
+        for (int i = 0; i < entrants.entrants().size(); i++)
+        {
+            Entrant e = entrants.entrants().get(i);
+            forEngine.add(new Boat(entrantKey(e, i), e.sailNumber(), e.name(),
+                e.division(), e.spinnaker(), e.tcf(), false, true, null));
+        }
+        Race forEngineRace = new Race(race.id(), race.seriesId(), race.number(), race.name(),
+            race.date(), earliest, target, race.courseLengthNm(), race.abandoned());
+
+        List<StartTime> starts = new ArrayList<>(engine.computeStartTimes(forEngine, forEngineRace));
+        // Slowest boat first: the order they start in, and the order the
+        // start-offset report prints.
+        starts.sort(Comparator.comparing(StartTime::startTime));
+
+        StartSheet sheet = new StartSheet(raceId, Instant.now(), target, earliest, starts);
+        store.putStartSheet(sheet);
+
+        // Persist the inputs on the race too, so reopening it shows what the
+        // published sheet was actually computed from.
+        store.putRace(new Race(race.id(), race.seriesId(), race.number(), race.name(),
+            race.date(), earliest, target, race.courseLengthNm(), race.abandoned()));
+
+        writeJson(resp, mapOf("ok", true, "raceId", raceId, "startSheet", sheet));
+    }
+
+    /**
+     * The key a start time is reported against. Register boats use their boat
+     * id; one-offs have none, so they get a positional key that is stable for
+     * as long as the entrant list is.
+     */
+    private static String entrantKey(Entrant e, int index)
+    {
+        return e.boatId() != null ? e.boatId() : ("one-off-" + index);
+    }
+
+    // --- Captured times ------------------------------------------------------
+
+    private void handleSaveRaceTimes(HttpServletRequest req, HttpServletResponse resp, String raceId)
+        throws Exception
+    {
+        if (rejectIfLocked(resp, raceId))
+            return;
+        RaceTimes incoming = MAPPER.readValue(req.getInputStream(), RaceTimes.class);
+        // Trust the URL's raceId over whatever the body claimed.
+        store.putRaceTimes(raceId, new RaceTimes(raceId, incoming.boatOrder(),
+            incoming.dutyBoatId(), incoming.times()));
+        writeJson(resp, mapOf("ok", true, "raceId", raceId));
+    }
+
+    // --- Course planning -----------------------------------------------------
+
+    /**
+     * Turn a target race duration into a course length: a boat sails
+     * {@code TCF × V₀ × hours} nautical miles, and the course is sized to the
+     * slowest boat in the fleet so nobody is still out there after dark.
+     *
+     * <p>Body: {@code {targetElapsedMinutes?, slowestTcf?}}. Both default from
+     * the race and its entrants. When the series is configured with
+     * {@code limitBySunset}, the duration is capped so the slowest boat is
+     * expected to finish by sunset on the race date.
+     */
+    private void handleCoursePlan(HttpServletRequest req, HttpServletResponse resp, String raceId)
+        throws Exception
+    {
+        Race race = store.races().get(raceId);
+        if (race == null)
+        {
+            resp.setStatus(404);
+            writeJson(resp, mapOf("error", "no such race: " + raceId));
+            return;
+        }
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        JinxConfig.Algorithm alg = algorithmFor(race.seriesId());
+
+        int duration = body.hasNonNull("targetElapsedMinutes")
+            ? body.path("targetElapsedMinutes").asInt()
+            : (race.targetElapsedMinutes() != null
+                ? race.targetElapsedMinutes() : alg.idealRaceDuration());
+        if (duration <= 0)
+            duration = alg.idealRaceDuration();
+
+        double slowestTcf = body.hasNonNull("slowestTcf")
+            ? body.path("slowestTcf").asDouble()
+            : slowestEntrantTcf(raceId);
+
+        LocalTime earliest = race.earliestStart() != null
+            ? race.earliestStart() : LocalTime.parse(alg.earliestStart());
+        LocalTime sunset = sunsetFor(alg, race);
+
+        CoursePlan plan = computeCoursePlan(alg.v0knots(), duration,
+            alg.limitBySunset(), earliest, sunset, slowestTcf);
+
+        writeJson(resp, mapOf(
+            "raceId", raceId,
+            "requestedDurationMinutes", duration,
+            "effectiveDurationMinutes", plan.effectiveDurationMinutes(),
+            "limitedBySunset", plan.limitedBySunset(),
+            "sunsetLocal", sunset == null ? null
+                : String.format("%02d:%02d", sunset.getHour(), sunset.getMinute()),
+            "v0knots", alg.v0knots(),
+            "slowestTcf", slowestTcf,
+            "courseLengthNm", plan.courseLengthNm()));
+    }
+
+    private double slowestEntrantTcf(String raceId)
+    {
+        RaceEntrants e = store.entrants(raceId);
+        if (e == null)
+            return 1.0;
+        return e.entrants().stream().mapToDouble(Entrant::tcf).min().orElse(1.0);
+    }
+
+    private LocalTime sunsetFor(JinxConfig.Algorithm alg, Race race)
+    {
+        if (!alg.limitBySunset() || race.date() == null)
+            return null;
+        try
+        {
+            return SolarTimes.sunsetLocal(alg.latitude(), alg.longitude(), race.date(),
+                ZoneId.of(config.club().timezone()));
+        }
+        catch (Exception e)
+        {
+            LOG.warn("Sunset computation failed for race {}: {}", race.id(), e.toString());
+            return null;
+        }
+    }
+
+    /** The (possibly sunset-capped) duration and the course length it implies. */
+    record CoursePlan(int effectiveDurationMinutes, boolean limitedBySunset, double courseLengthNm)
+    {
+    }
+
+    /**
+     * Pure course-length calculation. A boat's predicted speed is
+     * {@code TCF × v0Knots}, so over {@code t} hours it sails
+     * {@code TCF × v0 × t} nm; the course is sized to {@code slowestTcf} and
+     * rounded to 0.1 nm.
+     *
+     * <p>When {@code limitBySunset} and a {@code sunset} are given, the
+     * duration is capped so {@code earliestStart + duration ≤ sunset}. If
+     * sunset is at or before {@code earliestStart} — an out-of-season date
+     * where it is already dark at the start — the cap still engages, clamped to
+     * zero and flagged, rather than silently doing nothing.
+     */
+    static CoursePlan computeCoursePlan(double v0Knots, int requestedDurationMinutes,
+                                        boolean limitBySunset, LocalTime earliestStart,
+                                        LocalTime sunset, double slowestTcf)
+    {
+        int effective = requestedDurationMinutes;
+        boolean limited = false;
+        if (limitBySunset && sunset != null && earliestStart != null)
+        {
+            long maxMinutes = java.time.Duration.between(earliestStart, sunset).toMinutes();
+            if (effective > maxMinutes)
+            {
+                effective = (int)Math.max(0, maxMinutes);
+                limited = true;
+            }
+        }
+        double nm = slowestTcf * v0Knots * (effective / 60.0);
+        return new CoursePlan(effective, limited, Math.round(nm * 10.0) / 10.0);
+    }
+
+    // --- Handicaps -----------------------------------------------------------
+
+    /**
+     * Run the Jinx algorithm against a client-supplied snapshot of the race and
+     * return the adjustments. Computes only — nothing is written, so the admin
+     * can preview before committing.
+     *
+     * <p>The snapshot comes from the client rather than the store because the
+     * client is where the scoring primitives of wiki §5.1 live: effective
+     * start, OCS handling, scored elapsed, and the flag overrides the RO may
+     * have applied but not yet saved. Body:
+     * <pre>{@code
+     *   { "targetElapsedMinutes": 90,
+     *     "boats": [ { "boatId": "b-1", "currentTcf": 1.0,
+     *                  "status": "FIN", "elapsedMinutes": 85.0,
+     *                  "finishPosition": 1 }, ... ] }
+     * }</pre>
+     */
+    private void handleProcessHandicaps(HttpServletRequest req, HttpServletResponse resp,
+                                        String raceId) throws Exception
+    {
+        requireAdmin(resp);
+        Race race = store.races().get(raceId);
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        JinxConfig.Algorithm alg = algorithmFor(race == null ? null : race.seriesId());
+
+        int tTarget = body.path("targetElapsedMinutes").asInt(
+            race != null && race.targetElapsedMinutes() != null
+                ? race.targetElapsedMinutes() : alg.idealRaceDuration());
+
+        JsonNode boatsNode = body.path("boats");
+        if (!boatsNode.isArray() || boatsNode.isEmpty())
+        {
+            badRequest(resp, "boats array required");
+            return;
+        }
+
+        List<Boat> boats = new ArrayList<>(boatsNode.size());
+        Map<String, Result> results = new LinkedHashMap<>(boatsNode.size());
+        for (JsonNode b : boatsNode)
+        {
+            String boatId = text(b, "boatId");
+            if (isBlank(boatId))
+                continue;
+            double tcf = b.path("currentTcf").asDouble(1.0);
+            boats.add(new Boat(boatId, "", "", null, null, tcf, false, true, null));
+
+            FinishStatus status;
+            try
+            {
+                status = FinishStatus.valueOf(b.path("status").asText("DNC").toUpperCase());
+            }
+            catch (IllegalArgumentException ex)
+            {
+                status = FinishStatus.DNC;
+            }
+            // The engine reads elapsed as finish − actualStart. We only have
+            // the precomputed elapsed minutes here, so encode it as midnight
+            // plus that many seconds and let the Duration maths come out right.
+            LocalTime startT = LocalTime.MIDNIGHT;
+            LocalTime finishT = null;
+            if (status == FinishStatus.FIN && b.has("elapsedMinutes"))
+                finishT = startT.plusSeconds(Math.round(b.path("elapsedMinutes").asDouble(0) * 60.0));
+
+            Integer finishPosition = b.hasNonNull("finishPosition")
+                ? b.path("finishPosition").asInt() : null;
+            results.put(boatId, new Result(boatId, status, startT, finishT, null, finishPosition));
+        }
+
+        Race forEngine = new Race(raceId, race == null ? null : race.seriesId(), 0, "",
+            null, null, tTarget, null, false);
+        List<Adjustment> adjustments =
+            new PursuitHandicapEngine(alg).processResults(boats, forEngine, results);
+
+        writeJson(resp, mapOf(
+            "raceId", raceId,
+            "targetElapsedMinutes", tTarget,
+            "algorithm", algorithmMap(alg),
+            "adjustments", adjustments));
+    }
+
+    /**
+     * Commit the computed adjustments and carry the new TCFs into the next
+     * race. Two writes:
+     * <ol>
+     *   <li>the adjustments themselves, which also lock this race, and</li>
+     *   <li>the next race's entrant list, seeded from this race's entrants at
+     *       their {@link Adjustment#newTcf()}.</li>
+     * </ol>
+     *
+     * <p>Boats that did not score a handicap here (one-offs) are not carried.
+     * If this is the last race in the series there is nothing to carry to, and
+     * only the first write happens.
+     */
+    private void handleSaveHandicaps(HttpServletRequest req, HttpServletResponse resp, String raceId)
+        throws Exception
+    {
+        requireAdmin(resp);
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        JsonNode arr = body.isArray() ? body : body.path("adjustments");
+        if (!arr.isArray() || arr.isEmpty())
+        {
+            badRequest(resp, "adjustments array required");
+            return;
+        }
+        List<Adjustment> adjustments =
+            MAPPER.convertValue(arr, new TypeReference<List<Adjustment>>() { });
+        store.putAdjustments(raceId, adjustments);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("ok", true);
+        result.put("raceId", raceId);
+        result.put("saved", adjustments.size());
+
+        Race race = store.races().get(raceId);
+        Optional<Race> next = store.nextRaceInSeries(raceId);
+        if (next.isPresent())
+        {
+            RaceEntrants carried = carryForward(race, next.get(), adjustments);
+            store.putEntrants(carried);
+            result.put("nextRaceId", next.get().id());
+            result.put("carriedEntrants", carried.entrants().size());
+        }
+
+        store.appendAudit(new AuditEntry(Instant.now(), raceId, "save-handicaps",
+            0.0, adjustments.stream().mapToDouble(Adjustment::penaltyMinutes).sum(),
+            adjustments,
+            next.map(r -> "carried to race " + r.number()).orElse("last race in series")));
+
+        writeJson(resp, result);
+    }
+
+    /**
+     * Build the next race's entrants from this race's entrants and the computed
+     * adjustments. Identity comes from this race — the adjustments only carry a
+     * boat id and a TCF.
+     */
+    private RaceEntrants carryForward(Race race, Race next, List<Adjustment> adjustments)
+    {
+        Map<String, Double> newTcfs = new LinkedHashMap<>();
+        for (Adjustment a : adjustments)
+            newTcfs.put(a.boatId(), a.newTcf());
+
+        RaceEntrants current = store.entrants(race == null ? "" : race.id());
+        List<Entrant> carried = new ArrayList<>();
+        if (current != null)
+        {
+            for (Entrant e : current.entrants())
+            {
+                if (!e.scoresHandicap())
+                    continue;
+                Double tcf = newTcfs.get(e.boatId());
+                carried.add(new Entrant(e.boatId(), e.sailNumber(), e.name(), e.division(),
+                    e.spinnaker(), tcf != null ? tcf : e.tcf(), e.entryType()));
+            }
+        }
+        return new RaceEntrants(next.id(), Instant.now(),
+            RaceEntrants.TcfSource.CARRIED_FORWARD,
+            race == null ? null : race.id(),
+            race == null ? null : race.number(),
+            carried);
+    }
+
+    /**
+     * Unlock a race: drop its saved adjustments so times and TCFs become
+     * editable again and the handicaps can be reprocessed.
+     *
+     * <p>The next race's carried-forward TCFs are deliberately left alone. They
+     * are corrected by re-running Save Handicaps, and silently rewriting a race
+     * the user did not ask about would be worse than leaving a stale value they
+     * can see.
+     */
+    private void handleUnlockRace(HttpServletRequest req, HttpServletResponse resp, String raceId)
+        throws Exception
+    {
+        requireAdmin(resp);
+        boolean removed = store.deleteAdjustments(raceId);
+        if (removed)
+        {
+            store.appendAudit(new AuditEntry(Instant.now(), raceId, "unlock",
+                0.0, 0.0, List.of(), "adjustments discarded for reprocessing"));
+        }
+        writeJson(resp, mapOf("ok", true, "raceId", raceId, "unlocked", removed));
+    }
+
+    // --- Helpers -------------------------------------------------------------
+
+    private JinxConfig.Algorithm algorithmFor(String seriesId)
+    {
+        JinxConfig.Algorithm saved = (seriesId == null) ? null : store.seriesConfig(seriesId);
+        return saved != null ? saved : config.algorithm();
     }
 
     private static Map<String, Object> algorithmMap(JinxConfig.Algorithm a)
@@ -936,1854 +1060,172 @@ public class ApiServlet extends HttpServlet
         return m;
     }
 
-    private void handleSeriesRaces(HttpServletRequest req, HttpServletResponse resp, int seriesId)
-        throws Exception
+    private static Map<String, Object> raceMap(Race r)
     {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", r.id());
+        m.put("seriesId", r.seriesId());
+        m.put("number", r.number());
+        m.put("name", r.name());
+        m.put("date", r.date() == null ? null : r.date().toString());
+        m.put("earliestStart", r.earliestStart() == null ? null : r.earliestStart().toString());
+        m.put("targetElapsedMinutes", r.targetElapsedMinutes());
+        m.put("courseLengthNm", r.courseLengthNm());
+        m.put("abandoned", r.abandoned());
+        return m;
+    }
 
-        JsonNode races = sailsys.fetchSeriesRaces(session.token(), seriesId);
-        // Status bundling removed — the client fetches /api/races/{id}/status
-        // in parallel and renders progressively. Bundling here would block
-        // the response on the slowest race's status (typically 300–800 ms ×
-        // N sequential, or 300–800 ms parallel) before the table can render.
-        // SailSys's per-series race summary doesn't carry seriesName, so we
-        // resolve it once via the club series list. This is what feeds the
-        // Series column + filter chip on the races page. Failure (e.g. a race
-        // officer who can't list series — shouldn't happen since the filtered
-        // route is admin-only, but be defensive) just leaves seriesName null
-        // and the client falls back to "id N".
-        String seriesName = null;
+    /**
+     * Refuse a mutation on a locked race. Times and entrants are frozen once
+     * the handicaps have been processed, because changing them would make the
+     * saved adjustments — and the next race's TCFs — a lie.
+     */
+    private boolean rejectIfLocked(HttpServletResponse resp, String raceId) throws IOException
+    {
+        if (!isLocked(raceId))
+            return false;
+        resp.setStatus(409);
+        writeJson(resp, mapOf("error",
+            "race is locked: its handicaps have been processed. Unlock it to make changes."));
+        return true;
+    }
+
+    /**
+     * Role gate. Currently always passes — see {@link #currentRole}. Kept at
+     * every call site that will need it so that turning authentication on is a
+     * change in one place rather than an audit of the whole servlet.
+     */
+    private void requireAdmin(HttpServletResponse resp) throws IOException
+    {
+        if (currentRole(null) != Role.ADMIN)
+        {
+            resp.setStatus(403);
+            writeJson(resp, mapOf("error", "admin required"));
+        }
+    }
+
+    /** Short, opaque, stable id. Prefixed so a store filename says what it is. */
+    private static String mintId(String prefix)
+    {
+        return prefix + "-" + UUID.randomUUID().toString().substring(0, 8);
+    }
+
+    private static String path(HttpServletRequest req)
+    {
+        String path = req.getPathInfo();
+        return path == null ? "/" : path;
+    }
+
+    private static String text(JsonNode node, String field)
+    {
+        JsonNode v = node.path(field);
+        return (v.isMissingNode() || v.isNull()) ? null : v.asText();
+    }
+
+    private static boolean isBlank(String s)
+    {
+        return s == null || s.isBlank();
+    }
+
+    private static Spinnaker spinnakerOf(JsonNode node)
+    {
+        if (node.isMissingNode() || node.isNull())
+            return Spinnaker.S;
         try
         {
-            for (org.mortbay.sailing.jinx.model.Series s :
-                sailsys.fetchClubSeries(session.token(), config.sailsys().clubId()))
-            {
-                if (s != null && s.id() == seriesId) { seriesName = s.name(); break; }
-            }
+            return Spinnaker.valueOf(node.asText().toUpperCase());
         }
-        catch (Exception e)
+        catch (IllegalArgumentException e)
         {
-            LOG.debug("Could not resolve seriesName for {}: {}", seriesId, e.toString());
+            return Spinnaker.S;
         }
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("seriesId", seriesId);
-        out.put("seriesName", seriesName);
-        out.put("races", races);
-        writeJson(resp, out);
+    }
+
+    private static Entrant.EntryType entryTypeOf(JsonNode node, Entrant.EntryType fallback)
+    {
+        if (node.isMissingNode() || node.isNull())
+            return fallback;
+        try
+        {
+            return Entrant.EntryType.valueOf(node.asText().toUpperCase());
+        }
+        catch (IllegalArgumentException e)
+        {
+            return fallback;
+        }
     }
 
     /**
-     * GET /api/races/current — paged current/upcoming races for the
-     * configured club. Used when the Races page is opened without a
-     * {@code ?seriesId=} filter (the only mode available to race officers,
-     * who lack permission to enumerate series). Returns only the races
-     * list; the client fetches per-race status progressively for fastest
-     * time-to-first-render.
+     * The source to stamp on a saved entrant list. An explicit value wins;
+     * otherwise a list that already existed is being edited, so it becomes a
+     * manual edit, and a brand new one is a roster seed.
      */
-    private void handleCurrentRaces(HttpServletRequest req, HttpServletResponse resp)
-        throws Exception
+    private static RaceEntrants.TcfSource tcfSourceOf(JsonNode node, RaceEntrants existing)
     {
-        SailSysSession session = currentSession(req);
-        if (session == null)
+        if (!node.isMissingNode() && !node.isNull())
         {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-
-        JsonNode races = sailsys.fetchCurrentRaces(session.token(), config.sailsys().clubId());
-        writeJson(resp, Map.of(
-            "clubId", config.sailsys().clubId(),
-            "races", races));
-    }
-
-
-    private void handleRaceEntrants(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        writeJson(resp, Map.of(
-            "raceId", raceId,
-            "entrants", sailsys.fetchRaceEntrants(session.token(), raceId)));
-    }
-
-    private void handleRaceStatus(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        JsonNode status = sailsys.fetchRaceStatus(session.token(), raceId);
-
-        // V₀ (speed of a 1.000-TCF boat) is configuration, resolved per series:
-        // the per-series override if one is saved, else the system default. The
-        // race page uses it to size courses from a target duration.
-        String seriesId = (status != null && status.hasNonNull("seriesId"))
-            ? status.get("seriesId").asText() : null;
-        JinxConfig.Algorithm alg = (seriesId != null) ? store.seriesConfig(seriesId) : null;
-        if (alg == null) alg = config.algorithm();
-
-        writeJson(resp, Map.of(
-            "raceId", raceId,
-            "v0knots", alg.v0knots(),
-            "status", status));
-    }
-
-    /**
-     * Bulk MYC TCF update for the active race. Body: {@code {updates:[{boatId,
-     * value},...]}}. Iterates per-boat with a 300ms gap (per
-     * {@code sailsys-api-reference.md} §8 — writes must not be parallelised
-     * and a 200-500ms cushion is recommended). Per-update failures are
-     * captured rather than fail-fast so the UI can show exactly which boats
-     * went through and which need a retry.
-     */
-    private void handleSaveTcfs(HttpServletRequest req, HttpServletResponse resp, int seriesId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        JsonNode updates = body.path("updates");
-        if (!updates.isArray() || updates.isEmpty())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "updates array required"));
-            return;
-        }
-
-        List<Map<String, Object>> results = new ArrayList<>();
-        boolean allOk = true;
-        boolean first = true;
-        for (JsonNode u : updates)
-        {
-            if (!first) Thread.sleep(300L);
-            first = false;
-            int boatId = u.path("boatId").asInt();
-            double value = u.path("value").asDouble();
-            // spinnakerType must match the existing handicap row — see
-            // SailSysClient.updateHandicap javadoc. The client reads it from
-            // the entrants payload; default to 1 (the observed MYC TCF value)
-            // if not provided so the call has a sensible fallback.
-            int spinnakerType = u.path("spinnakerType").isMissingNode() || u.path("spinnakerType").isNull()
-                ? 1 : u.path("spinnakerType").asInt();
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("boatId", boatId);
-            row.put("value", value);
-            row.put("spinnakerType", spinnakerType);
             try
             {
-                sailsys.updateHandicap(session.token(), seriesId, boatId, value, spinnakerType);
-                row.put("ok", true);
+                return RaceEntrants.TcfSource.valueOf(node.asText().toUpperCase());
             }
-            catch (Exception e)
+            catch (IllegalArgumentException ignored)
             {
-                LOG.warn("TCF update failed for boat {} in series {}: {}",
-                    boatId, seriesId, e.toString());
-                row.put("ok", false);
-                row.put("error", e.getMessage());
-                allOk = false;
-            }
-            results.add(row);
-        }
-
-        writeJson(resp, Map.of(
-            "ok", allOk,
-            "seriesId", seriesId,
-            "results", results));
-    }
-
-    /**
-     * Push the RO-captured race results (came / finish / flags) to SailSys.
-     *
-     * <p>Request body:
-     * <pre>
-     * {
-     *   "boats": {
-     *     "767": { "came": true, "finish": "18:31:00", "flags": ["OCS"] },
-     *     "770": { "came": false, "finish": null, "flags": ["DNC"] },
-     *     ...
-     *   }
-     * }
-     * </pre>
-     *
-     * <p>Per HAR-5 the SailSys flow is:
-     * <ol>
-     *   <li>GET race status — extract {@code resultSaveToken} (a monotonic
-     *       version counter) and {@code dateTime} (race date YYYY-MM-DD).</li>
-     *   <li>GET /races/{raceId}/results/finishers — full per-boat template
-     *       carrying all the fields SailSys insists on echoing back.</li>
-     *   <li>For each unique divisionId in the template, GET the penalty
-     *       catalogue; build a lookup keyed by short name (DNC/DNF/OCS/...).</li>
-     *   <li>Mutate the template in-place from the request body:
-     *       {@code startedRace = came}; {@code finishTime} from
-     *       {@code raceDate + "T" + finish + ".000"} when both came and finish
-     *       are present; {@code penalties} = list of penalty defs matching the
-     *       flags. AVG is intentionally not pushed — SailSys has no AVG
-     *       penalty; duty boat just lands as a non-starter.</li>
-     *   <li>PUT starters with the current saveToken, capture the new
-     *       resultSaveToken from the response.</li>
-     *   <li>PUT finishers with the bumped saveToken.</li>
-     * </ol>
-     */
-    private void handlePushResults(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        JsonNode boats = body.path("boats");
-        if (!boats.isObject())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "boats object required"));
-            return;
-        }
-
-        String token = session.token();
-
-        // 1. Status — for resultSaveToken + race date.
-        JsonNode status = sailsys.fetchRaceStatus(token, raceId);
-        int saveToken = status.path("resultSaveToken").asInt(0);
-        String raceDate = status.path("dateTime").asText("");
-        if (raceDate.length() >= 10) raceDate = raceDate.substring(0, 10);
-        else raceDate = java.time.LocalDate.now().toString();
-
-
-        // 2. Template — every entered boat with the full echo-back fields.
-        //    Source from /results/starters: it returns every boat regardless
-        //    of startedRace state, while /results/finishers can come back
-        //    empty after a complete wipe (which would silently make this
-        //    whole flow a no-op). If /starters is also empty (race never
-        //    had results, or SailSys garbage-collected the records), fall
-        //    back to constructing the template from /entrants.
-        JsonNode startersNode = sailsys.fetchRaceStarters(token, raceId);
-        ArrayNode template;
-        if (startersNode.isArray() && startersNode.size() > 0)
-        {
-            template = (ArrayNode) startersNode;
-        }
-        else
-        {
-            template = buildTemplateFromEntrants(
-                sailsys.fetchRaceEntrants(token, raceId));
-            if (template.isEmpty())
-            {
-                resp.setStatus(502);
-                writeJson(resp, Map.of("error",
-                    "race has no entrants and no result template — cannot save"));
-                return;
+                // fall through to the derived answer
             }
         }
-
-        // 3. Penalty catalogue per division. Cached so we don't refetch for
-        //    every boat in the same division.
-        Map<Integer, Map<String, JsonNode>> penaltiesByDivision = new HashMap<>();
-        for (JsonNode entry : template)
-        {
-            int divisionId = entry.path("divisionId").asInt();
-            if (divisionId == 0 || penaltiesByDivision.containsKey(divisionId)) continue;
-            JsonNode penList = sailsys.fetchDivisionPenalties(token, divisionId);
-            Map<String, JsonNode> byShort = new LinkedHashMap<>();
-            if (penList.isArray())
-            {
-                for (JsonNode p : penList)
-                    byShort.put(p.path("definitionShortName").asText(), p);
-            }
-            penaltiesByDivision.put(divisionId, byShort);
-        }
-
-        // 4. Mutate the template.
-        for (JsonNode entry : template)
-        {
-            if (!(entry instanceof ObjectNode obj)) continue;
-            String boatIdStr = String.valueOf(obj.path("boatId").asInt());
-            JsonNode bs = boats.path(boatIdStr);
-            if (bs.isMissingNode())
-                continue; // boat absent from the client payload — leave untouched
-
-            boolean came = bs.path("came").asBoolean(false);
-            obj.put("startedRace", came);
-
-            // SailSys requires a boat to be a starter before it can be a
-            // finisher. We satisfy that two ways:
-            //   1. Order — starters PUT runs before the finishers PUT below
-            //      (and resultSaveToken chains, so the starter flag is
-            //      committed before we attempt to record a finish).
-            //   2. Filter — finishTime is ONLY set here when came=true. A
-            //      non-starter therefore goes to SailSys with finishTime=null,
-            //      so even if the order were reversed by accident, SailSys
-            //      would never see a finish on a non-starter.
-            String finish = bs.path("finish").isNull() ? null : bs.path("finish").asText(null);
-            if (came && finish != null && !finish.isEmpty())
-            {
-                obj.put("finishTime", raceDate + "T" + finish + ".000");
-                obj.put("finishDate", raceDate + "T00:00:00.000");
-            }
-            else
-            {
-                obj.putNull("finishTime");
-                // SailSys leaves finishDate populated even when finishTime is
-                // null — match that to avoid round-trip drift.
-                obj.put("finishDate", raceDate + "T00:00:00.000");
-            }
-
-            ArrayNode penalties = MAPPER.createArrayNode();
-            Map<String, JsonNode> defs = penaltiesByDivision.get(obj.path("divisionId").asInt());
-            if (bs.path("flags").isArray())
-            {
-                for (JsonNode flag : bs.path("flags"))
-                {
-                    String flagName = flag.asText();
-                    if ("AVG".equals(flagName))
-                    {
-                        // SailSys represents "give this boat average points"
-                        // (i.e. the duty boat) as a single-field penalty
-                        // stub: {"averagePoints": true}. No definitionId,
-                        // no shortname. Verified from HAR-11.
-                        ObjectNode avgPen = MAPPER.createObjectNode();
-                        avgPen.put("averagePoints", true);
-                        penalties.add(avgPen);
-                        continue;
-                    }
-                    if (defs == null) continue;
-                    JsonNode penDef = defs.get(flagName);
-                    if (penDef != null) penalties.add(penDef);
-                    // Other unknown flags are silently dropped.
-                }
-            }
-            obj.set("penalties", penalties);
-        }
-
-        // 5a. Pre-clear pass — SailSys rejects PUT starters when a boat
-        //     transitions startedRace=true→false while its finishTime is
-        //     still set ("you can't unstart it"). To get out of that bind,
-        //     send a finishers PUT first that clears finishTime + penalties
-        //     ONLY for boats being un-started. We build it from a fresh
-        //     fetch (NOT a copy of the mutated `template`) so unrelated
-        //     boats aren't pre-mutated. Skipped entirely when no boat is
-        //     being un-started, so the common path stays at two PUTs.
-        ArrayNode preTemplate;
-        JsonNode preFetch = sailsys.fetchRaceStarters(token, raceId);
-        if (preFetch.isArray() && preFetch.size() > 0)
-            preTemplate = (ArrayNode) preFetch;
-        else
-            preTemplate = MAPPER.createArrayNode(); // nothing to pre-clear
-        boolean anyBeingUnstarted = false;
-        for (JsonNode entry : preTemplate)
-        {
-            if (!(entry instanceof ObjectNode obj)) continue;
-            String boatIdStr = String.valueOf(obj.path("boatId").asInt());
-            JsonNode bs = boats.path(boatIdStr);
-            if (bs.isMissingNode()) continue;
-            boolean wantCame = bs.path("came").asBoolean(false);
-            JsonNode currentFinish = obj.path("finishTime");
-            boolean currentlyFinished =
-                currentFinish != null && !currentFinish.isNull()
-                    && !currentFinish.asText("").isEmpty();
-            if (!wantCame && currentlyFinished)
-            {
-                obj.putNull("finishTime");
-                obj.set("penalties", MAPPER.createArrayNode());
-                anyBeingUnstarted = true;
-            }
-        }
-        if (anyBeingUnstarted)
-        {
-            JsonNode afterPre = sailsys.putRaceFinishers(token, raceId, saveToken, preTemplate);
-            saveToken = afterPre.path("resultSaveToken").asInt(saveToken + 1);
-            Thread.sleep(300L);
-        }
-
-        // 5b. PUT starters — startedRace flag goes first.
-        JsonNode afterStarters = sailsys.putRaceStarters(token, raceId, saveToken, template);
-        int newToken = afterStarters.path("resultSaveToken").asInt(saveToken + 1);
-
-        // Brief gap before the second PUT per the rate-limit guidance in
-        // sailsys-api-reference §8.
-        Thread.sleep(300L);
-
-        // 6. PUT finishers — finishTime + penalties. Echo back the same array
-        //    we just PUT for starters (mutations are already in place).
-        sailsys.putRaceFinishers(token, raceId, newToken, template);
-
-        // 7. Refetch status. The race object echoed by PUT finishers reflects
-        //    the moment that PUT was applied; SailSys may update fields like
-        //    requiresResultCalculation immediately afterwards as the
-        //    pointscore/recalc machinery kicks in. A fresh GET /status is the
-        //    authoritative source for "is recalculation needed?", which the
-        //    Process Results button on the client depends on.
-        JsonNode freshStatus = sailsys.fetchRaceStatus(token, raceId);
-
-        writeJson(resp, Map.of(
-            "ok", true,
-            "raceId", raceId,
-            "status", freshStatus));
+        return existing == null
+            ? RaceEntrants.TcfSource.ROSTER
+            : RaceEntrants.TcfSource.MANUAL_EDIT;
     }
 
-    /**
-     * GET the SailSys-computed results for a race (per-boat place, points,
-     * authoritative penalties, elapsed). Caller should only use this when
-     * {@code requiresResultCalculation} is false on the race status.
-     */
-    private void handleComputedResults(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
+    private static LocalDate parseDate(String s)
     {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        writeJson(resp, Map.of(
-            "raceId", raceId,
-            "results", sailsys.fetchRaceResults(session.token(), raceId)));
-    }
-
-    /**
-     * GET the per-boat results template for a race ({@code startedRace},
-     * {@code finishTime}, penalties — the raw fields kept on the SailSys
-     * results endpoint, not the computed placings). Used by the race page on
-     * load so that "did this boat finish, and at what time" is sourced from
-     * SailSys rather than local JSON — local storage only holds the per-boat
-     * {@code actualStart} (which SailSys doesn't model) plus boat order /
-     * duty boat.
-     *
-     * <p>Backed by SailSys's /results/starters (not /finishers) since
-     * /finishers comes back empty when no boat has a finishTime, while
-     * /starters returns every entered boat regardless of state. Field name
-     * stays {@code finishers} on the response for client compatibility.
-     */
-    private void handleFinishers(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        writeJson(resp, Map.of(
-            "raceId", raceId,
-            "finishers", sailsys.fetchRaceStarters(session.token(), raceId)));
-    }
-
-    /**
-     * Trigger a results recalculation on SailSys and wait for it to complete.
-     * Calls GET /results/check (kicks off the calc), then polls
-     * /races/{id}/status every 500 ms until {@code requiresResultCalculation}
-     * is false (or a 90 s deadline elapses — SailSys can be slow under load).
-     * Returns the final status plus the freshly-computed results in one round
-     * trip.
-     */
-    private void handleProcessResults(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        String token = session.token();
-
-        // SailSys's actual "process results" trigger is PUT
-        // /races/{id}/results/penalties/complete, NOT GET /results/check
-        // (which is a no-op on published races — verified against HAR-16).
-        // The PUT body carries the default DNF + DNC penalty definitions;
-        // SailSys uses them as the fallback for non-finishers / non-starters
-        // during the recalc. The race transitions to resultStatus=1 (Hidden,
-        // pending recalc) immediately on this PUT and SailSys restores the
-        // original publish state automatically once the recalc completes —
-        // so no un-publish/re-promote dance is needed.
-        JsonNode catalogue = sailsys.fetchRacePenaltiesComplete(token, raceId);
-        JsonNode dnf = findPenaltyByShortName(catalogue, "DNF");
-        JsonNode dnc = findPenaltyByShortName(catalogue, "DNC");
-        if (dnf == null || dnc == null)
-        {
-            resp.setStatus(502);
-            writeJson(resp, Map.of("error",
-                "SailSys penalty catalogue missing DNF/DNC entries — cannot trigger recalc."));
-            return;
-        }
-        ObjectNode body = MAPPER.createObjectNode();
-        body.set("nonFinisherPenalty", dnf);
-        body.set("nonStartersPenalty", dnc);
-        sailsys.putRacePenaltiesComplete(token, raceId, body);
-
-        long deadline = System.currentTimeMillis() + 90_000L;
-        JsonNode status = null;
-        boolean done = false;
-        while (System.currentTimeMillis() < deadline)
-        {
-            Thread.sleep(500L);
-            status = sailsys.fetchRaceStatus(token, raceId);
-            if (!status.path("requiresResultCalculation").asBoolean(true))
-            {
-                done = true;
-                break;
-            }
-        }
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("ok", done);
-        out.put("raceId", raceId);
-        out.put("status", status);
-        if (done)
-            out.put("results", sailsys.fetchRaceResults(token, raceId));
-        else
-            out.put("error", "Results still calculating after 90s — try again in a moment.");
-        writeJson(resp, out);
-    }
-
-    /**
-     * Looks up a penalty definition by its {@code definitionShortName}
-     * (e.g. "DNF", "DNC") in the array returned by
-     * {@link SailSysClient#fetchRacePenaltiesComplete}. Returns {@code null}
-     * when no entry matches.
-     */
-    private static JsonNode findPenaltyByShortName(JsonNode catalogue, String shortName)
-    {
-        if (!catalogue.isArray()) return null;
-        for (JsonNode p : catalogue)
-        {
-            if (shortName.equals(p.path("definitionShortName").asText(null)))
-                return p;
-        }
-        return null;
-    }
-
-    /**
-     * Set the results visibility status. Body: {@code {status: "hidden" |
-     * "provisional" | "final"}} (or the raw numeric 0/1/2). The mapping to
-     * SailSys's URL path matches the
-     * {@link SailSysClient#setResultsStatus} javadoc:
-     * 0=Hidden, 1=Provisional, 2=Final.
-     */
-    private void handleResultsStatus(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        int statusCode;
-        if (body.path("status").isInt())
-            statusCode = body.path("status").asInt();
-        else
-        {
-            String s = body.path("status").asText("").toLowerCase();
-            statusCode = switch (s)
-            {
-                case "hidden"      -> 0;
-                case "provisional" -> 1;
-                case "final"       -> 2;
-                default            -> -1;
-            };
-        }
-        if (statusCode < 0 || statusCode > 2)
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error",
-                "status must be hidden/provisional/final (or 0/1/2)"));
-            return;
-        }
-        sailsys.setResultsStatus(session.token(), raceId, statusCode);
-        // Echo back fresh status so the UI can re-render without a second round trip.
-        writeJson(resp, Map.of(
-            "ok", true,
-            "raceId", raceId,
-            "status", sailsys.fetchRaceStatus(session.token(), raceId)));
-    }
-
-    /**
-     * Publish/unpublish either the entrants list or the start sheet for a race.
-     * Body: {@code {published: true|false}}. Returns the updated status.
-     */
-    private void handleVisibility(HttpServletRequest req, HttpServletResponse resp,
-                                  int raceId, boolean startTimes) throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        boolean published = body.path("published").asBoolean(false);
-        if (startTimes)
-            sailsys.setStartTimesVisibility(session.token(), raceId, published);
-        else
-            sailsys.setEntrantsVisibility(session.token(), raceId, published);
-        // Refetch status so the client sees the up-to-date state in one round trip.
-        writeJson(resp, Map.of(
-            "ok", true,
-            "raceId", raceId,
-            "status", sailsys.fetchRaceStatus(session.token(), raceId)));
-    }
-
-    /**
-     * Save per-division start times (and, for pursuit races, course lengths)
-     * to SailSys. This is the persist-only path used by the main Save button
-     * for both race types. Body:
-     * {@code {divisions: {"<divisionId>": {startTimeLocal: "HH:MM", courseLength?: n}, ...}}}.
-     * The legacy {@code {starts: {"<divisionId>": "HH:MM:SS"}}} shape is also
-     * accepted (see {@link #divisionsFromBody}).
-     *
-     * <p>For a scratch start the {@code startTimeLocal} is the division's
-     * allocated gun time; for a pursuit race it is the division's earliest
-     * start, and {@code courseLength} configures the staggering. SailSys has no
-     * separate scheduled-vs-actual concept — both live on
-     * {@code divisionTiming[i]}, written via PUT {@code /races/{id}/timing}.
-     * Steps: GET status for the current divisionTiming template, apply the
-     * per-division patch ({@link #patchDivisionTiming}), PUT the whole array,
-     * then return the fresh status so the client can refresh the panel. No
-     * polling — a successful PUT triggers SailSys-side processing, but the
-     * caller doesn't wait for the staggered sheet here (that's
-     * {@link #handleProcessRace}).
-     */
-    private void handleDivisionStarts(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        ObjectNode divisions = divisionsFromBody(body);
-        if (divisions.isEmpty())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "divisions (or starts) object required"));
-            return;
-        }
-
-        JsonNode status = sailsys.fetchRaceStatus(session.token(), raceId);
-        JsonNode divisionTiming = status.path("divisionTiming");
-        if (!divisionTiming.isArray() || divisionTiming.isEmpty())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "race has no divisionTiming"));
-            return;
-        }
-
-        ArrayNode patched = patchDivisionTiming(divisionTiming, divisions);
-        sailsys.setRaceTiming(session.token(), raceId, patched);
-        // Refetch so the client sees the post-PUT state — including the new
-        // startTimeLocal values that just landed.
-        JsonNode freshStatus = sailsys.fetchRaceStatus(session.token(), raceId);
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("ok", true);
-        out.put("raceId", raceId);
-        out.put("status", freshStatus);
-        writeJson(resp, out);
-    }
-
-    /**
-     * Construct a synthetic results template from the /entrants response —
-     * used as a fallback when SailSys's /results/starters and /finishers
-     * both return empty arrays (race never had results, or all records
-     * were garbage-collected after a complete wipe).
-     *
-     * <p>The shape is flattened to match what /results/starters normally
-     * returns (HAR-derived): a top-level {@code boatId}, {@code boatName},
-     * {@code divisionId}, a flat {@code skipper} object, and the
-     * mutable-on-PUT fields {@code startedRace}, {@code finishTime},
-     * {@code finishDate}, {@code penalties}, etc. set to safe defaults.
-     * The subsequent mutation loop fills in {@code startedRace} /
-     * {@code finishTime} / {@code penalties} from the client payload.
-     */
-    private static ArrayNode buildTemplateFromEntrants(JsonNode entrants)
-    {
-        ArrayNode out = MAPPER.createArrayNode();
-        if (entrants == null || !entrants.isArray()) return out;
-        for (JsonNode e : entrants)
-        {
-            JsonNode boat = e.path("boat");
-            JsonNode division = e.path("division");
-            JsonNode skipperProfile = e.path("skipper").path("profile");
-            int boatId = boat.path("id").asInt(0);
-            if (boatId == 0) continue;
-            ObjectNode entry = MAPPER.createObjectNode();
-            // Flat skipper — match HAR shape (no nested .profile).
-            ObjectNode skipper = MAPPER.createObjectNode();
-            skipper.put("userId", skipperProfile.path("userId").asInt(0));
-            skipper.putNull("pendingUserId");
-            skipper.put("firstname", skipperProfile.path("firstname").asText(""));
-            skipper.put("surname", skipperProfile.path("surname").asText(""));
-            skipper.put("email", skipperProfile.path("email").asText(""));
-            skipper.put("phonePrefix", skipperProfile.path("phonePrefix").asText(""));
-            skipper.put("phoneNumber", skipperProfile.path("phoneNumber").asText(""));
-            String first = skipperProfile.path("firstname").asText("");
-            String last = skipperProfile.path("surname").asText("");
-            String full = (first + " " + last).trim();
-            skipper.put("fullName", full);
-            skipper.put("skipperDisplayName", full);
-            skipper.put("displayName", full);
-            entry.set("skipper", skipper);
-            entry.put("boatId", boatId);
-            entry.put("boatName", boat.path("name").asText(""));
-            entry.put("sailNumber", boat.path("sailNumber").asText(""));
-            entry.put("boatCountry", boat.path("country").asText(""));
-            entry.putNull("boatBowNumber");
-            entry.put("boatMake", boat.path("make").asText(""));
-            entry.put("boatModel", boat.path("model").asText(""));
-            entry.put("threeLetterIsoCode", boat.path("threeLetterIsoCode").asText(""));
-            entry.put("division", division.path("name").asText(""));
-            entry.put("divisionId", division.path("id").asInt(0));
-            entry.putNull("startTimeOffset");
-            entry.put("startTimeLocal", e.path("startTimeLocal").asText(""));
-            entry.put("startedRace", false);
-            entry.put("protest", e.path("protest").asBoolean(false));
-            entry.putNull("finishTime");
-            entry.putNull("finishDate");
-            entry.set("penalties", MAPPER.createArrayNode());
-            entry.putNull("raceSignOnOff");
-            entry.putNull("teamDto");
-            entry.put("boatCrewInfoComplete", e.path("boatCrewInfoComplete").asBoolean(false));
-            entry.set("crew", e.path("crew").isArray() ? e.path("crew").deepCopy() : MAPPER.createArrayNode());
-            entry.set("potentialCrew", MAPPER.createArrayNode());
-            out.add(entry);
-        }
-        return out;
-    }
-
-    /**
-     * Replace the time portion of an ISO-ish "YYYY-MM-DDTHH:MM:SS.sss" string
-     * with the given HH:MM:SS. Keeps the date prefix and the millisecond
-     * suffix shape. Returns the input unchanged if it doesn't have the
-     * expected structure.
-     */
-    /**
-     * Patch a {@code divisionTiming} array (the SailSys /status / /timing shape)
-     * from a per-division {@code divisions} object:
-     * {@code {"<divisionId>": {startTimeLocal?: "HH:MM", courseLength?: number}}}.
-     *
-     * <p>For each referenced division: when {@code startTimeLocal} is a
-     * non-empty string the division's {@code startTimeLocal} is rewritten with
-     * the new time portion ({@link #replaceTimePortion}, which accepts both
-     * {@code HH:MM} and {@code HH:MM:SS}) and {@code startTimeUtc} is recomputed
-     * preserving the original local→UTC offset; when {@code courseLength} is a
-     * number it overwrites the division's course length. All other fields, and
-     * any division not named in {@code divisions}, are preserved verbatim — the
-     * whole array is what gets PUT back to SailSys, which rejects partial or
-     * altered entries.
-     *
-     * <p>Operates on a deep copy; the input array is never mutated.
-     */
-    /**
-     * Normalise a request body into the unified {@code divisions} object
-     * consumed by {@link #patchDivisionTiming}. Accepts the new
-     * {@code {divisions: {"<id>": {startTimeLocal, courseLength}}}} shape and
-     * the legacy {@code {starts: {"<id>": "HH:MM:SS"}}} shape (converted to
-     * {@code {"<id>": {startTimeLocal: "HH:MM:SS"}}}). Returns an empty object
-     * when neither is present.
-     */
-    static ObjectNode divisionsFromBody(JsonNode body)
-    {
-        JsonNode divisions = body.path("divisions");
-        if (divisions.isObject() && !divisions.isEmpty()) return (ObjectNode) divisions;
-        JsonNode starts = body.path("starts");
-        ObjectNode out = MAPPER.createObjectNode();
-        if (starts.isObject())
-        {
-            java.util.Iterator<String> it = starts.fieldNames();
-            while (it.hasNext())
-            {
-                String id = it.next();
-                String hhmmss = starts.path(id).asText("");
-                if (!hhmmss.isEmpty()) out.putObject(id).put("startTimeLocal", hhmmss);
-            }
-        }
-        return out;
-    }
-
-    static ArrayNode patchDivisionTiming(JsonNode divisionTiming, JsonNode divisions)
-    {
-        ArrayNode patched = (ArrayNode) divisionTiming.deepCopy();
-        java.util.Iterator<String> it = divisions.fieldNames();
-        while (it.hasNext())
-        {
-            String divIdStr = it.next();
-            int divId;
-            try { divId = Integer.parseInt(divIdStr); }
-            catch (NumberFormatException e) { continue; }
-            JsonNode spec = divisions.path(divIdStr);
-            for (JsonNode dt : patched)
-            {
-                if (!(dt instanceof ObjectNode on)) continue;
-                if (on.path("divisionId").asInt() != divId) continue;
-                JsonNode start = spec.path("startTimeLocal");
-                if (start.isTextual() && !start.asText().isEmpty())
-                {
-                    String origLocal = on.path("startTimeLocal").asText("");
-                    String origUtc = on.path("startTimeUtc").asText("");
-                    String newLocal = replaceTimePortion(origLocal, start.asText());
-                    on.put("startTimeLocal", newLocal);
-                    on.put("startTimeUtc", recomputeUtc(origLocal, origUtc, newLocal));
-                }
-                JsonNode course = spec.path("courseLength");
-                if (course.isNumber()) on.put("courseLength", course.asDouble());
-                break;
-            }
-        }
-        return patched;
-    }
-
-    private static String replaceTimePortion(String iso, String hhmmss)
-    {
-        if (iso == null) return null;
-        int tIdx = iso.indexOf('T');
-        if (tIdx < 0) return iso;
-        String date = iso.substring(0, tIdx);
-        String[] parts = hhmmss.split(":");
-        if (parts.length < 2) return iso;
-        String h = pad2(parts[0]);
-        String m = pad2(parts[1]);
-        String s = parts.length > 2 ? pad2(parts[2]) : "00";
-        return date + "T" + h + ":" + m + ":" + s + ".000";
-    }
-
-    /**
-     * Apply the original (local − UTC) offset to a new local time to produce
-     * the matching new UTC time. Both inputs are ISO local "YYYY-MM-DDTHH:MM:SS.sss"
-     * strings parsed as {@link java.time.LocalDateTime}. Returns the new UTC
-     * formatted with the same shape.
-     */
-    private static String recomputeUtc(String origLocal, String origUtc, String newLocal)
-    {
-        try
-        {
-            java.time.LocalDateTime ol = parseIsoLocal(origLocal);
-            java.time.LocalDateTime ou = parseIsoLocal(origUtc);
-            java.time.LocalDateTime nl = parseIsoLocal(newLocal);
-            java.time.Duration offset = java.time.Duration.between(ou, ol);
-            java.time.LocalDateTime nu = nl.minus(offset);
-            return nu.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS"));
-        }
-        catch (Exception e)
-        {
-            LOG.debug("recomputeUtc failed for local={} utc={} new={}: {}",
-                origLocal, origUtc, newLocal, e.toString());
-            return origUtc;
-        }
-    }
-
-    private static java.time.LocalDateTime parseIsoLocal(String s)
-    {
-        // SailSys uses both "2026-05-26T18:31:00.000" (millis) and occasionally
-        // "2026-05-26T18:31:00" (no millis). Try both.
-        try { return java.time.LocalDateTime.parse(s); }
-        catch (java.time.format.DateTimeParseException ignored) { }
-        if (s != null && s.length() >= 19)
-            return java.time.LocalDateTime.parse(s.substring(0, 19));
-        throw new java.time.format.DateTimeParseException("Unparseable", s == null ? "" : s, 0);
-    }
-
-    private static String pad2(String n)
-    {
-        String s = n.trim();
-        return s.length() >= 2 ? s.substring(0, 2) : ("0" + s).substring(0, 2);
-    }
-
-    /**
-     * Save per-division earliest start + course length and wait for SailSys to
-     * (re)stagger. This is the "Process start times" path for pursuit races —
-     * it does the same persist as {@link #handleDivisionStarts} (so the Process
-     * button is a save-if-dirty + process in one call) and then polls for the
-     * staggered sheet. Body:
-     * {@code {divisions: {"<divisionId>": {startTimeLocal: "HH:MM", courseLength: n}}}}.
-     * The legacy {@code {courseLength: n}} shape (one length applied to every
-     * division, start times untouched) is still accepted. Implementation:
-     * <ol>
-     *   <li>Fetch the race status to get the current divisionTiming template.</li>
-     *   <li>Apply the per-division patch ({@link #patchDivisionTiming}).</li>
-     *   <li>PUT it back, which kicks off SailSys-side staggering.</li>
-     *   <li>Poll status until handicapAndStartTimeProcessingStatus leaves 1
-     *       (= "processing"), up to a 90 s deadline.</li>
-     *   <li>Return the final status to the client so the UI can refresh.</li>
-     * </ol>
-     */
-    private void handleProcessRace(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        ObjectNode divisions = divisionsFromBody(body);
-        boolean legacyGlobalCourse = divisions.isEmpty() && body.path("courseLength").isNumber();
-        if (divisions.isEmpty() && !legacyGlobalCourse)
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "divisions object required"));
-            return;
-        }
-
-        JsonNode status = sailsys.fetchRaceStatus(session.token(), raceId);
-
-        // If SailSys is still staggering from an earlier pass
-        // (handicapAndStartTimeProcessingStatus == 1), PUT /timing is rejected
-        // with HTTP 400 "Start times are currently being processed". Wait for it
-        // to settle (then re-read the fresh divisionTiming) before our own PUT.
-        if (status.path("handicapAndStartTimeProcessingStatus").asInt() == 1)
-        {
-            long preDeadline = System.currentTimeMillis() + 90_000L;
-            while (System.currentTimeMillis() < preDeadline
-                && status.path("handicapAndStartTimeProcessingStatus").asInt() == 1)
-            {
-                Thread.sleep(500L);
-                status = sailsys.fetchRaceStatus(session.token(), raceId);
-            }
-            if (status.path("handicapAndStartTimeProcessingStatus").asInt() == 1)
-            {
-                resp.setStatus(409);
-                writeJson(resp, Map.of("error",
-                    "SailSys is still processing start times — wait a moment and try again."));
-                return;
-            }
-        }
-
-        JsonNode divisionTiming = status.path("divisionTiming");
-        if (!divisionTiming.isArray() || divisionTiming.isEmpty())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "race has no divisionTiming yet"));
-            return;
-        }
-        ArrayNode patched;
-        if (legacyGlobalCourse)
-        {
-            // Apply one course length to every division (start times untouched).
-            double courseLength = body.path("courseLength").asDouble();
-            ObjectNode all = MAPPER.createObjectNode();
-            for (JsonNode dt : divisionTiming)
-                all.putObject(String.valueOf(dt.path("divisionId").asInt()))
-                    .put("courseLength", courseLength);
-            patched = patchDivisionTiming(divisionTiming, all);
-        }
-        else
-        {
-            patched = patchDivisionTiming(divisionTiming, divisions);
-        }
-
-        sailsys.setRaceTiming(session.token(), raceId, patched);
-
-        // Poll. processingStatus: 0 = pending, 1 = processing, 2 = processed.
-        // We see the transition 0→1→2; if SailSys is fast it can be 0→2 in one
-        // tick. Either way, the moment we see anything other than 1 we're done.
-        long deadline = System.currentTimeMillis() + 90_000L;
-        JsonNode finalStatus = null;
-        while (System.currentTimeMillis() < deadline)
-        {
-            Thread.sleep(500L);
-            finalStatus = sailsys.fetchRaceStatus(session.token(), raceId);
-            int procStatus = finalStatus.path("handicapAndStartTimeProcessingStatus").asInt();
-            if (procStatus != 1) break;
-        }
-        boolean timedOut = finalStatus != null
-            && finalStatus.path("handicapAndStartTimeProcessingStatus").asInt() == 1;
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("ok", !timedOut);
-        out.put("raceId", raceId);
-        out.put("status", finalStatus);
-        if (timedOut) out.put("error", "Processing still in progress after 90s — try refreshing in a moment.");
-        writeJson(resp, out);
-    }
-
-    /**
-     * POST /api/races/{id}/abandon — abandon one or more divisions of a race.
-     * Body: {@code {divisions: [<divisionId>, ...]}}; an empty/absent list
-     * abandons every division on the race. One-way (SailSys has no un-abandon).
-     *
-     * <p>Two mechanisms, picked from the fresh race status:
-     * <ul>
-     *   <li><b>Results not yet processed</b> ({@code lastProcessedTime} empty):
-     *       SailSys's own {@code PUT /races/{id}/divisions/abandon} endpoint,
-     *       which sets {@code divisionTiming[].isAbandoned=true}.</li>
-     *   <li><b>Results already processed</b>: that endpoint is rejected, so we
-     *       flag every boat in the target divisions ABD via the
-     *       starters/finishers result path ({@link #buildAbandonStarters}).
-     *       NOTE: this path is built from error-only HAR captures and is not
-     *       yet verified against a successful SailSys round-trip.</li>
-     * </ul>
-     */
-    private void handleAbandon(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        String token = session.token();
-
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        java.util.List<Integer> divisionIds = new java.util.ArrayList<>();
-        if (body.path("divisions").isArray())
-            for (JsonNode d : body.path("divisions")) divisionIds.add(d.asInt());
-
-        JsonNode status = sailsys.fetchRaceStatus(token, raceId);
-        // No divisions specified → abandon the whole race (every division).
-        if (divisionIds.isEmpty())
-            for (JsonNode dt : status.path("divisionTiming"))
-                divisionIds.add(dt.path("divisionId").asInt());
-        if (divisionIds.isEmpty())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "race has no divisions to abandon"));
-            return;
-        }
-
-        boolean resultsProcessed = !status.path("lastProcessedTime").asText("").isEmpty();
-        if (!resultsProcessed)
-            sailsys.abandonDivisions(token, raceId, divisionIds);
-        else
-            abandonViaStarters(token, raceId, status, new java.util.HashSet<>(divisionIds));
-
-        JsonNode fresh = sailsys.fetchRaceStatus(token, raceId);
-        writeJson(resp, Map.of("ok", true, "raceId", raceId, "status", fresh));
-    }
-
-    /**
-     * Processed-race abandon: flag every boat in {@code divisionIds} ABD by
-     * round-tripping the SailSys result template (GET starters → mutate → PUT
-     * starters → PUT finishers), mirroring {@link #handlePushResults}'s
-     * token-chained two-PUT flow.
-     */
-    private void abandonViaStarters(String token, int raceId, JsonNode status,
-                                    java.util.Set<Integer> divisionIds) throws Exception
-    {
-        int saveToken = status.path("resultSaveToken").asInt(0);
-        String raceDate = status.path("dateTime").asText("");
-        raceDate = (raceDate.length() >= 10) ? raceDate.substring(0, 10)
-            : java.time.LocalDate.now().toString();
-
-        JsonNode startersNode = sailsys.fetchRaceStarters(token, raceId);
-        if (!startersNode.isArray() || startersNode.isEmpty())
-            throw new SailSysClient.SailSysException("abandonViaStarters", "GET",
-                "/races/" + raceId + "/results/starters", 502,
-                "no starters template to flag ABD");
-
-        // ABD penalty object per target division (penalty ids are per-division).
-        java.util.Map<Integer, JsonNode> abdByDivision = new java.util.HashMap<>();
-        for (Integer divId : divisionIds)
-        {
-            JsonNode abd = findPenaltyByShortName(
-                sailsys.fetchDivisionPenalties(token, divId), "ABD");
-            if (abd != null) abdByDivision.put(divId, abd);
-        }
-
-        ArrayNode payload = buildAbandonStarters(startersNode, divisionIds, abdByDivision, raceDate);
-        JsonNode afterStarters = sailsys.putRaceStarters(token, raceId, saveToken, payload);
-        int newToken = afterStarters.path("resultSaveToken").asInt(saveToken + 1);
-        Thread.sleep(300L);
-        sailsys.putRaceFinishers(token, raceId, newToken, payload);
-    }
-
-    /**
-     * Build the {@code /results/starters} payload that flags every boat in the
-     * given divisions ABD: {@code startedRace=true}, {@code finishTime} cleared,
-     * {@code finishDate} set to the race date, and the division's ABD penalty
-     * attached. Boats in other divisions are left exactly as the template had
-     * them. Does not mutate the input. Pure logic — unit-tested in
-     * {@code ApiServletTest}.
-     *
-     * @param startersTemplate the {@code /results/starters} array (full echo)
-     * @param divisionIds      divisions to abandon
-     * @param abdByDivision    division id → that division's ABD penalty object
-     * @param raceDate         {@code yyyy-MM-dd}, used for {@code finishDate}
-     */
-    static ArrayNode buildAbandonStarters(JsonNode startersTemplate,
-                                          java.util.Set<Integer> divisionIds,
-                                          java.util.Map<Integer, JsonNode> abdByDivision,
-                                          String raceDate)
-    {
-        ArrayNode out = (ArrayNode) startersTemplate.deepCopy();
-        for (JsonNode entry : out)
-        {
-            if (!(entry instanceof ObjectNode obj)) continue;
-            int divisionId = obj.path("divisionId").asInt();
-            if (!divisionIds.contains(divisionId)) continue;
-            obj.put("startedRace", true);
-            obj.putNull("finishTime");
-            obj.put("finishDate", raceDate + "T00:00:00.000");
-            ArrayNode penalties = MAPPER.createArrayNode();
-            JsonNode abd = abdByDivision.get(divisionId);
-            if (abd != null) penalties.add(abd);
-            obj.set("penalties", penalties);
-        }
-        return out;
-    }
-
-    // ---- Race-duration → per-division course-length calculator ----------------
-
-    /** A division's slowest-boat TCF, as supplied by the client. */
-    record DivisionTcf(int divisionId, double slowestTcf) {}
-
-    /** A division's computed course length (nm, 1 decimal). */
-    record DivisionCourse(int divisionId, double courseLengthNm) {}
-
-    /** Result of {@link #computeCoursePlan}: the (possibly capped) duration and the per-division courses. */
-    record CoursePlan(int effectiveDurationMinutes, boolean limitedBySunset, List<DivisionCourse> divisions) {}
-
-    /**
-     * Turn a target race duration into a per-division course length. A boat's
-     * predicted speed is {@code TCF × v0Knots}, so over {@code t} hours it sails
-     * {@code TCF × v0 × t} nm; each division's course is sized to the slowest
-     * (min-TCF) boat — supplied per division by the caller — rounded to 0.1 nm.
-     *
-     * <p>When {@code limitBySunset} and a {@code sunset} are given, the duration
-     * is capped so {@code earliestStart + duration ≤ sunset}. If sunset is at or
-     * before {@code earliestStart} (an out-of-season date where it's already
-     * dark at the start), the cap still engages — clamped to 0 minutes and
-     * flagged — rather than silently doing nothing. Pure logic — unit-tested in
-     * {@code ApiServletTest}.
-     */
-    static CoursePlan computeCoursePlan(double v0Knots, int requestedDurationMinutes,
-                                        boolean limitBySunset, LocalTime earliestStart,
-                                        LocalTime sunset, List<DivisionTcf> divisions)
-    {
-        int effective = requestedDurationMinutes;
-        boolean limited = false;
-        if (limitBySunset && sunset != null && earliestStart != null)
-        {
-            long maxMinutes = java.time.Duration.between(earliestStart, sunset).toMinutes();
-            if (effective > maxMinutes)
-            {
-                effective = (int) Math.max(0, maxMinutes);
-                limited = true;
-            }
-        }
-        double hours = effective / 60.0;
-        List<DivisionCourse> out = new ArrayList<>(divisions.size());
-        for (DivisionTcf d : divisions)
-        {
-            double nm = d.slowestTcf() * v0Knots * hours;
-            double rounded = Math.round(nm * 10.0) / 10.0;
-            out.add(new DivisionCourse(d.divisionId(), rounded));
-        }
-        return new CoursePlan(effective, limited, out);
-    }
-
-    /**
-     * Read the RO-captured times for a race. Returns {@code {raceId, times:null}}
-     * (with {@code times:null}) when nothing has been saved yet, so the client
-     * can distinguish "never saved" from "saved empty".
-     *
-     * <p>TODO: SailSys is the source of truth for {@code came} and {@code finish}
-     * (they're written to /races/{id}/results/starters and /finishers on SAVE).
-     * Loaders should fetch /races/{id}/results/finishers from SailSys and merge
-     * its {@code startedRace} and {@code finishTime} over the values in this
-     * JSON — currently the local file's came/finish fields can shadow the
-     * SailSys state if the two diverge (e.g. an edit made directly in SailSys
-     * after a jinx SAVE). The JSON should ultimately hold only the
-     * actualStart times, dutyBoatId, and boatOrder.
-     */
-    private void handleGetRaceTimes(HttpServletResponse resp, String raceId) throws IOException
-    {
-        RaceTimes times = store.raceTimes(raceId);
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("raceId", raceId);
-        out.put("times", times);
-        writeJson(resp, out);
-    }
-
-    /**
-     * Persist the RO-captured times for a race. Body is a full {@link RaceTimes}
-     * payload (raceId, boatOrder, times) — replaces whatever was on disk.
-     */
-    private void handleSaveRaceTimes(HttpServletRequest req, HttpServletResponse resp, String raceId)
-        throws IOException
-    {
-        RaceTimes incoming = MAPPER.readValue(req.getInputStream(), RaceTimes.class);
-        // Normalise: trust the URL's raceId over whatever the body claimed.
-        RaceTimes toStore = new RaceTimes(raceId, incoming.boatOrder(),
-            incoming.dutyBoatId(), incoming.divisionStarts(), incoming.times());
-        store.putRaceTimes(raceId, toStore);
-        writeJson(resp, Map.of("ok", true, "raceId", raceId));
-    }
-
-    private Map<String, Object> authStatus(HttpServletRequest req)
-    {
-        SailSysSession session = currentSession(req);
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("authenticated", session != null);
-        if (session != null)
-        {
-            out.put("user", userSummary(session));
-            out.put("loginTime", session.loginTime().toString());
-        }
-        return out;
-    }
-
-    private Map<String, Object> publicConfig()
-    {
-        JinxConfig.SailSys s = config.sailsys();
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("sailsys", Map.of(
-            "clubId", s.clubId(),
-            "handicapDefinitionId", s.handicapDefinitionId(),
-            "timezone", s.timezone()));
-        out.put("algorithm", algorithmMap(config.algorithm()));
-        return out;
-    }
-
-    // --- helpers ---
-
-    /** Returns the active SailSysSession, or null if the caller is not logged in. */
-    static SailSysSession currentSession(HttpServletRequest req)
-    {
-        HttpSession httpSession = req.getSession(false);
-        if (httpSession == null)
+        if (isBlank(s))
             return null;
-        Object attr = httpSession.getAttribute(SESSION_ATTR);
-        return (attr instanceof SailSysSession s) ? s : null;
-    }
-
-    private Map<String, Object> userSummary(SailSysSession session)
-    {
-        SailSysClient.User u = session.user();
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("email", u.email);
-        out.put("firstname", u.firstname);
-        out.put("surname", u.surname);
-        // adminLevel for the configured clubId — 0 = admin (can edit series
-        // and TCFs), 1 = race officer (can manage individual races but not
-        // series/handicaps). The discriminator is observed from HAR-9: greg
-        // (handicapper) has adminLevel=0 for MYC; raceofficer@... has
-        // adminLevel=1. Race-officer requests to /series/{id} return 403,
-        // so the client must avoid those endpoints for non-admins.
-        int level = adminLevelForClub(u, config.sailsys().clubId());
-        out.put("adminLevel", level);
-        out.put("isAdmin", level == 0);
-        return out;
-    }
-
-    /**
-     * POST /api/races/{id}/course-plan — turn a target race duration into a
-     * per-division course length for a pursuit race. Body shape:
-     * <pre>{@code
-     *   { "seriesId": "5699",          // optional; selects per-series config overlay
-     *     "raceDate": "2026-01-13",    // optional; only needed when limitBySunset
-     *     "durationMinutes": 90,        // optional; defaults to series idealRaceDuration
-     *     "divisions": [ { "divisionId": 13779, "slowestTcf": 0.95 }, ... ] }
-     * }</pre>
-     *
-     * <p>The client supplies each division's slowest (min) TCF — so unsaved TCF
-     * edits are honoured and no SailSys round-trip is needed. The server applies
-     * the configured V₀ ({@code v0knots}), the per-series sunset cap (when
-     * configured), and {@link #computeCoursePlan}. Returns the effective (possibly capped)
-     * duration, the sunset cutoff, and per-division course lengths (0.1 nm).
-     */
-    private void handleCoursePlan(HttpServletRequest req, HttpServletResponse resp, String raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-
-        String seriesId = body.path("seriesId").isMissingNode()
-            ? null : body.path("seriesId").asText(null);
-        JinxConfig.Algorithm alg = (seriesId != null) ? store.seriesConfig(seriesId) : null;
-        if (alg == null) alg = config.algorithm();
-
-        int duration = (body.path("durationMinutes").isMissingNode() || body.path("durationMinutes").isNull())
-            ? alg.idealRaceDuration()
-            : body.path("durationMinutes").asInt(alg.idealRaceDuration());
-        if (duration <= 0) duration = alg.idealRaceDuration();
-
-        List<DivisionTcf> divisions = new ArrayList<>();
-        for (JsonNode d : body.path("divisions"))
-        {
-            if (d.path("divisionId").isMissingNode()) continue;
-            double tcf = d.path("slowestTcf").asDouble(0);
-            if (!(tcf > 0)) continue; // a division with no valid TCF can't be sized
-            divisions.add(new DivisionTcf(d.path("divisionId").asInt(), tcf));
-        }
-
-        LocalTime earliestStart = null;
-        try { earliestStart = LocalTime.parse(alg.earliestStart()); }
-        catch (Exception ignore) { /* leave null → no sunset cap */ }
-
-        LocalTime sunset = null;
-        if (alg.limitBySunset() && earliestStart != null)
-        {
-            String raceDate = body.path("raceDate").asText(null);
-            if (raceDate != null && raceDate.length() >= 10
-                && alg.latitude() != null && alg.longitude() != null)
-            {
-                try
-                {
-                    sunset = SolarTimes.sunsetLocal(alg.latitude(), alg.longitude(),
-                        java.time.LocalDate.parse(raceDate.substring(0, 10)),
-                        java.time.ZoneId.of(config.sailsys().timezone()));
-                }
-                catch (Exception e)
-                {
-                    LOG.warn("Sunset computation failed for course-plan (race {}): {}",
-                        raceId, e.toString());
-                }
-            }
-        }
-
-        CoursePlan plan = computeCoursePlan(alg.v0knots(), duration,
-            alg.limitBySunset(), earliestStart, sunset, divisions);
-
-        List<Map<String, Object>> divOut = new ArrayList<>(plan.divisions().size());
-        for (DivisionCourse dc : plan.divisions())
-            divOut.add(Map.of("divisionId", dc.divisionId(), "courseLengthNm", dc.courseLengthNm()));
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("raceId", raceId);
-        out.put("requestedDurationMinutes", duration);
-        out.put("effectiveDurationMinutes", plan.effectiveDurationMinutes());
-        out.put("limitedBySunset", plan.limitedBySunset());
-        out.put("sunsetLocal", sunset == null ? null
-            : String.format("%02d:%02d", sunset.getHour(), sunset.getMinute()));
-        out.put("v0knots", alg.v0knots());
-        out.put("divisions", divOut);
-        writeJson(resp, out);
-    }
-
-    /**
-     * POST /api/races/{id}/process-handicaps — run the Jinx algorithm against
-     * a client-supplied snapshot of the race. Body shape:
-     * <pre>{@code
-     *   { "seriesId": "5699",                  // optional; selects per-series config overlay
-     *     "targetElapsedMinutes": 90,           // optional; defaults to series idealRaceDuration
-     *     "boats": [
-     *       { "boatId": "...", "currentTcf": 1.0, "status": "FIN",
-     *         "elapsedMinutes": 85.0 },
-     *       { "boatId": "...", "currentTcf": 1.0, "status": "DNF" },
-     *       ...
-     *     ] }
-     * }</pre>
-     *
-     * <p>The endpoint is read-only — it computes adjustments in memory and
-     * returns them. Persistence happens via the SAVE endpoint below so the
-     * admin can preview before committing.
-     */
-    private void handleProcessHandicaps(HttpServletRequest req, HttpServletResponse resp, String raceId)
-        throws Exception
-    {
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-
-        String seriesId = body.path("seriesId").isMissingNode()
-            ? null : body.path("seriesId").asText(null);
-        JinxConfig.Algorithm alg = (seriesId != null) ? store.seriesConfig(seriesId) : null;
-        if (alg == null) alg = config.algorithm();
-
-        int tTarget = body.path("targetElapsedMinutes").asInt(alg.idealRaceDuration());
-
-        JsonNode boatsNode = body.path("boats");
-        if (!boatsNode.isArray() || boatsNode.isEmpty())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "boats array required"));
-            return;
-        }
-
-        List<Boat> boats = new ArrayList<>(boatsNode.size());
-        Map<String, Result> results = new LinkedHashMap<>(boatsNode.size());
-        for (JsonNode b : boatsNode)
-        {
-            String boatId = b.path("boatId").asText();
-            if (boatId == null || boatId.isBlank()) continue;
-            double tcf = b.path("currentTcf").asDouble(1.0);
-            boats.add(new Boat(boatId, "", "", "", "", tcf));
-            FinishStatus status;
-            try
-            {
-                status = FinishStatus.valueOf(b.path("status").asText("DNC").toUpperCase());
-            }
-            catch (IllegalArgumentException ex)
-            {
-                status = FinishStatus.DNC;
-            }
-            // Engine reads elapsed via Result.elapsed() = finish − actualStart.
-            // We don't have wall-clock times here — only the precomputed elapsed
-            // minutes. Encode it as actualStart=00:00 and finish=elapsed past
-            // midnight so the Duration math comes out right.
-            java.time.LocalTime startT = java.time.LocalTime.MIDNIGHT;
-            java.time.LocalTime finishT = null;
-            if (status == FinishStatus.FIN && b.has("elapsedMinutes"))
-            {
-                double mins = b.path("elapsedMinutes").asDouble(0);
-                long secs = Math.round(mins * 60.0);
-                finishT = startT.plusSeconds(secs);
-            }
-            // Authoritative finishPosition supplied by the client (pursuit
-            // races: local finish-order computation; scratch starts:
-            // SailSys's place when clean). When omitted the engine falls
-            // back to elapsed-sort which is wrong for OCS scenarios.
-            Integer finishPosition = b.has("finishPosition") && !b.path("finishPosition").isNull()
-                ? b.path("finishPosition").asInt()
-                : null;
-            results.put(boatId, new Result(boatId, status, startT, finishT, null, finishPosition));
-        }
-
-        Race race = new Race(raceId, 0, "", null, tTarget, null, RaceStatus.RESULTS_ENTERED);
-        PursuitHandicapEngine engine = new PursuitHandicapEngine(alg);
-        List<Adjustment> adjustments = engine.processResults(boats, race, results);
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("raceId", raceId);
-        out.put("seriesId", seriesId);
-        out.put("targetElapsedMinutes", tTarget);
-        out.put("config", Map.of(
-            "penaltyList", alg.penaltyList(),
-            "idealRaceDuration", alg.idealRaceDuration(),
-            "dnfAllowance", alg.dnfAllowance(),
-            "earliestStart", alg.earliestStart()));
-        out.put("v0knots", alg.v0knots());
-        out.put("adjustments", adjustments);
-        writeJson(resp, out);
-    }
-
-    /**
-     * POST /api/races/{id}/save-handicaps — persist the Jinx-computed
-     * adjustments locally AND write the next race's TCF snapshot from
-     * {@link Adjustment#newTcf()}. The push to SailSys does not happen here:
-     * the admin sees the new TCFs surfaced as a banner the next time they
-     * open race N+1, with Push / Reset buttons.
-     *
-     * <p>Body: {@code {adjustments:[...], seriesId:"5699"}}. {@code seriesId}
-     * is required so we can locate the next race in the series without an
-     * extra SailSys round-trip on the read side.
-     */
-    private void handleSaveHandicaps(HttpServletRequest req, HttpServletResponse resp, String raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        if (adminLevelForClub(session.user(), config.sailsys().clubId()) != 0)
-        {
-            resp.setStatus(403);
-            writeJson(resp, Map.of("error", "admin required"));
-            return;
-        }
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        JsonNode arr = body.isArray() ? body : body.path("adjustments");
-        if (!arr.isArray())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "adjustments array required"));
-            return;
-        }
-        List<Adjustment> adjustments = MAPPER.convertValue(arr, new TypeReference<List<Adjustment>>() { });
-        store.putPendingAdjustments(raceId, adjustments);
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("ok", true);
-        result.put("raceId", raceId);
-        result.put("saved", adjustments.size());
-
-        // Find race N+1 and write its TCF snapshot from Adjustment.newTcf.
-        // seriesId comes from the request body but is informational only —
-        // nextRaceId is read directly from race N's status payload. The
-        // same status fetch supplies race N's own number, which is stored
-        // in the snapshot so the banner on race N+1 can say "after race 1"
-        // instead of "after race 41476". Skip silently if no next race
-        // exists (last race in the series).
         try
         {
-            JsonNode sourceStatus = sailsys.fetchRaceStatus(session.token(), Integer.parseInt(raceId));
-            JsonNode nextNode = sourceStatus.path("nextRaceId");
-            String nextRaceId = (nextNode.isMissingNode() || nextNode.isNull())
-                ? null : nextNode.asText(null);
-            if (nextRaceId != null && !nextRaceId.isBlank() && !"null".equals(nextRaceId))
-            {
-                Integer sourceRaceNumber = sourceStatus.path("number").isMissingNode()
-                    || sourceStatus.path("number").isNull()
-                    ? null : sourceStatus.path("number").asInt();
-                RaceTcfSnapshot snap = buildSnapshotFromAdjustments(
-                    session.token(), nextRaceId, raceId, sourceRaceNumber, adjustments);
-                store.putRaceTcfs(nextRaceId, snap);
-                result.put("nextRaceId", nextRaceId);
-                result.put("snapshotTcfs", snap.tcfs().size());
-            }
+            return LocalDate.parse(s.length() > 10 ? s.substring(0, 10) : s);
         }
         catch (Exception e)
         {
-            LOG.warn("Failed to write N+1 TCF snapshot for race {}: {}",
-                raceId, e.toString());
-            result.put("nextRaceSnapshotError", e.getMessage());
+            return null;
         }
-        writeJson(resp, result);
     }
 
-    /**
-     * Builds a TCF snapshot for {@code nextRaceId} from a list of
-     * adjustments. {@code spinnakerType} is read from the next race's
-     * existing entrants (so the saved snapshot is complete enough to push
-     * back to SailSys later); boats present in the adjustments but missing
-     * from the next race's entrants are skipped. {@code sourceRaceNumber}
-     * is the human-friendly race number of the source race (e.g. 1, 2, …);
-     * may be null.
-     */
-    private RaceTcfSnapshot buildSnapshotFromAdjustments(String token, String nextRaceId,
-                                                         String sourceRaceId,
-                                                         Integer sourceRaceNumber,
-                                                         List<Adjustment> adjustments) throws Exception
+    private static LocalTime parseTime(String s, LocalTime fallback)
     {
-        JsonNode entrants = sailsys.fetchRaceEntrants(token, Integer.parseInt(nextRaceId));
-        Map<String, Integer> spinByBoat = new HashMap<>();
-        if (entrants.isArray())
+        if (isBlank(s))
+            return fallback;
+        try
         {
-            int defId = config.sailsys().handicapDefinitionId();
-            for (JsonNode e : entrants)
-            {
-                String boatId = e.path("boat").path("id").asText(null);
-                if (boatId == null) continue;
-                for (JsonNode h : e.path("handicap").path("currentHandicaps"))
-                {
-                    if (h.path("definition").path("id").asInt() == defId)
-                    {
-                        spinByBoat.put(boatId, h.path("spinnakerType").asInt(1));
-                        break;
-                    }
-                }
-            }
+            return LocalTime.parse(s.length() == 5 ? s + ":00" : s);
         }
-        List<RaceTcfSnapshot.TcfEntry> tcfs = new ArrayList<>();
-        for (Adjustment a : adjustments)
+        catch (Exception e)
         {
-            Integer spin = spinByBoat.get(a.boatId());
-            if (spin == null) continue;
-            tcfs.add(new RaceTcfSnapshot.TcfEntry(a.boatId(), a.newTcf(), spin));
+            return fallback;
         }
-        return new RaceTcfSnapshot(nextRaceId, java.time.Instant.now(),
-            RaceTcfSnapshot.Source.PROCESS_HANDICAPS, sourceRaceId, sourceRaceNumber, tcfs);
     }
 
-    /**
-     * GET /api/races/{id}/pending-handicaps — read back the locally-saved
-     * adjustments for a race, or an empty list if none have been saved.
-     */
-    private void handleGetPendingHandicaps(HttpServletResponse resp, String raceId) throws Exception
+    /** Null-tolerant map builder — {@link Map#of} rejects null values. */
+    private static Map<String, Object> mapOf(Object... kv)
     {
-        writeJson(resp, Map.of(
-            "raceId", raceId,
-            "adjustments", store.pendingAdjustments(raceId)));
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2)
+            m.put(String.valueOf(kv[i]), kv[i + 1]);
+        return m;
     }
 
-    /**
-     * GET /api/races/{id}/tcf-snapshot — return the locally-saved TCF
-     * snapshot for this race, or {@code {snapshot:null}} when none exists.
-     * The race page overlays snapshot TCFs on top of SailSys's current ones
-     * and shows a Push / Reset banner when this is the earliest unprocessed
-     * race in the series and the two diverge.
-     */
-    private void handleGetRaceTcfSnapshot(HttpServletResponse resp, String raceId) throws Exception
+    private void badRequest(HttpServletResponse resp, String message) throws IOException
     {
-        RaceTcfSnapshot snap = store.raceTcfs(raceId);
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("raceId", raceId);
-        out.put("snapshot", snap);
-        writeJson(resp, out);
+        resp.setStatus(400);
+        writeJson(resp, mapOf("error", message));
     }
 
-    /**
-     * Merge manual TCF edits into the race's existing snapshot. The edits
-     * override matching boats and append new ones; every other boat's entry
-     * is preserved. This MUST be a merge, not a replace: when the race is
-     * carrying a {@code PROCESS_HANDICAPS} snapshot (every boat's next-race
-     * TCF queued by the previous race), a replace-style write of the one or
-     * two edited boats would silently discard all the other queued
-     * adjustments before they were ever pushed. The existing snapshot's
-     * source + provenance survive an edit riding on top of it; with no
-     * existing snapshot the result is a plain {@code MANUAL_EDIT}.
-     */
-    static RaceTcfSnapshot mergeTcfSnapshot(RaceTcfSnapshot existing, String raceId,
-                                            java.time.Instant now,
-                                            List<RaceTcfSnapshot.TcfEntry> updates)
+    private void fail(HttpServletResponse resp, Exception e) throws IOException
     {
-        if (existing == null || existing.tcfs() == null || existing.tcfs().isEmpty())
-        {
-            return new RaceTcfSnapshot(raceId, now,
-                RaceTcfSnapshot.Source.MANUAL_EDIT, null, null, updates);
-        }
-        Map<String, RaceTcfSnapshot.TcfEntry> byBoat = new LinkedHashMap<>();
-        for (RaceTcfSnapshot.TcfEntry t : existing.tcfs())
-            byBoat.put(t.boatId(), t);
-        for (RaceTcfSnapshot.TcfEntry u : updates)
-            byBoat.put(u.boatId(), u);
-        return new RaceTcfSnapshot(raceId, now,
-            existing.source(), existing.sourceRaceId(), existing.sourceRaceNumber(),
-            new ArrayList<>(byBoat.values()));
-    }
-
-    /**
-     * POST /api/races/{id}/save-tcfs — admin-only. Body
-     * {@code {updates:[{boatId,value,spinnakerType}], seriesId}}.
-     * Merges the edits into the race's local snapshot (see
-     * {@link #mergeTcfSnapshot}). This endpoint does NOT touch SailSys —
-     * the client immediately follows up with /push-handicaps, so a single
-     * SAVE click carries the edit all the way through.
-     */
-    private void handleSaveRaceTcfs(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        if (adminLevelForClub(session.user(), config.sailsys().clubId()) != 0)
-        {
-            resp.setStatus(403);
-            writeJson(resp, Map.of("error", "admin required"));
-            return;
-        }
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        JsonNode updates = body.path("updates");
-        if (!updates.isArray() || updates.isEmpty())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "updates array required"));
-            return;
-        }
-
-        // Build the edit rows from the request body (each row already carries
-        // boatId/value/spinnakerType — the client gathered them from the
-        // entrants payload) and merge them into any existing snapshot.
-        List<RaceTcfSnapshot.TcfEntry> tcfs = new ArrayList<>();
-        for (JsonNode u : updates)
-        {
-            tcfs.add(new RaceTcfSnapshot.TcfEntry(
-                u.path("boatId").asText(),
-                u.path("value").asDouble(),
-                u.path("spinnakerType").isMissingNode() || u.path("spinnakerType").isNull()
-                    ? 1 : u.path("spinnakerType").asInt()));
-        }
-        RaceTcfSnapshot snap = mergeTcfSnapshot(store.raceTcfs(String.valueOf(raceId)),
-            String.valueOf(raceId), java.time.Instant.now(), tcfs);
-        store.putRaceTcfs(String.valueOf(raceId), snap);
-
-        writeJson(resp, Map.of(
-            "ok", true,
-            "raceId", raceId,
-            "saved", tcfs.size()));
-    }
-
-    /**
-     * POST /api/races/{id}/push-handicaps — admin-only. Reads the local
-     * snapshot for the race and pushes it to SailSys via the bulk handicaps
-     * endpoint. Triggered by the "Push to SailSys" button on the mismatch
-     * banner that surfaces when the snapshot was written by Save Handicaps
-     * on the previous race.
-     */
-    private void handlePushRaceHandicaps(HttpServletRequest req, HttpServletResponse resp, int raceId)
-        throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        if (adminLevelForClub(session.user(), config.sailsys().clubId()) != 0)
-        {
-            resp.setStatus(403);
-            writeJson(resp, Map.of("error", "admin required"));
-            return;
-        }
-        RaceTcfSnapshot snap = store.raceTcfs(String.valueOf(raceId));
-        if (snap == null || snap.tcfs() == null || snap.tcfs().isEmpty())
-        {
-            resp.setStatus(400);
-            writeJson(resp, Map.of("error", "no local TCF snapshot to push"));
-            return;
-        }
-        pushSnapshotToSailSys(session.token(), raceId, snap);
-        writeJson(resp, Map.of(
-            "ok", true,
-            "raceId", raceId,
-            "pushed", snap.tcfs().size()));
-    }
-
-    /**
-     * DELETE /api/races/{id}/tcf-snapshot — admin-only. Drops the local
-     * snapshot so the race page falls back to SailSys's TCFs (the "Reset"
-     * action on the mismatch banner). No SailSys traffic.
-     */
-    private void handleDeleteRaceTcfSnapshot(HttpServletRequest req, HttpServletResponse resp,
-                                             String raceId) throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        if (adminLevelForClub(session.user(), config.sailsys().clubId()) != 0)
-        {
-            resp.setStatus(403);
-            writeJson(resp, Map.of("error", "admin required"));
-            return;
-        }
-        boolean removed = store.deleteRaceTcfs(raceId);
-        writeJson(resp, Map.of("ok", true, "raceId", raceId, "removed", removed));
-    }
-
-    /**
-     * POST /api/races/{id}/tcf-snapshot — admin-only. Write a snapshot
-     * directly (e.g. manual JSON upload). Body is the {@link RaceTcfSnapshot}
-     * shape; {@code savedAt} is stamped server-side when null.
-     */
-    private void handleSaveRaceTcfSnapshot(HttpServletRequest req, HttpServletResponse resp,
-                                           String raceId) throws Exception
-    {
-        SailSysSession session = currentSession(req);
-        if (session == null)
-        {
-            resp.setStatus(401);
-            writeJson(resp, Map.of("error", "not signed in"));
-            return;
-        }
-        if (adminLevelForClub(session.user(), config.sailsys().clubId()) != 0)
-        {
-            resp.setStatus(403);
-            writeJson(resp, Map.of("error", "admin required"));
-            return;
-        }
-        RaceTcfSnapshot incoming = MAPPER.readValue(req.getInputStream(), RaceTcfSnapshot.class);
-        RaceTcfSnapshot snap = new RaceTcfSnapshot(
-            raceId,
-            incoming.savedAt() != null ? incoming.savedAt() : java.time.Instant.now(),
-            incoming.source() != null ? incoming.source() : RaceTcfSnapshot.Source.MANUAL_EDIT,
-            incoming.sourceRaceId(),
-            incoming.sourceRaceNumber(),
-            incoming.tcfs() != null ? incoming.tcfs() : List.of());
-        store.putRaceTcfs(raceId, snap);
-        writeJson(resp, Map.of("ok", true, "raceId", raceId, "saved", snap.tcfs().size()));
-    }
-
-    /**
-     * Fetches the current entrants from SailSys, overlays the snapshot's
-     * TCF values onto each entrant's {@code handicap.currentHandicaps[]}
-     * row whose {@code definition.id} matches the configured handicap, then
-     * PUTs the mutated array back via {@link SailSysClient#updateRaceHandicaps}.
-     * Boats present in entrants but missing from the snapshot keep their
-     * existing TCFs.
-     */
-    private void pushSnapshotToSailSys(String token, int raceId, RaceTcfSnapshot snap) throws Exception
-    {
-        JsonNode entrants = sailsys.fetchRaceEntrants(token, raceId);
-        if (!entrants.isArray())
-            throw new IllegalStateException("SailSys returned non-array entrants for race " + raceId);
-        Map<String, Double> byBoat = new HashMap<>();
-        for (RaceTcfSnapshot.TcfEntry t : snap.tcfs())
-            byBoat.put(t.boatId(), t.value());
-        int defId = config.sailsys().handicapDefinitionId();
-        for (JsonNode e : entrants)
-        {
-            String boatId = e.path("boat").path("id").asText(null);
-            if (boatId == null) continue;
-            Double v = byBoat.get(boatId);
-            if (v == null) continue;
-            JsonNode list = e.path("handicap").path("currentHandicaps");
-            if (!list.isArray()) continue;
-            for (JsonNode h : list)
-            {
-                if (h.path("definition").path("id").asInt() == defId && h instanceof ObjectNode obj)
-                {
-                    obj.put("value", v.doubleValue());
-                    break;
-                }
-            }
-            // currentHandicapForSort mirrors one of the currentHandicaps entries;
-            // SailSys echoes it but the value comparison happens on currentHandicaps.
-            JsonNode sort = e.path("currentHandicapForSort");
-            if (sort.path("definition").path("id").asInt() == defId && sort instanceof ObjectNode sortObj)
-                sortObj.put("value", v.doubleValue());
-        }
-        sailsys.updateRaceHandicaps(token, raceId, entrants);
-    }
-
-    private static int adminLevelForClub(SailSysClient.User u, int clubId)
-    {
-        if (u == null || u.clubAdminPositions == null) return -1;
-        for (SailSysClient.ClubAdminPosition pos : u.clubAdminPositions)
-        {
-            if (pos != null && pos.club != null && pos.club.id == clubId)
-                return pos.adminLevel;
-        }
-        return -1;
-    }
-
-    private static Map<String, String> readJson(HttpServletRequest req) throws IOException
-    {
-        if (req.getContentLength() <= 0)
-            return new HashMap<>();
-        return MAPPER.readValue(req.getInputStream(), new TypeReference<Map<String, String>>() { });
-    }
-
-    private void todo(HttpServletResponse resp, String message) throws IOException
-    {
-        resp.setStatus(501);
-        writeJson(resp, Map.of("error", "not implemented", "todo", message));
+        LOG.warn("API request failed", e);
+        resp.setStatus(500);
+        writeJson(resp, mapOf("error", String.valueOf(e.getMessage())));
     }
 
     private static void writeJson(HttpServletResponse resp, Object body) throws IOException

@@ -1,18 +1,21 @@
 # sail-jinx configuration.
+#
+# sail-jinx v2 is standalone: it has no connection to SailSys or any other
+# external system. Series, races, boats and entrants are created in the app and
+# stored under data/store/. Results reach SailSys by a human reading the two
+# printed reports and typing them in.
 
-sailsys:
-  clubId: 23                  # MYC
-  seriesId: 5699              # 2026 Winter Twilight Series — change each season
-  handicapDefinitionId: 15    # MYC TCF
-  timezone: "Australia/Sydney"
-  timezoneOffset: 10          # 11 when daylight saving is in effect
+club:
+  name: "Manly Yacht Club"
+  timezone: "Australia/Sydney"     # used to compute local sunset
 
 algorithm:
-  penaltyList: [6, 4, 2 ]
-  idealRaceDuration: 90       # minutes
-  dnfAllowance: 5             # minutes added to slowest finisher
-  earliestStart: "18:00"
-  v0knots: 5.5               # V0: speed (kn) of a 1.000-TCF boat; sizes courses from duration
+  penaltyList: [6, 4, 2]           # minutes deducted for 1st, 2nd, 3rd
+  idealRaceDuration: 90            # minutes
+  dnfAllowance: 5                  # minutes added to the slowest finisher
+  earliestStart: "18:00"           # the slowest boat's gun
+  limitBySunset: false             # cap the duration so the fleet finishes by sundown
+  v0knots: 5.5                     # V0: speed (kn) of a 1.000-TCF boat
 
 server:
   port: 8080

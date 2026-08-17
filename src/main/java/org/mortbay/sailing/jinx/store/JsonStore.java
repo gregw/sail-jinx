@@ -1,13 +1,22 @@
 package org.mortbay.sailing.jinx.store;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -19,33 +28,52 @@ import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.AuditEntry;
 import org.mortbay.sailing.jinx.model.Boat;
 import org.mortbay.sailing.jinx.model.Race;
-import org.mortbay.sailing.jinx.model.RaceTcfSnapshot;
+import org.mortbay.sailing.jinx.model.RaceEntrants;
 import org.mortbay.sailing.jinx.model.RaceTimes;
-import org.mortbay.sailing.jinx.model.Result;
+import org.mortbay.sailing.jinx.model.Roster;
+import org.mortbay.sailing.jinx.model.Series;
+import org.mortbay.sailing.jinx.model.StartSheet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * On-disk JSON persistence for sail-jinx state, modelled on the sailing-pf
- * {@code DataStore} pattern but kept much simpler: one file per logical entity,
- * no per-entity-instance files, full reload on start.
+ * On-disk JSON persistence for sail-jinx. One file per logical entity, full
+ * reload on start, no database.
  *
  * <p>Layout under {@code <root>/store/}:
  * <pre>
- *   boats.json                  — Map&lt;boatId, Boat&gt;
- *   races.json                  — Map&lt;raceId, Race&gt;
- *   results/{raceId}.json       — Map&lt;boatId, Result&gt; per race
- *   race-times/{raceId}.json    — RaceTimes per race (RO-captured wall clock)
- *   series-config/{seriesId}.json — per-series Jinx algorithm settings (overrides config.yaml)
- *   pending-adjustments/{raceId}.json — Jinx-computed adjustments awaiting push to SailSys
- *   race-tcfs/{raceId}.json     — local snapshot of the TCFs in effect for this race (season-long history)
- *   audit.json                  — List&lt;AuditEntry&gt;, append-only
+ *   boats.json                    — Map&lt;boatId, Boat&gt;: the fleet register
+ *   series.json                   — Map&lt;seriesId, Series&gt;
+ *   races.json                    — Map&lt;raceId, Race&gt;
+ *   roster/{seriesId}.json        — boats entered for a series + starting TCFs
+ *   entrants/{raceId}.json        — RaceEntrants: who is in this race, at what TCF
+ *   start-sheet/{raceId}.json     — computed pursuit start times
+ *   race-times/{raceId}.json      — RO-captured came / actual start / finish
+ *   series-config/{seriesId}.json — per-series algorithm overrides
+ *   adjustments/{raceId}.json     — saved handicap adjustments (also the race lock)
+ *   audit.json                    — List&lt;AuditEntry&gt;, append-only
+ *   journal/{yyyy-MM}.jsonl       — append-only record of every mutation
  * </pre>
  *
- * <p>This is deliberately not a database. The dataset is small (one club, one
- * series, ~20 boats, 20 races/year) and human-readable JSON is the right
- * trade-off — easy to inspect, easy to back up, easy to hand-edit if something
- * goes wrong on race night.
+ * <p>The dataset is small — one club, ~40 boats, ~20 races a year — and
+ * human-readable JSON is the right trade-off: easy to inspect, easy to back up,
+ * easy to hand-edit when something goes wrong on race night.
+ *
+ * <p><b>This is the only copy.</b> Since v2 there is no SailSys behind it to
+ * re-fetch from, so three things that used to be optional are not:
+ * <ul>
+ *   <li><b>Atomic writes.</b> Every file is written to a sibling {@code .tmp}
+ *       and then moved into place, so a crash or a full disk can never leave a
+ *       half-written file where a good one used to be.</li>
+ *   <li><b>A journal.</b> Every mutation also appends one self-describing JSON
+ *       line to {@code journal/}. It is the recovery path for the cases atomic
+ *       writes can't cover — a crash between two related writes, or a file
+ *       somebody edited badly by hand.</li>
+ *   <li><b>Defensive loading.</b> A corrupt file is reported through
+ *       {@link #loadErrors()} and skipped, never allowed to stop the server
+ *       from starting. Losing one race's times on a Thursday evening is
+ *       recoverable; not being able to start the app is not.</li>
+ * </ul>
  */
 public class JsonStore
 {
@@ -58,66 +86,82 @@ public class JsonStore
         .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
         .build();
 
+    /** Journal lines are one-per-line, so they must not be pretty-printed. */
+    private static final JsonMapper JOURNAL_MAPPER = JsonMapper.builder()
+        .addModule(new JavaTimeModule())
+        .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+        .build();
+
+    private static final DateTimeFormatter JOURNAL_MONTH =
+        DateTimeFormatter.ofPattern("yyyy-MM");
+
     private final Path storeDir;
     private final Path boatsFile;
+    private final Path seriesFile;
     private final Path racesFile;
-    private final Path resultsDir;
+    private final Path rosterDir;
+    private final Path entrantsDir;
+    private final Path startSheetDir;
     private final Path raceTimesDir;
     private final Path seriesConfigDir;
-    private final Path pendingAdjustmentsDir;
-    private final Path raceTcfsDir;
+    private final Path adjustmentsDir;
     private final Path auditFile;
+    private final Path journalDir;
 
     private Map<String, Boat> boats;
+    private Map<String, Series> series;
     private Map<String, Race> races;
     private List<AuditEntry> audit;
+    private final List<String> loadErrors = new ArrayList<>();
 
     public JsonStore(Path dataRoot)
     {
         this.storeDir = dataRoot.resolve("store");
         this.boatsFile = storeDir.resolve("boats.json");
+        this.seriesFile = storeDir.resolve("series.json");
         this.racesFile = storeDir.resolve("races.json");
-        this.resultsDir = storeDir.resolve("results");
+        this.rosterDir = storeDir.resolve("roster");
+        this.entrantsDir = storeDir.resolve("entrants");
+        this.startSheetDir = storeDir.resolve("start-sheet");
         this.raceTimesDir = storeDir.resolve("race-times");
         this.seriesConfigDir = storeDir.resolve("series-config");
-        this.pendingAdjustmentsDir = storeDir.resolve("pending-adjustments");
-        this.raceTcfsDir = storeDir.resolve("race-tcfs");
+        this.adjustmentsDir = storeDir.resolve("adjustments");
         this.auditFile = storeDir.resolve("audit.json");
+        this.journalDir = storeDir.resolve("journal");
     }
 
-    /** Create directories if needed and load all entities into memory. */
+    /** Create directories if needed and load the in-memory entities. */
     public synchronized void start() throws IOException
     {
-        Files.createDirectories(storeDir);
-        Files.createDirectories(resultsDir);
-        Files.createDirectories(raceTimesDir);
-        Files.createDirectories(seriesConfigDir);
-        Files.createDirectories(pendingAdjustmentsDir);
-        Files.createDirectories(raceTcfsDir);
+        for (Path dir : List.of(storeDir, rosterDir, entrantsDir, startSheetDir,
+            raceTimesDir, seriesConfigDir, adjustmentsDir, journalDir))
+        {
+            Files.createDirectories(dir);
+        }
 
         boats = readMap(boatsFile, new TypeReference<>() { });
+        series = readMap(seriesFile, new TypeReference<>() { });
         races = readMap(racesFile, new TypeReference<>() { });
         audit = readList(auditFile, new TypeReference<>() { });
 
-        LOG.info("JsonStore started: {} boats, {} races, {} audit entries",
-            boats.size(), races.size(), audit.size());
+        LOG.info("JsonStore started: {} boats, {} series, {} races, {} audit entries{}",
+            boats.size(), series.size(), races.size(), audit.size(),
+            loadErrors.isEmpty() ? "" : (" — " + loadErrors.size() + " FILE(S) UNREADABLE"));
+        for (String e : loadErrors)
+            LOG.error("Store load error: {}", e);
     }
 
-    private static <V> Map<String, V> readMap(Path file, TypeReference<Map<String, V>> type) throws IOException
+    /**
+     * Files that could not be parsed during {@link #start()} or a subsequent
+     * read, as human-readable messages. Empty in the normal case. The UI
+     * surfaces these rather than letting a bad file fail silently.
+     */
+    public synchronized List<String> loadErrors()
     {
-        if (!Files.exists(file))
-            return new LinkedHashMap<>();
-        return new LinkedHashMap<>(MAPPER.readValue(Files.readAllBytes(file), type));
+        return List.copyOf(loadErrors);
     }
 
-    private static <V> List<V> readList(Path file, TypeReference<List<V>> type) throws IOException
-    {
-        if (!Files.exists(file))
-            return new ArrayList<>();
-        return new ArrayList<>(MAPPER.readValue(Files.readAllBytes(file), type));
-    }
-
-    // --- Boats ---
+    // --- Fleet register ------------------------------------------------------
 
     public synchronized Map<String, Boat> boats()
     {
@@ -127,17 +171,25 @@ public class JsonStore
     public synchronized void putBoat(Boat boat) throws IOException
     {
         boats.put(boat.id(), boat);
-        MAPPER.writeValue(boatsFile.toFile(), boats);
+        write(boatsFile, boats);
+        journal("boats", boat.id(), boat);
     }
 
-    /** Bulk replace — used after a fresh fetch of series entries from SailSys. */
-    public synchronized void replaceBoats(Map<String, Boat> fresh) throws IOException
+    // --- Series --------------------------------------------------------------
+
+    public synchronized Map<String, Series> series()
     {
-        boats = new LinkedHashMap<>(fresh);
-        MAPPER.writeValue(boatsFile.toFile(), boats);
+        return Collections.unmodifiableMap(series);
     }
 
-    // --- Races ---
+    public synchronized void putSeries(Series s) throws IOException
+    {
+        series.put(s.id(), s);
+        write(seriesFile, series);
+        journal("series", s.id(), s);
+    }
+
+    // --- Races ---------------------------------------------------------------
 
     public synchronized Map<String, Race> races()
     {
@@ -147,117 +199,144 @@ public class JsonStore
     public synchronized void putRace(Race race) throws IOException
     {
         races.put(race.id(), race);
-        MAPPER.writeValue(racesFile.toFile(), races);
+        write(racesFile, races);
+        journal("races", race.id(), race);
     }
 
-    // --- Results (per race) ---
-
-    public synchronized Map<String, Result> results(String raceId) throws IOException
+    /** Races in the given series, ordered by race number. */
+    public synchronized List<Race> racesInSeries(String seriesId)
     {
-        Path file = resultsDir.resolve(raceId + ".json");
-        if (!Files.exists(file))
-            return Map.of();
-        return Collections.unmodifiableMap(
-            MAPPER.readValue(Files.readAllBytes(file), new TypeReference<Map<String, Result>>() { }));
+        return races.values().stream()
+            .filter(r -> r.seriesId() != null && r.seriesId().equals(seriesId))
+            .sorted(Comparator.comparingInt(Race::number))
+            .toList();
     }
 
-    public synchronized void putResults(String raceId, Map<String, Result> results) throws IOException
+    /**
+     * The race after the given one in its series, by race number. This is what
+     * Save Handicaps needs in order to write the next race's entrant TCFs;
+     * SailSys used to supply it as {@code nextRaceId}. Empty for the last race
+     * in a series, or an unknown race.
+     */
+    public synchronized Optional<Race> nextRaceInSeries(String raceId)
     {
-        Path file = resultsDir.resolve(raceId + ".json");
-        MAPPER.writeValue(file.toFile(), results);
+        Race race = races.get(raceId);
+        if (race == null)
+            return Optional.empty();
+        return racesInSeries(race.seriesId()).stream()
+            .filter(r -> r.number() > race.number())
+            .findFirst();
     }
 
-    // --- Race times (RO-captured wall clock, per race) ---
+    // --- Series roster -------------------------------------------------------
 
-    /** Returns the saved race times for the given race, or {@code null} if none have been saved. */
-    public synchronized RaceTimes raceTimes(String raceId) throws IOException
+    /** The series roster, or {@code null} when the series has none yet. */
+    public synchronized Roster roster(String seriesId)
     {
-        Path file = raceTimesDir.resolve(raceId + ".json");
-        if (!Files.exists(file))
-            return null;
-        return MAPPER.readValue(Files.readAllBytes(file), RaceTimes.class);
+        return read(rosterDir.resolve(seriesId + ".json"), Roster.class);
+    }
+
+    public synchronized void putRoster(Roster roster) throws IOException
+    {
+        write(rosterDir.resolve(roster.seriesId() + ".json"), roster);
+        journal("roster", roster.seriesId(), roster);
+    }
+
+    // --- Race entrants -------------------------------------------------------
+
+    /** The race's entrants, or {@code null} when none have been set up. */
+    public synchronized RaceEntrants entrants(String raceId)
+    {
+        return read(entrantsDir.resolve(raceId + ".json"), RaceEntrants.class);
+    }
+
+    public synchronized void putEntrants(RaceEntrants entrants) throws IOException
+    {
+        write(entrantsDir.resolve(entrants.raceId() + ".json"), entrants);
+        journal("entrants", entrants.raceId(), entrants);
+    }
+
+    // --- Start sheet ---------------------------------------------------------
+
+    /** The computed start sheet, or {@code null} when start times haven't been computed. */
+    public synchronized StartSheet startSheet(String raceId)
+    {
+        return read(startSheetDir.resolve(raceId + ".json"), StartSheet.class);
+    }
+
+    public synchronized void putStartSheet(StartSheet sheet) throws IOException
+    {
+        write(startSheetDir.resolve(sheet.raceId() + ".json"), sheet);
+        journal("start-sheet", sheet.raceId(), sheet);
+    }
+
+    // --- Race times ----------------------------------------------------------
+
+    /** The RO-captured times, or {@code null} when nothing has been saved. */
+    public synchronized RaceTimes raceTimes(String raceId)
+    {
+        return read(raceTimesDir.resolve(raceId + ".json"), RaceTimes.class);
     }
 
     public synchronized void putRaceTimes(String raceId, RaceTimes times) throws IOException
     {
-        Path file = raceTimesDir.resolve(raceId + ".json");
-        MAPPER.writeValue(file.toFile(), times);
+        write(raceTimesDir.resolve(raceId + ".json"), times);
+        journal("race-times", raceId, times);
     }
 
-    // --- Series config (per-series Jinx algorithm overrides) ---
+    // --- Per-series algorithm config -----------------------------------------
 
     /**
-     * Returns the saved per-series algorithm config, or {@code null} if the
-     * series has never been configured. Callers should fall back to
-     * {@code JinxConfig.algorithm()} (the yaml defaults) in that case.
+     * The saved per-series algorithm config, or {@code null} when the series
+     * has never been configured — callers fall back to
+     * {@link JinxConfig#algorithm()}.
      */
-    public synchronized JinxConfig.Algorithm seriesConfig(String seriesId) throws IOException
+    public synchronized JinxConfig.Algorithm seriesConfig(String seriesId)
     {
-        Path file = seriesConfigDir.resolve(seriesId + ".json");
-        if (!Files.exists(file))
-            return null;
-        return MAPPER.readValue(Files.readAllBytes(file), JinxConfig.Algorithm.class);
+        return read(seriesConfigDir.resolve(seriesId + ".json"), JinxConfig.Algorithm.class);
     }
 
-    public synchronized void putSeriesConfig(String seriesId, JinxConfig.Algorithm cfg) throws IOException
-    {
-        Path file = seriesConfigDir.resolve(seriesId + ".json");
-        MAPPER.writeValue(file.toFile(), cfg);
-    }
-
-    // --- Pending adjustments (Jinx-computed, awaiting push to SailSys) ---
-
-    /**
-     * Returns the locally-saved adjustments for a race, or an empty list when none
-     * have been saved. Populated when the admin presses SAVE on the Process
-     * Handicaps panel; cleared once the adjustments are pushed to SailSys.
-     */
-    public synchronized List<Adjustment> pendingAdjustments(String raceId) throws IOException
-    {
-        Path file = pendingAdjustmentsDir.resolve(raceId + ".json");
-        if (!Files.exists(file))
-            return List.of();
-        return MAPPER.readValue(Files.readAllBytes(file),
-            new TypeReference<List<Adjustment>>() { });
-    }
-
-    public synchronized void putPendingAdjustments(String raceId, List<Adjustment> adjustments)
+    public synchronized void putSeriesConfig(String seriesId, JinxConfig.Algorithm cfg)
         throws IOException
     {
-        Path file = pendingAdjustmentsDir.resolve(raceId + ".json");
-        MAPPER.writeValue(file.toFile(), adjustments);
+        write(seriesConfigDir.resolve(seriesId + ".json"), cfg);
+        journal("series-config", seriesId, cfg);
     }
 
-    // --- Race TCF snapshots (per race, local season-long history) ---
+    // --- Handicap adjustments ------------------------------------------------
 
     /**
-     * Returns the locally-saved TCF snapshot for a race, or {@code null} when
-     * no snapshot exists. The snapshot is written by Save Handicaps (which
-     * populates the *next* race's snapshot from {@link Adjustment#newTcf()})
-     * and by manual TCF edits in the entrants table.
+     * The saved handicap adjustments for a race, or an empty list when the race
+     * has not been processed. A non-empty list is also what locks the race:
+     * see {@link Race}.
      */
-    public synchronized RaceTcfSnapshot raceTcfs(String raceId) throws IOException
+    public synchronized List<Adjustment> adjustments(String raceId)
     {
-        Path file = raceTcfsDir.resolve(raceId + ".json");
-        if (!Files.exists(file))
-            return null;
-        return MAPPER.readValue(Files.readAllBytes(file), RaceTcfSnapshot.class);
+        List<Adjustment> read = readList(adjustmentsDir.resolve(raceId + ".json"),
+            new TypeReference<>() { });
+        return Collections.unmodifiableList(read);
     }
 
-    public synchronized void putRaceTcfs(String raceId, RaceTcfSnapshot snapshot) throws IOException
+    public synchronized void putAdjustments(String raceId, List<Adjustment> adjustments)
+        throws IOException
     {
-        Path file = raceTcfsDir.resolve(raceId + ".json");
-        MAPPER.writeValue(file.toFile(), snapshot);
+        write(adjustmentsDir.resolve(raceId + ".json"), adjustments);
+        journal("adjustments", raceId, adjustments);
     }
 
-    /** Returns true when a snapshot existed and was removed. */
-    public synchronized boolean deleteRaceTcfs(String raceId) throws IOException
+    /**
+     * Drops a race's saved adjustments — the Unlock action. Returns true when
+     * something was actually removed.
+     */
+    public synchronized boolean deleteAdjustments(String raceId) throws IOException
     {
-        Path file = raceTcfsDir.resolve(raceId + ".json");
-        return Files.deleteIfExists(file);
+        boolean removed = Files.deleteIfExists(adjustmentsDir.resolve(raceId + ".json"));
+        if (removed)
+            journalDelete("adjustments", raceId);
+        return removed;
     }
 
-    // --- Audit ---
+    // --- Audit ---------------------------------------------------------------
 
     public synchronized List<AuditEntry> audit()
     {
@@ -267,6 +346,139 @@ public class JsonStore
     public synchronized void appendAudit(AuditEntry entry) throws IOException
     {
         audit.add(entry);
-        MAPPER.writeValue(auditFile.toFile(), audit);
+        write(auditFile, audit);
+        journal("audit", entry.raceId(), entry);
+    }
+
+    // --- I/O internals -------------------------------------------------------
+
+    /**
+     * Write JSON to {@code file} atomically: serialise to a sibling
+     * {@code .tmp}, force it to disk, then move it into place. The move is the
+     * only moment the visible file changes, so a reader either sees the
+     * complete old file or the complete new one — never a truncated mixture.
+     *
+     * <p>The temp file is a sibling rather than in the system temp directory so
+     * the move stays within one filesystem, where it is atomic.
+     */
+    private static void write(Path file, Object value) throws IOException
+    {
+        Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+        try
+        {
+            byte[] bytes = MAPPER.writeValueAsBytes(value);
+            Files.write(tmp, bytes,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.WRITE, StandardOpenOption.SYNC);
+            Files.move(tmp, file,
+                StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        }
+        catch (IOException e)
+        {
+            Files.deleteIfExists(tmp);
+            throw e;
+        }
+    }
+
+    /**
+     * Read one JSON file, or {@code null} when it doesn't exist. A parse
+     * failure is recorded in {@link #loadErrors()} and returns {@code null} —
+     * the caller sees "not saved yet", which every caller already handles,
+     * rather than an exception that would take a page or the whole server down.
+     */
+    private <T> T read(Path file, Class<T> type)
+    {
+        if (!Files.exists(file))
+            return null;
+        try
+        {
+            return MAPPER.readValue(Files.readAllBytes(file), type);
+        }
+        catch (IOException e)
+        {
+            recordLoadError(file, e);
+            return null;
+        }
+    }
+
+    private <V> Map<String, V> readMap(Path file, TypeReference<Map<String, V>> type)
+    {
+        if (!Files.exists(file))
+            return new LinkedHashMap<>();
+        try
+        {
+            return new LinkedHashMap<>(MAPPER.readValue(Files.readAllBytes(file), type));
+        }
+        catch (IOException e)
+        {
+            recordLoadError(file, e);
+            return new LinkedHashMap<>();
+        }
+    }
+
+    private <V> List<V> readList(Path file, TypeReference<List<V>> type)
+    {
+        if (!Files.exists(file))
+            return new ArrayList<>();
+        try
+        {
+            return new ArrayList<>(MAPPER.readValue(Files.readAllBytes(file), type));
+        }
+        catch (IOException e)
+        {
+            recordLoadError(file, e);
+            return new ArrayList<>();
+        }
+    }
+
+    private void recordLoadError(Path file, Exception e)
+    {
+        String message = file.getFileName() + ": " + e.getMessage();
+        loadErrors.add(message);
+        LOG.error("Could not read {} — skipping it. Fix the file or restore it from "
+            + "the journal; the data it held is NOT lost, but it is not loaded.", file, e);
+    }
+
+    /**
+     * Append one line to this month's journal describing a mutation. Best
+     * effort: a journal failure must never fail the write it is recording, or
+     * the safety net would become the thing that breaks race night.
+     */
+    private void journal(String entity, String key, Object payload)
+    {
+        appendJournalLine(new JournalLine(Instant.now(), entity, key, false, payload));
+    }
+
+    private void journalDelete(String entity, String key)
+    {
+        appendJournalLine(new JournalLine(Instant.now(), entity, key, true, null));
+    }
+
+    private void appendJournalLine(JournalLine line)
+    {
+        Path file = journalDir.resolve(LocalDate.now().format(JOURNAL_MONTH) + ".jsonl");
+        try
+        {
+            String json = JOURNAL_MAPPER.writeValueAsString(line) + "\n";
+            Files.writeString(file, json, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        }
+        catch (IOException | UncheckedIOException e)
+        {
+            LOG.warn("Could not append to the journal ({}): {}", file, e.toString());
+        }
+    }
+
+    /**
+     * One journalled mutation. {@code deleted} distinguishes a removal from a
+     * write of an empty value.
+     */
+    private record JournalLine(
+        Instant ts,
+        String entity,
+        String key,
+        boolean deleted,
+        Object payload)
+    {
     }
 }

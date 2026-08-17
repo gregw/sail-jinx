@@ -16,7 +16,7 @@ import org.mortbay.sailing.jinx.model.StartTime;
  * surface without touching the server or persistence layers.
  *
  * <p>Implementations are pure: they consume immutable inputs and return new
- * values. Side effects (persistence, push to SailSys) live in callers.
+ * values. Persistence and every other side effect live in callers.
  */
 public interface HandicapEngine
 {

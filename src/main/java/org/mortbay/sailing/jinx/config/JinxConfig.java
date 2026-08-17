@@ -14,11 +14,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Root configuration loaded from {@code data/config/config.yaml} at startup.
- * Credentials, series IDs, algorithm parameters and the server port live here.
+ * Root configuration loaded from {@code data/config/config.yaml} at startup:
+ * the club identity, the algorithm defaults, and the server port.
+ *
+ * <p>Unknown properties are ignored, so a config file left over from the
+ * SailSys era (with its {@code sailsys:} block of club ids, handicap definition
+ * ids and credentials) still loads — those settings simply have nowhere to go
+ * any more.
  */
 public record JinxConfig(
-    SailSys sailsys,
+    Club club,
     Algorithm algorithm,
     Server server)
 {
@@ -27,6 +32,16 @@ public record JinxConfig(
     private static final JsonMapper YAML_MAPPER = JsonMapper.builder(new YAMLFactory())
         .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
         .build();
+
+    public JinxConfig
+    {
+        if (club == null)
+            club = new Club(null, null);
+        if (algorithm == null)
+            algorithm = new Algorithm(null, 0, 0, null, null, null, false, null);
+        if (server == null)
+            server = new Server(0);
+    }
 
     public static JinxConfig load(Path configFile) throws IOException
     {
@@ -37,55 +52,36 @@ public record JinxConfig(
     }
 
     /**
-     * Connection settings for the SailSys API.
-     *
-     * <p>Credentials are deliberately NOT part of this record — the race
-     * officer supplies them via the login form on each browser session, the
-     * server uses them once to mint a SailSys session token, and then discards
-     * them. They are never persisted.
-     *
-     * <p>The active <em>series</em> is also not part of this record — sail-jinx
-     * is multi-series. The Series tab lists every series the club runs; the
-     * operator picks one at runtime. Only the {@code clubId} (which scopes the
-     * series list) and {@code handicapDefinitionId} (which identifies the PHS
-     * handicap line) are club-wide configuration.
+     * Who this installation belongs to. {@code timezone} is the one field with
+     * teeth: {@link org.mortbay.sailing.jinx.pursuit.SolarTimes} uses it to turn
+     * a computed sunset into local wall-clock, which keeps the summer-DST
+     * evening races honest.
      */
-    public record SailSys(
-        @JsonProperty("clubId") int clubId,
-        @JsonProperty("handicapDefinitionId") Integer handicapDefinitionId,
-        String timezone,
-        Integer timezoneOffset)
+    public record Club(
+        @JsonProperty("name") String name,
+        @JsonProperty("timezone") String timezone)
     {
-        public SailSys
+        public Club
         {
-            if (timezone == null) timezone = "Australia/Sydney";
-            if (timezoneOffset == null) timezoneOffset = 10;
-            if (handicapDefinitionId == null) handicapDefinitionId = 5; // PHS
+            if (name == null || name.isBlank())
+                name = "Sailing Club";
+            if (timezone == null || timezone.isBlank())
+                timezone = "Australia/Sydney";
         }
     }
 
     /**
-     * Algorithm parameters used by the Jinx pursuit handicap engine. Defaults
-     * are tuned to the originating MYC Twilight use case; another club
-     * overrides via {@code config.yaml}, and a single series can override
-     * further via the Series Configure form (stored per-series in
+     * Parameters for the Jinx pursuit handicap engine. Defaults are tuned to
+     * the originating MYC Twilight use case; another club overrides via
+     * {@code config.yaml}, and a single series can override further via the
+     * Series Configure form (stored per-series in
      * {@code data/store/series-config/{seriesId}.json}).
      *
-     * <p>{@code latitude}/{@code longitude} default to MYC (Spit-mouth-ish);
-     * {@code limitBySunset} caps the race duration so the slowest boat is
-     * expected to finish by sunset on the race date.
-     *
      * <p>{@code v0knots} is V₀ — the speed (knots) at which a 1.000-TCF boat is
-     * assumed to sail. It converts a target race duration into a per-division
-     * course length ({@code course = slowestTcf × V₀ × hours}) and anchors the
-     * post-race TCF adjustment. It defaults to 5.5 kn and may be overridden
-     * per series via the Series Configure form.
-     *
-     * <p>Sunset is computed locally by
-     * {@link org.mortbay.sailing.jinx.pursuit.SolarTimes#sunsetLocal} (no
-     * external API) and converted to local wall-clock using the configured
-     * {@link SailSys#timezone()}, which keeps summer DST correct for the
-     * evening twilight races this serves.
+     * assumed to sail. It converts a target race duration into a course length
+     * ({@code course = slowestTcf × V₀ × hours}) and anchors the post-race TCF
+     * adjustment. {@code limitBySunset} caps the race duration so the slowest
+     * boat is expected to finish by sunset on the race date.
      */
     public record Algorithm(
         @JsonProperty("penaltyList") List<Double> penaltyList,

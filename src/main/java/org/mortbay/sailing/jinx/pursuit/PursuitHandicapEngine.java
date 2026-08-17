@@ -61,16 +61,10 @@ public class PursuitHandicapEngine implements HandicapEngine
     @Override
     public List<Adjustment> processResults(List<Boat> boats, Race race, Map<String, Result> results)
     {
-        // TODO: when config.limitBySunset() is true, fetch the local sunset
-        //   wall-clock for race.date() and cap t_target so the slowest boat
-        //   is expected to finish before sundown. Source:
-        //     GET https://api.sunrise-sunset.org/json
-        //         ?lat={config.latitude()}&lng={config.longitude()}
-        //         &date={race.date()}&formatted=0
-        //   The response's data.sunset field is ISO-8601 UTC — convert to the
-        //   configured SailSys.timezone() before comparing to start time.
-        //   Cache per-date since the API is rate-limited.
-
+        // The sunset cap is not applied here. It shapes the course the RO lays
+        // before the race (see the course planner), not the handicap maths
+        // afterwards — by this point the boats have already sailed whatever
+        // course they were given, and their elapsed times say so.
         int tTarget = race.targetElapsedMinutes() != null ? race.targetElapsedMinutes() : 90;
 
         // §5: classify by FinishStatus and assign effective elapsed time.

@@ -22,11 +22,9 @@ class JinxConfigTest
     {
         Path file = tmp.resolve("config.yaml");
         Files.writeString(file, """
-            sailsys:
-              clubId: 23
-              handicapDefinitionId: 5
+            club:
+              name: "Manly Yacht Club"
               timezone: "Australia/Sydney"
-              timezoneOffset: 11
             algorithm:
               penaltyList: [6, 4, 2]
               idealRaceLength: 75         # legacy key — must still load via @JsonAlias
@@ -42,8 +40,8 @@ class JinxConfigTest
 
         JinxConfig config = JinxConfig.load(file);
 
-        assertThat(config.sailsys().clubId(), equalTo(23));
-        assertThat(config.sailsys().timezoneOffset(), equalTo(11));
+        assertThat(config.club().name(), equalTo("Manly Yacht Club"));
+        assertThat(config.club().timezone(), equalTo("Australia/Sydney"));
         assertThat(config.algorithm().penaltyList(), contains(6.0, 4.0, 2.0));
         assertThat(config.algorithm().idealRaceDuration(), equalTo(75));
         assertThat(config.algorithm().dnfAllowance(), equalTo(7));
@@ -60,8 +58,6 @@ class JinxConfigTest
     {
         Path file = tmp.resolve("config.yaml");
         Files.writeString(file, """
-            sailsys:
-              clubId: 23
             algorithm:
               penaltyList: [5, 4, 3, 2, 1, 0.5, 0.25]
             server: {}
@@ -78,45 +74,51 @@ class JinxConfigTest
     {
         Path file = tmp.resolve("config.yaml");
         Files.writeString(file, """
-            sailsys:
-              clubId: 23
             algorithm: {}
             server: {}
             """);
 
         JinxConfig config = JinxConfig.load(file);
 
-        // SailSys defaults
-        assertThat(config.sailsys().handicapDefinitionId(), equalTo(5));      // PHS
-        assertThat(config.sailsys().timezone(), equalTo("Australia/Sydney"));
-        assertThat(config.sailsys().timezoneOffset(), equalTo(10));
+        assertThat(config.club().timezone(), equalTo("Australia/Sydney"));
 
-        // Algorithm defaults (from wiki §10)
+        // Algorithm defaults (wiki §10)
         assertThat(config.algorithm().penaltyList(), equalTo(List.of(5.0, 4.0, 3.0, 2.0, 1.0)));
         assertThat(config.algorithm().idealRaceDuration(), equalTo(90));
         assertThat(config.algorithm().dnfAllowance(), equalTo(5));
         assertThat(config.algorithm().earliestStart(), equalTo("18:00"));
-        // Manly Yacht Club ground truth — defaults are tuned to the
-        // originating use case; another club overrides via config.yaml.
+        // Manly Yacht Club ground truth — defaults are tuned to the originating
+        // use case; another club overrides via config.yaml.
         assertThat(config.algorithm().latitude(), closeTo(-33.8000, 1e-9));
         assertThat(config.algorithm().longitude(), closeTo(151.2833, 1e-9));
         assertThat(config.algorithm().limitBySunset(), is(false));
-        // V₀ defaults to 5.5 kn (speed of a 1.000-TCF boat) when not configured.
         assertThat(config.algorithm().v0knots(), closeTo(5.5, 1e-9));
 
-        // Server defaults
         assertThat(config.server().port(), equalTo(8080));
     }
 
     @Test
-    void legacyFieldsInYamlAreIgnored(@TempDir Path tmp) throws IOException
+    void anEmptyConfigIsUsable(@TempDir Path tmp) throws IOException
     {
-        // Migration safety: a legacy config.yaml may still carry email, password,
-        // or seriesId. None of these are part of the model any more — credentials
-        // come from the login form, and the series is a runtime choice driven by
-        // the Series tab. Load must succeed and expose no accessor for them
-        // (verified at compile time by the absence of any reference to .email() /
-        // .password() / .seriesId() in this test or anywhere else).
+        // A fresh install with a bare config.yaml must start, not crash. Every
+        // block is optional and every default is safe.
+        Path file = tmp.resolve("config.yaml");
+        Files.writeString(file, "{}\n");
+
+        JinxConfig config = JinxConfig.load(file);
+
+        assertThat(config.club().name(), equalTo("Sailing Club"));
+        assertThat(config.algorithm().idealRaceDuration(), equalTo(90));
+        assertThat(config.server().port(), equalTo(8080));
+    }
+
+    @Test
+    void aSailSysEraConfigStillLoads(@TempDir Path tmp) throws IOException
+    {
+        // Migration safety. A config.yaml from v1 carries a whole sailsys:
+        // block — club ids, handicap definition ids, possibly credentials.
+        // None of it has a home any more, and none of it should stop the app
+        // from starting. The algorithm settings beside it must survive intact.
         Path file = tmp.resolve("config.yaml");
         Files.writeString(file, """
             sailsys:
@@ -124,12 +126,22 @@ class JinxConfigTest
               password: "should-be-ignored"
               clubId: 23
               seriesId: 4915
-            algorithm: {}
-            server: {}
+              handicapDefinitionId: 15
+              timezone: "Australia/Sydney"
+              timezoneOffset: 10
+            algorithm:
+              penaltyList: [6, 4, 2]
+              v0knots: 5.5
+            server:
+              port: 8080
             """);
 
         JinxConfig config = JinxConfig.load(file);
-        assertThat(config.sailsys().clubId(), equalTo(23));
+
+        assertThat(config.algorithm().penaltyList(), contains(6.0, 4.0, 2.0));
+        assertThat(config.algorithm().v0knots(), closeTo(5.5, 1e-9));
+        assertThat(config.club().timezone(), equalTo("Australia/Sydney"));
+        assertThat(config.server().port(), equalTo(8080));
     }
 
     @Test
