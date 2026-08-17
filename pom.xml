@@ -6,7 +6,10 @@
 
     <groupId>org.mortbay.sailing</groupId>
     <artifactId>sail-jinx</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <!-- 2.x is the standalone architecture: no SailSys integration of any kind.
+         The 0.x/1.x line (SailSys-coupled) is preserved on the
+         `backed-by-sailsys` branch. -->
+    <version>2.0.0-SNAPSHOT</version>
 
     <scm>
         <url>https://github.com/gregw/sail-jinx</url>

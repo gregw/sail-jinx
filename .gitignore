@@ -30,3 +30,11 @@ target/
 
 # Local JSON store
 data/store/
+
+# Timestamped store snapshots
+data/backups/
+
+# Archived pre-v2 store (the SailSys-era data, kept for the future importer).
+# Not committed: the repo is public and this is real club race data. Promote a
+# sanitised race or two to src/test/resources if you want importer fixtures.
+data/archive/
