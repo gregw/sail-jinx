@@ -2,111 +2,182 @@
 
 Please read [README.md](README.md) for a project overview.
 
-## Scope and extensibility
+## The one thing to know
 
-The originating use case is the MYC Twilight pursuit handicap, but the
-application has grown into a general SailSys-companion results UI:
+**sail-jinx v2 is standalone.** It has no SailSys client, no credentials, no
+outbound network calls of any kind. Results reach SailSys because a human reads
+a printed report and types them in.
 
-- All series at the configured club are listed and clickable.
-- All races (any race type, any handicap) are clickable; the race page adapts
-  its affordances rather than refusing to open the race.
-- TCF editing and the Process Handicaps step are unlocked only when the race
-  belongs to a series scored against the configured handicap definition
-  (`handicapDefinitionId` in `config.yaml`). Other series get TCF as a
-  view-only column and no Process Handicaps button.
-- The race page distinguishes pursuit races (`raceType=0`) from fleet starts:
-  pursuit shows per-entrant allocated/start, while fleet shows one
-  scheduled+actual gun time per division in a panel above the entrants
-  table.
-- The race page no longer takes any edit-mode URL flags. The page is
-  always editable subject to gates; live-timing affordances (NOW buttons,
-  NOW log) appear automatically while the race is "current" — i.e. not yet
-  fully published. A race stops being current only once its entrants AND its
-  results are published (`raceEntrantVisibility === 1` and `resultStatus >= 3`).
-  This deliberately avoids the sticky `resultStatus` field, which SailSys never
-  resets below 2 once a race has been processed (even after results are
-  deleted).
+If you find yourself adding an HTTP client, an API key, or a "sync" button, stop
+— that is the architecture this version exists to remove. The SailSys-coupled
+implementation is preserved on the `backed-by-sailsys` branch; it is history,
+not a reference.
 
-Architectural pluggability is preserved:
+`grep -ri sailsys src/ pom.xml` should return only comments explaining why
+something is the way it is. No endpoints, no code.
 
-- The `HandicapEngine` interface is designed to be implemented by multiple
-  algorithms. The pursuit algorithm is the first implementation.
-- Other algorithms (e.g. a pure PHS/TCF pass-through, or a different reward
-  distribution) can be added without changing the server, persistence, or
-  SailSys integration layers.
-- The series and club identifiers are configuration, not code. Another club
-  running a pursuit series on SailSys could point sail-jinx at their own
-  series with a different `config.yaml`.
+---
+
+## Scope
+
+One club, one pursuit series at a time, ~40 regular boats plus occasional
+casuals, ~20 races a season, one race officer on one laptop. Every design
+decision leans on that:
+
+- The whole dataset is small enough to load into memory and hand-edit.
+- The fleet register is an array you filter client-side — no search index.
+- There is no concurrency control, because there is one user.
+- There is no authentication, because there is one machine. **This must change
+  before the app is hosted anywhere.** The seam is `ApiServlet.currentRole()`.
+
+Deliberately preserved pluggability:
+
+- `HandicapEngine` is an interface. `PursuitHandicapEngine` is the first
+  implementation; another algorithm can be added without touching the server or
+  the store.
+- Club identity and algorithm parameters are configuration, not code. Another
+  club runs its own `config.yaml`.
 
 The name reflects this: it is not called `myc-twilight` because it is useful
 beyond that context.
 
+### Pursuit only
+
+v2 builds the pursuit path only — every boat gets its own staggered gun. Fleet
+starts (one gun per division) are not implemented. `division` survives as a
+field on `Boat` and `Entrant` so that mode can be added later without a data
+migration, but nothing reads it except the display.
+
 ---
 
-## Technology stack
+## Technology
 
 | Concern | Choice |
 |---|---|
 | Language | Java 21 |
-| HTTP server | Jetty (embedded) |
-| HTTP client | Jetty HttpClient (for SailSys API calls) |
+| HTTP server | Jetty 12 (embedded) |
 | Front end | Plain HTML + JavaScript, served as static resources |
-| Configuration | YAML (`config.yaml`) via SnakeYAML |
+| Configuration | YAML (`data/config/config.yaml`) |
 | Persistence | JSON files on disk via Jackson |
 | Build | Maven |
-| Target runtime | Local Linux or Windows JVM; designed to be deployable to Google App Engine standard (Java 21) or similar PaaS |
 
-No database. No framework. No Google Sheets. No Apps Script. Modelled on the sailing-pf project (https://github.com/gregw/sailing-pf) which uses the same Jetty-based stack and SailSys integration pattern.
+No database. No framework. No HTTP client — the absence is deliberate and
+`pom.xml` says so.
 
 ---
 
-## Project structure
+## Layout
 
 ```txt
 sail-jinx/
-  CLAUDE.md                       # this file
-  data/config/
-    *.yaml                        # local config: credentials, series IDs, algorithm params
-  data/store/
-    *.json                        # persisted data (that cannot be stored in sailsys)  
-  wiki/                           # cross link to wiki project
-    Home.md                       # project overview
-    myc-twilight-handicap-v2.md   # algorithm specification
-    sailsys-api-reference.md      # reverse-engineered SailSys REST API reference
-    myc-ro-ui-storyboard.md       # race officer UI storyboard
-  src/
-    main/java/org/mortbay/sailing/jinx/
-      model/*.java                # Data model  
-      store/*.java                # JSON persistence
-      server/*.java               # The Server
-      sailsys/*.java              # Sailsys integration
-      pursuit/*.java              # The jinx handicap
-    main/resources/
-      static/                     # HTML, CSS, JS front end
-  pom.xml
+  data/config/config.yaml       # club, algorithm defaults, port
+  data/store/                   # THE ONLY COPY of everything (gitignored)
+  data/archive/                 # pre-v2 SailSys-era store, kept for a future importer
+  wiki/                         # git submodule -> the GitHub wiki
+  src/main/java/org/mortbay/sailing/jinx/
+    model/                      # records: Boat, Series, Race, Entrant, RaceEntrants, ...
+    store/JsonStore.java        # atomic writes, journal, defensive load
+    server/                     # JinxServer, ApiServlet, StaticResourceServlet
+    pursuit/                    # HandicapEngine, PursuitHandicapEngine, SolarTimes
+    config/JinxConfig.java
+  src/main/resources/static/    # the whole front end
 ```
+
+### Where the scoring lives
+
+**In JavaScript, in `static/scoring.js`** — the wiki §5.1 primitives (effective
+start, OCS, scored and corrected finish, places, engine input). Both the race
+page and the corrected-finish report build a scorer from it, so what the RO sees
+on screen and what gets printed cannot disagree.
+
+The Java engine does the handicap *arithmetic* (`PursuitHandicapEngine`); the
+browser decides *what to feed it*. That split is why `/process-handicaps` takes
+a client-supplied snapshot rather than reading the store: the client knows about
+unsaved edits and flag overrides.
+
+`static/scoring-test.html` is the executable specification for that module — 42
+assertions. Open the page to run them. Change `scoring.js`, run that page.
+
+### The corrected/scored distinction
+
+Two numbers with similar names and different jobs:
+
+- `correctedFinishSeconds` — finish **plus the head start given back only**.
+  This is the report column a human transcribes, alongside the OCS flag.
+- `scoredFinishSeconds` — also carries the 5-minute OCS penalty. This decides
+  places and feeds the engine.
+
+Both are tested. Do not "fix" one to match the other.
+
+---
+
+## Data model
+
+| File | Holds |
+|---|---|
+| `boats.json` | the fleet register; `currentTcf` is a **seed**, not authoritative |
+| `series.json`, `races.json` | seasons and race dates |
+| `roster/{seriesId}.json` | who is in for the season, and their starting TCF |
+| `entrants/{raceId}.json` | who is in this race **and the TCF it was sailed on** |
+| `start-sheet/{raceId}.json` | the published stagger |
+| `race-times/{raceId}.json` | came / actual start / finish, as typed |
+| `adjustments/{raceId}.json` | saved handicap output — **also the race lock** |
+| `audit.json`, `journal/` | history |
+
+Two things follow from this that are easy to get wrong:
+
+1. **Each race's entrants carry their own TCF.** That is the per-race handicap
+   history — processing race 5 cannot disturb what race 4 says. SailSys only
+   ever kept the latest value, which is why v1 needed a separate snapshot file.
+2. **The race lifecycle is derived, never stored.** A race is locked iff it has
+   saved adjustments; unlocking is deleting them. There is no status field, and
+   there should not be one — the v1 field was sticky and lied.
+
+TCFs are held to four decimal places (`model/Tcf.java`), rounded half-up, at
+every point one is recorded. They get read aloud and retyped; a value that
+renders differently each time cannot survive that.
 
 ---
 
 ## Server API
 
-The Jetty server exposes a small REST API consumed by the HTML front end. All endpoints return JSON.
+All endpoints are local reads and writes. See the class javadoc on `ApiServlet`
+for the full list. The shape worth knowing:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/boats` | List fleet with current TCFs |
-| GET | `/api/races` | List races with status |
-| GET | `/api/races/{id}/startTimes` | Compute and return start sheet for a race |
-| POST | `/api/races/{id}/results` | Submit finish order, elapsed times, and statuses |
-| POST | `/api/races/{id}/process` | Run post-race TCF update, write audit entry |
-| POST | `/api/races/{id}/push` | Push updated TCFs to SailSys (`?dryRun=true` supported) |
-| GET | `/api/audit` | Full audit log |
+| GET | `/api/races/{id}` | **everything the race page needs, in one call** |
+| POST | `/api/races/{id}/entrants/seed` | seed from the roster or the previous race |
+| POST | `/api/races/{id}/start-times` | compute and publish the stagger |
+| POST | `/api/races/{id}/process-handicaps` | run the engine (computes, saves nothing) |
+| POST | `/api/races/{id}/save-handicaps` | save, and carry TCFs to the next race |
+| DELETE | `/api/races/{id}/adjustments` | unlock for reprocessing |
+
+---
+
+## Testing
+
+```bash
+mvn test        # 89 tests, offline
+```
+
+- `JsonStoreTest` — round-trips, atomicity, journalling, corrupt-file recovery.
+- `JinxApiIntegrationTest` — boots the real server on an ephemeral port and
+  drives a season over HTTP with the JDK client. Start here to understand the
+  workflow.
+- `PursuitHandicapEngineTest` — executable spec for the algorithm, mapped to
+  wiki sections.
+- `static/scoring-test.html` — the browser half. Not run by Maven; open it.
+
+Write the failing test first.
 
 ---
 
 ## Further reading
 
- + [Project Overview](wiki/Home.md)
- + [The Jinx Handicap Algorithm](wiki/myc-twilight-handicap-v2.md)
- + [Sailsys integration](wiki/sailsys-api-reference.md)
- + [UI plan](wiki/myc-ro-ui-storyboard.md)
++ [Project overview](wiki/Home.md)
++ [The Jinx handicap algorithm](wiki/Jinx-Handicaps.md)
++ [Race officer workflow](wiki/myc-ro-ui-storyboard.md)
++ [Decoupling plan](.claude/standalone-decoupling-plan.md) — why v2 looks like this
++ `wiki/sailsys-api-reference.md` — historical; describes an integration that no
+  longer exists
