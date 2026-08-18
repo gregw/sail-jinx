@@ -249,12 +249,12 @@ class JsonStoreTest
     }
 
     @Test
-    void tcfKeepsFullPrecision(@TempDir Path tmp) throws IOException
+    void tcfIsStoredAtFourDecimals(@TempDir Path tmp) throws IOException
     {
-        // The old TcfEntry truncated to 4 decimal places because SailSys's bulk
-        // handicap endpoint did. With SailSys gone the TCF carries full
-        // precision and only the published start time is rounded (wiki 3.1),
-        // so rounding error no longer compounds into the handicap.
+        // Four decimals is the sailing convention, and these numbers get read
+        // out loud and retyped into another system by hand — see Tcf. The
+        // engine's full-precision output is quantised as it is recorded, not
+        // left to render differently every time it is displayed.
         JsonStore first = new JsonStore(tmp);
         first.start();
         first.putEntrants(new RaceEntrants("r-1", Instant.now(),
@@ -263,7 +263,22 @@ class JsonStoreTest
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
-        assertThat(reopened.entrants("r-1").entrants().get(0).tcf(), equalTo(0.9287868));
+        assertThat(reopened.entrants("r-1").entrants().get(0).tcf(), equalTo(0.9288));
+    }
+
+    @Test
+    void aFullPrecisionTcfOnDiskIsQuantisedOnRead(@TempDir Path tmp) throws IOException
+    {
+        // Files written before the four-decimal rule — or edited by hand —
+        // must not reintroduce long tails through the back door.
+        JsonStore store = new JsonStore(tmp);
+        store.start();
+        Files.writeString(tmp.resolve("store/entrants/r-1.json"), """
+            {"raceId":"r-1","tcfSource":"ROSTER","entrants":[
+              {"boatId":"b-1","sailNumber":"AUS1","name":"Flashpoint","tcf":0.92878681}]}""",
+            StandardCharsets.UTF_8);
+
+        assertThat(store.entrants("r-1").entrants().get(0).tcf(), equalTo(0.9288));
     }
 
     @Test

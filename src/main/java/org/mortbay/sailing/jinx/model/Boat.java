@@ -34,4 +34,8 @@ public record Boat(
     boolean active,
     String notes)
 {
+    public Boat
+    {
+        currentTcf = Tcf.round(currentTcf);
+    }
 }

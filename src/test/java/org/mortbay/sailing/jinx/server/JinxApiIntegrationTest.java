@@ -16,6 +16,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mortbay.sailing.jinx.model.Tcf;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.closeTo;
@@ -336,7 +337,10 @@ class JinxApiIntegrationTest
             if (fast.equals(e.path("boatId").asText()))
                 carriedWinnerTcf = e.path("tcf").asDouble();
         }
-        assertThat(carriedWinnerTcf, closeTo(winner.path("newTcf").asDouble(), 1e-12));
+        // The engine works in full precision; what gets recorded — and read out
+        // and retyped — is four decimals. See Tcf.
+        assertThat(carriedWinnerTcf, equalTo(Tcf.round(winner.path("newTcf").asDouble())));
+        assertThat(Tcf.format(carriedWinnerTcf).length(), equalTo(6)); // "1.0234"
 
         // Race 1's own entrants keep the TCFs it was actually sailed on. This is
         // the history SailSys could never keep.

@@ -25,5 +25,9 @@ public record Roster(
         String boatId,
         double startingTcf)
     {
+        public Entry
+        {
+            startingTcf = Tcf.round(startingTcf);
+        }
     }
 }

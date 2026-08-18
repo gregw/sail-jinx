@@ -29,6 +29,14 @@ public record Entrant(
     double tcf,
     EntryType entryType)
 {
+    public Entrant
+    {
+        // Quantise on every construction path — engine output, hand-typed edit,
+        // and deserialisation of a file written before the rule existed. See
+        // Tcf for why four decimals.
+        tcf = Tcf.round(tcf);
+    }
+
     /**
      * How this boat came to be in the race. Only affects whether the handicap
      * engine adjusts its TCF afterwards — see {@link #scoresHandicap()}.
