@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sail-jinx — Start sheet</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="report-page">
+
+<div class="report-toolbar no-print">
+  <button onclick="window.print()" class="primary" type="button">Print</button>
+  <a id="back-link" href="/races.html">← back to the race</a>
+</div>
+
+<main class="report">
+  <header class="report-head">
+    <h1 id="report-title">Start sheet</h1>
+    <div id="report-sub" class="report-sub"></div>
+  </header>
+
+  <div id="report-state" class="banner banner-info">Loading…</div>
+
+  <table id="report-table" class="report-table" style="display:none;">
+    <thead>
+      <tr><th>Sail #</th><th>Boat</th><th class="num-cell">Offset</th><th class="num-cell">Start</th></tr>
+    </thead>
+    <tbody id="report-tbody"></tbody>
+  </table>
+
+  <footer class="report-foot" id="report-foot"></footer>
+</main>
+
+<script src="/common.js"></script>
+<script src="/scoring.js"></script>
+<script>
+  const raceId = new URLSearchParams(location.search).get('raceId');
+
+  (async () => {
+    const state = document.getElementById('report-state');
+    if (!raceId) {
+      state.className = 'banner banner-err';
+      state.textContent = 'No race given.';
+      return;
+    }
+    document.getElementById('back-link').href = '/race.html?raceId=' + encodeURIComponent(raceId);
+
+    const [bundleR, cfg] = await Promise.all([
+      fetchJson('/api/races/' + encodeURIComponent(raceId)),
+      getConfig()
+    ]);
+    if (!bundleR.ok) {
+      state.className = 'banner banner-err';
+      state.textContent = 'Could not load race: ' + errorOf(bundleR);
+      return;
+    }
+    const b = bundleR.body;
+    const sheet = b.startSheet;
+
+    document.getElementById('report-title').textContent =
+      (b.seriesName ? b.seriesName + ' — ' : '') + 'Race ' + b.race.number + ' — start times';
+    document.getElementById('report-sub').textContent = [
+      b.race.date ? fmtDate(b.race.date) : null,
+      sheet ? 'earliest start ' + String(sheet.earliestStart).slice(0, 5) : null,
+      sheet ? 'target ' + sheet.targetElapsedMinutes + ' min' : null,
+      b.race.courseLengthNm ? 'course ' + b.race.courseLengthNm + ' nm' : null
+    ].filter(Boolean).join('   ·   ');
+
+    if (!sheet || !(sheet.starts || []).length) {
+      state.className = 'banner banner-warn';
+      state.innerHTML = 'No start times have been computed for this race yet. '
+        + '<a href="/race.html?raceId=' + encodeURIComponent(raceId) + '">Compute them first.</a>';
+      return;
+    }
+
+    // Identity comes from the entrant list; the start sheet only carries ids.
+    const byId = new Map(((b.entrants && b.entrants.entrants) || [])
+      .map(e => [String(e.boatId), e]));
+
+    const earliest = parseTime(sheet.earliestStart);
+    const rows = sheet.starts.map(s => {
+      const e = byId.get(String(s.boatId));
+      const start = parseTime(s.startTime);
+      const offset = (earliest == null || start == null) ? null
+        : Math.round((start - earliest) / 60);
+      return {
+        sail: e ? e.sailNumber : s.boatId,
+        name: e ? e.name : '',
+        offset,
+        start: fmtTimeOfDay(start).slice(0, 5)
+      };
+    });
+
+    document.getElementById('report-tbody').innerHTML = rows.map(r =>
+      '<tr>'
+      + '<td class="mono">' + esc(r.sail) + '</td>'
+      + '<td>' + esc(r.name) + '</td>'
+      + '<td class="num-cell mono">' + (r.offset == null ? '' : '+' + r.offset) + '</td>'
+      + '<td class="num-cell mono">' + esc(r.start) + '</td>'
+      + '</tr>').join('');
+
+    state.style.display = 'none';
+    document.getElementById('report-table').style.display = '';
+    document.getElementById('report-foot').textContent =
+      rows.length + ' boats   ·   ' + (cfg ? cfg.club.name : '')
+      + '   ·   generated ' + new Date().toLocaleString();
+  })();
+</script>
+</body>
+</html>

@@ -10,29 +10,156 @@
 <!-- INCLUDE _nav.html -->
 
 <main>
-  <h1>Boats</h1>
-  <p class="banner banner-info">Skeleton — fleet table sourced from the local store. Refresh from SailSys is TODO.</p>
-  <table>
-    <thead><tr><th>Sail #</th><th>Name</th><th>Division</th><th>TCF</th></tr></thead>
-    <tbody id="boats-tbody"><tr><td colspan="4"><em>Loading…</em></td></tr></tbody>
+  <h1>Fleet register</h1>
+  <p class="lead">
+    Every boat sail-jinx knows about. Roughly forty regulars plus whoever turns
+    up. Retiring a boat keeps it here — races it has already sailed still name it.
+  </p>
+
+  <div id="boats-state" class="banner banner-info">Loading…</div>
+
+  <div class="toolbar">
+    <label><input type="checkbox" id="show-retired"> Show retired</label>
+    <button id="add-btn" class="primary" type="button">Add boat</button>
+  </div>
+
+  <table id="boats-table" style="display:none;">
+    <thead>
+      <tr>
+        <th>Sail #</th><th>Name</th><th>Division</th><th>Spin</th>
+        <th class="num-cell">TCF</th><th>Notes</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="boats-tbody"></tbody>
   </table>
 </main>
 
 <script src="/common.js"></script>
+<script src="/scoring.js"></script>
 <script>
-  (async () => {
-    const r = await fetchJson('/api/boats');
+  let boats = [];
+  let showRetired = false;
+  let editingId = null;   // boat id being edited, or '' for the new-boat row
+
+  function visibleBoats() {
+    return boats.filter(b => showRetired || b.active);
+  }
+
+  function render() {
     const tbody = document.getElementById('boats-tbody');
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="4">Error loading boats.</td></tr>'; return; }
-    if (!r.body.length) { tbody.innerHTML = '<tr><td colspan="4"><em>No boats yet. Sign in to SailSys and refresh.</em></td></tr>'; return; }
-    tbody.innerHTML = r.body.map(b => `
-      <tr>
-        <td>${esc(b.sailNumber)}</td>
-        <td>${esc(b.name)}</td>
-        <td>${esc(b.divisionName)}</td>
-        <td>${b.currentTcf?.toFixed(4) ?? ''}</td>
-      </tr>`).join('');
-  })();
+    const table = document.getElementById('boats-table');
+    const state = document.getElementById('boats-state');
+    const rows = visibleBoats();
+
+    table.style.display = '';
+    if (!rows.length && editingId === null) {
+      state.className = 'banner banner-info';
+      state.textContent = boats.length
+        ? 'No active boats. Tick "Show retired" to see the rest.'
+        : 'No boats yet. Add the fleet with the button above.';
+    } else {
+      state.style.display = 'none';
+    }
+
+    let html = rows.map(b => editingId === b.id ? editRow(b) : viewRow(b)).join('');
+    if (editingId === '') html += editRow(null);
+    tbody.innerHTML = html;
+    wireRows();
+  }
+
+  function viewRow(b) {
+    return '<tr class="' + (b.active ? '' : 'retired') + '">'
+      + '<td>' + esc(b.sailNumber) + '</td>'
+      + '<td>' + esc(b.name) + (b.casual ? ' <span class="tag" title="Added on a race night">casual</span>' : '') + '</td>'
+      + '<td>' + esc(b.division) + '</td>'
+      + '<td>' + esc(b.spinnaker) + '</td>'
+      + '<td class="num-cell">' + esc(fmtTcf(b.currentTcf)) + '</td>'
+      + '<td class="notes-cell">' + esc(b.notes) + '</td>'
+      + '<td><button type="button" class="link-btn edit-btn" data-id="' + esc(b.id) + '">Edit</button></td>'
+      + '</tr>';
+  }
+
+  function editRow(b) {
+    const v = b || { id: '', sailNumber: '', name: '', division: '', spinnaker: 'S',
+                     currentTcf: 1.0, active: true, notes: '' };
+    const sel = (k) => v.spinnaker === k ? ' selected' : '';
+    return '<tr class="editing">'
+      + '<td><input class="f-sail" value="' + esc(v.sailNumber) + '" placeholder="AUS123"></td>'
+      + '<td><input class="f-name" value="' + esc(v.name) + '" placeholder="Boat name"></td>'
+      + '<td><input class="f-division" value="' + esc(v.division || '') + '" placeholder="Div 1"></td>'
+      + '<td><select class="f-spin"><option value="S"' + sel('S') + '>S</option>'
+      + '<option value="NS"' + sel('NS') + '>NS</option></select></td>'
+      + '<td class="num-cell"><input class="f-tcf" type="number" step="0.0001" value="'
+      + esc(fmtTcf(v.currentTcf)) + '"></td>'
+      + '<td><input class="f-notes" value="' + esc(v.notes || '') + '" placeholder="optional"></td>'
+      + '<td class="actions-cell">'
+      + '<button type="button" class="primary save-btn" data-id="' + esc(v.id) + '">Save</button> '
+      + '<button type="button" class="cancel-btn">Cancel</button>'
+      + (b ? ' <label class="retire-label"><input type="checkbox" class="f-active"'
+             + (v.active ? ' checked' : '') + '> active</label>' : '')
+      + '</td></tr>';
+  }
+
+  function wireRows() {
+    document.querySelectorAll('.edit-btn').forEach(btn => {
+      btn.onclick = () => { editingId = btn.dataset.id; render(); };
+    });
+    document.querySelectorAll('.cancel-btn').forEach(btn => {
+      btn.onclick = () => { editingId = null; render(); };
+    });
+    document.querySelectorAll('.save-btn').forEach(btn => {
+      btn.onclick = () => save(btn.dataset.id);
+    });
+    const first = document.querySelector('tr.editing .f-sail');
+    if (first) first.focus();
+  }
+
+  async function save(id) {
+    const row = document.querySelector('tr.editing');
+    if (!row) return;
+    const activeBox = row.querySelector('.f-active');
+    const payload = {
+      sailNumber: row.querySelector('.f-sail').value.trim(),
+      name: row.querySelector('.f-name').value.trim(),
+      division: row.querySelector('.f-division').value.trim(),
+      spinnaker: row.querySelector('.f-spin').value,
+      currentTcf: Number(row.querySelector('.f-tcf').value) || 1.0,
+      notes: row.querySelector('.f-notes').value.trim(),
+      active: activeBox ? activeBox.checked : true
+    };
+    if (id) payload.id = id;
+    if (!payload.sailNumber && !payload.name) {
+      showError('A boat needs at least a sail number or a name.');
+      return;
+    }
+
+    const r = await postJson('/api/boats', payload);
+    if (!r.ok) { showError('Could not save: ' + errorOf(r)); return; }
+    editingId = null;
+    await load();
+  }
+
+  function showError(msg) {
+    const state = document.getElementById('boats-state');
+    state.style.display = '';
+    state.className = 'banner banner-err';
+    state.textContent = msg;
+  }
+
+  async function load() {
+    const r = await fetchJson('/api/boats');
+    if (!r.ok) { showError('Could not load boats: ' + errorOf(r)); return; }
+    boats = r.body || [];
+    render();
+  }
+
+  document.getElementById('add-btn').onclick = () => { editingId = ''; render(); };
+  document.getElementById('show-retired').onchange = (ev) => {
+    showRetired = ev.target.checked;
+    render();
+  };
+
+  load();
 </script>
 </body>
 </html>

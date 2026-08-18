@@ -1,14 +1,8 @@
-// sail-jinx — shared client utilities.
-
 function esc(val) {
   if (val == null) return '';
   return String(val).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Count of in-flight requests. While any request to our server (and thus,
-// behind it, SailSys) is outstanding, <body> gets a `busy` class so the page
-// shows a wait cursor — the RO knows to wait rather than re-clicking. A counter
-// (not a boolean) keeps the cursor up until the LAST concurrent request settles.
 let _pendingRequests = 0;
 function setBusy(on) {
   _pendingRequests = on ? _pendingRequests + 1 : Math.max(0, _pendingRequests - 1);
@@ -44,9 +38,15 @@ async function postJson(url, payload) {
   });
 }
 
-// Mark the current page's link in the nav. The home link ("/") is treated as
-// matching only when the path is exactly "/" or "/index.html"; other links
-// match on filename equality.
+async function deleteJson(url) {
+  return fetchJson(url, { method: 'DELETE' });
+}
+
+/** The error text from a failed fetchJson result, for showing to the user. */
+function errorOf(r) {
+  return (r && r.body && r.body.error) || ('HTTP ' + (r ? r.status : '?'));
+}
+
 function highlightCurrentNav() {
   const here = location.pathname === '/' ? '/index.html' : location.pathname;
   document.querySelectorAll('nav.site-nav a').forEach(a => {
@@ -56,38 +56,6 @@ function highlightCurrentNav() {
   });
 }
 
-// Cache of the auth status fetched by refreshAuthWidget so other code can
-// synchronously read whether the current user is a SailSys admin (vs race
-// officer). Pages that need to gate UI on this should call awaitAuth()
-// rather than reading the cache directly to avoid races on first paint.
-let _authStatus = null;
-let _authPromise = null;
-
-function awaitAuth() {
-  if (_authPromise) return _authPromise;
-  _authPromise = fetchJson('/api/auth/status').then(r => {
-    _authStatus = (r.ok && r.body) ? r.body : { authenticated: false };
-    return _authStatus;
-  });
-  return _authPromise;
-}
-
-// Drop the cached auth so the next awaitAuth() refetches. Call after login
-// or logout — otherwise the cached pre-login state would shadow the new role
-// until a full page reload.
-function invalidateAuth() {
-  _authStatus = null;
-  _authPromise = null;
-}
-
-function isAdmin() {
-  return !!(_authStatus && _authStatus.user && _authStatus.user.isAdmin);
-}
-
-// Cache of /api/config — pages need the configured handicapDefinitionId to
-// decide whether a race uses our handicap (and therefore whether TCF editing
-// + handicap processing is offered). The config is process-global and rarely
-// changes, so one fetch per page load is fine.
 let _config = null;
 let _configPromise = null;
 
@@ -100,48 +68,52 @@ function getConfig() {
   return _configPromise;
 }
 
-// Disable (gray out + remove click) the Series nav link for non-admin SailSys
-// users. Race officers get HTTP 403 on /series/{id} endpoints, so the page
-// would be useless to them. We keep the link in the DOM (so the nav layout
-// doesn't shift) but mark it disabled via a CSS class.
-function applyRoleToNav() {
-  const navSeries = document.getElementById('nav-series');
-  if (!navSeries) return;
-  const link = navSeries.querySelector('a') || navSeries;
-  if (_authStatus && _authStatus.authenticated && !isAdmin()) {
-    link.classList.add('nav-disabled');
-    link.setAttribute('aria-disabled', 'true');
-    link.title = 'Series details require an admin SailSys account';
-  } else {
-    link.classList.remove('nav-disabled');
-    link.removeAttribute('aria-disabled');
-    link.removeAttribute('title');
-  }
+/**
+ * There is no login. Everyone reaching this server is treated as an admin —
+ * it runs on one machine on one desk, which is the whole security boundary.
+ * Kept as a function so the pages ask a question rather than assume an answer,
+ * and so adding real authentication later is one place, not thirty.
+ */
+function isAdmin() {
+  return true;
 }
 
-// Refresh the auth widget in the top-right of the nav. Called on every page.
-async function refreshAuthWidget() {
-  const widget = document.getElementById('auth-widget');
-  if (!widget) {
-    // No widget on this page, but still resolve auth so isAdmin() works.
-    await awaitAuth();
-    applyRoleToNav();
+/**
+ * Show the club, the build, and — loudly — any store file that failed to load.
+ * A corrupt file must never present as merely missing data: this store is the
+ * only copy there is.
+ */
+async function refreshBuildWidget() {
+  const widget = document.getElementById('build-widget');
+  const cfg = await getConfig();
+  if (!widget) return;
+  if (!cfg) {
+    widget.innerHTML = '<span class="build-err">server unreachable</span>';
     return;
   }
-  const data = await awaitAuth();
-  if (!data) {
-    widget.innerHTML = 'auth: <em>error</em>';
-    return;
+  const errors = cfg.storeErrors || [];
+  let html = esc(cfg.club && cfg.club.name) + ' <span class="build-version">v'
+    + esc(cfg.version) + '</span>';
+  if (errors.length) {
+    html += ' <a class="build-err" href="/audit.html" title="'
+      + esc(errors.join('\n')) + '">⚠ ' + errors.length + ' unreadable file'
+      + (errors.length === 1 ? '' : 's') + '</a>';
   }
-  if (data.authenticated && data.user) {
-    const role = data.user.isAdmin ? 'admin' : 'race officer';
-    widget.innerHTML = 'SailSys: ' + esc(data.user.email)
-      + ' <span style="color:#888;">(' + esc(role) + ')</span>';
-  } else {
-    widget.innerHTML = '<a href="/">Sign in to SailSys</a>';
-  }
-  applyRoleToNav();
+  widget.innerHTML = html;
+}
+
+/** Remember the race the user was last looking at, so /race.html has a default. */
+function rememberRaceId(raceId) {
+  if (raceId) localStorage.setItem('sail-jinx.lastRaceId', raceId);
+}
+
+function lastRaceId() {
+  return localStorage.getItem('sail-jinx.lastRaceId');
+}
+
+function fmtDate(s) {
+  return s ? String(s).slice(0, 10) : '';
 }
 
 highlightCurrentNav();
-refreshAuthWidget();
+refreshBuildWidget();

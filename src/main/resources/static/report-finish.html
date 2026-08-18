@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sail-jinx — Finish sheet</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="report-page">
+
+<div class="report-toolbar no-print">
+  <button onclick="window.print()" class="primary" type="button">Print</button>
+  <a id="back-link" href="/races.html">← back to the race</a>
+</div>
+
+<main class="report">
+  <header class="report-head">
+    <h1 id="report-title">Finish sheet</h1>
+    <div id="report-sub" class="report-sub"></div>
+  </header>
+
+  <div id="report-state" class="banner banner-info">Loading…</div>
+
+  <table id="report-table" class="report-table" style="display:none;">
+    <thead>
+      <tr>
+        <th class="num-cell">Pl</th><th>Sail #</th><th>Boat</th>
+        <th class="num-cell">Finish</th><th class="num-cell">Corrected</th><th>Flags</th>
+      </tr>
+    </thead>
+    <tbody id="report-tbody"></tbody>
+  </table>
+
+  <p class="report-note">
+    <strong>Corrected</strong> is the finish time with any head start from crossing
+    early given back. It does <em>not</em> include the OCS penalty — that is implied
+    by the OCS flag and applied when these results are entered.
+  </p>
+
+  <footer class="report-foot" id="report-foot"></footer>
+</main>
+
+<script src="/common.js"></script>
+<script src="/scoring.js"></script>
+<script>
+  const raceId = new URLSearchParams(location.search).get('raceId');
+
+  (async () => {
+    const state = document.getElementById('report-state');
+    if (!raceId) {
+      state.className = 'banner banner-err';
+      state.textContent = 'No race given.';
+      return;
+    }
+    document.getElementById('back-link').href = '/race.html?raceId=' + encodeURIComponent(raceId);
+
+    const [bundleR, cfg] = await Promise.all([
+      fetchJson('/api/races/' + encodeURIComponent(raceId)),
+      getConfig()
+    ]);
+    if (!bundleR.ok) {
+      state.className = 'banner banner-err';
+      state.textContent = 'Could not load race: ' + errorOf(bundleR);
+      return;
+    }
+    const b = bundleR.body;
+    const entrants = (b.entrants && b.entrants.entrants) || [];
+
+    document.getElementById('report-title').textContent =
+      (b.seriesName ? b.seriesName + ' — ' : '') + 'Race ' + b.race.number + ' — results';
+    document.getElementById('report-sub').textContent = [
+      b.race.date ? fmtDate(b.race.date) : null,
+      b.race.courseLengthNm ? 'course ' + b.race.courseLengthNm + ' nm' : null,
+      b.race.abandoned ? 'ABANDONED' : null
+    ].filter(Boolean).join('   ·   ');
+
+    if (!entrants.length) {
+      state.className = 'banner banner-warn';
+      state.textContent = 'This race has no entrants.';
+      return;
+    }
+
+    // Exactly the scorer the race page uses — one implementation, so the sheet
+    // that gets transcribed cannot disagree with what was on screen.
+    const scorer = createScorer({
+      entrants,
+      startSheet: b.startSheet,
+      times: (b.times && b.times.times) || {},
+      dutyBoatId: b.times && b.times.dutyBoatId,
+      flagOverrides: new Map(),
+      tcfOverrides: new Map()
+    });
+    const places = scorer.places('pursuit');
+
+    // Placed boats in order, then everyone else — the transcriber needs to see
+    // every entrant, not just the ones that scored.
+    const placed = entrants
+      .filter(e => places.has(String(e.boatId)))
+      .sort((x, y) => places.get(String(x.boatId)) - places.get(String(y.boatId)));
+    const unplaced = entrants.filter(e => !places.has(String(e.boatId)));
+
+    const row = (e, place) =>
+      '<tr' + (place == null ? ' class="unplaced"' : '') + '>'
+      + '<td class="num-cell mono">' + (place == null ? '—' : place) + '</td>'
+      + '<td class="mono">' + esc(e.sailNumber) + '</td>'
+      + '<td>' + esc(e.name) + '</td>'
+      + '<td class="num-cell mono">' + esc(fmtTimeOfDay(scorer.finishSeconds(e))) + '</td>'
+      + '<td class="num-cell mono">' + esc(fmtTimeOfDay(scorer.correctedFinishSeconds(e))) + '</td>'
+      + '<td class="mono">' + esc(scorer.flags(e).join(' ')) + '</td>'
+      + '</tr>';
+
+    document.getElementById('report-tbody').innerHTML =
+      placed.map(e => row(e, places.get(String(e.boatId)))).join('')
+      + unplaced.map(e => row(e, null)).join('');
+
+    state.style.display = 'none';
+    document.getElementById('report-table').style.display = '';
+    document.getElementById('report-foot').textContent =
+      placed.length + ' placed of ' + entrants.length + ' entered   ·   '
+      + (cfg ? cfg.club.name : '') + '   ·   generated ' + new Date().toLocaleString();
+  })();
+</script>
+</body>
+</html>

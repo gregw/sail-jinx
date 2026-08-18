@@ -1,29 +1,32 @@
 /* sail-jinx — shared styles.
  *
- * The look is a clean, modern race-management UI in the spirit of SailSys:
- * a sans-serif chrome over a soft off-white page, a navy/blue accent, gentle
- * rounding and shadows. The one deliberate departure from "all sans-serif" is
- * the data the race officer scans under time pressure: time and TCF inputs stay
- * monospace, and tables use tabular-figures so columns of times/numbers still
- * line up perfectly. */
+ * A clean race-management UI: sans-serif chrome over a soft off-white page, a
+ * navy accent, gentle rounding. The one deliberate departure from all-sans is
+ * the data the race officer scans under time pressure — time and TCF inputs
+ * stay monospace, and tables use tabular figures so columns of times and
+ * numbers line up.
+ *
+ * The reports at the bottom of this file are the other half of the job: they
+ * print, and someone reads the printout aloud while another person types it
+ * into SailSys. They are set larger and plainer than the screen UI for that
+ * reason. */
 
 :root {
-  /* Palette */
-  --brand:        #15487e;   /* deep navy-blue — primary actions, active nav */
+  --brand:        #15487e;
   --brand-dark:   #0f3a68;
-  --accent:       #2f6fb3;   /* lighter blue — links, hover accents */
-  --accent-soft:  #eaf1fb;   /* tinted blue fill for hovers/selection */
+  --accent:       #2f6fb3;
+  --accent-soft:  #eaf1fb;
 
-  --ink:          #1f2a37;   /* primary text */
-  --muted:        #64727f;   /* secondary text / labels */
-  --faint:        #95a1ad;   /* placeholders, disabled hints */
+  --ink:          #1f2a37;
+  --muted:        #64727f;
+  --faint:        #95a1ad;
 
-  --line:         #e4e8ee;   /* hairline borders */
-  --line-strong:  #cfd6df;   /* heavier dividers */
+  --line:         #e4e8ee;
+  --line-strong:  #cfd6df;
 
-  --bg:           #f5f7fa;   /* page background */
-  --surface:      #ffffff;   /* cards / panels */
-  --surface-alt:  #f0f3f8;   /* table header fill, zebra */
+  --bg:           #f5f7fa;
+  --surface:      #ffffff;
+  --surface-alt:  #f0f3f8;
 
   --warn-bg: #fff6e0; --warn-bd: #f0c245; --warn-fg: #7a5a05;
   --err-bg:  #fdecee; --err-bd:  #f1b6bd; --err-fg:  #8a1c28;
@@ -42,10 +45,8 @@
 
 * { box-sizing: border-box; }
 
-/* While a request to the server / SailSys is in flight (toggled by setBusy in
-   common.js), show a wait cursor over the whole page so the RO knows to wait.
-   The `* !important` wins over element-specific cursors (buttons, inputs, drag
-   handles) for the duration. */
+/* While a request is in flight (setBusy in common.js) show a wait cursor over
+   everything, so the RO knows to wait. */
 body.busy, body.busy * { cursor: wait !important; }
 
 body {
@@ -56,122 +57,121 @@ body {
   padding: 0 1.5rem 3rem;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
 }
 
 main { max-width: 1500px; margin: 0 auto; }
 
 h1 { font-size: 1.55rem; font-weight: 650; letter-spacing: -0.01em; margin: 1rem 0 0.5rem; }
 h2 {
-  font-size: 1.15rem; font-weight: 620; letter-spacing: -0.005em;
-  margin: 1.75rem 0 0.6rem; padding-bottom: 0.3rem;
-  border-bottom: 1px solid var(--line);
+  font-size: 1.15rem; font-weight: 620; margin: 1.75rem 0 0.6rem;
+  padding-bottom: 0.3rem; border-bottom: 1px solid var(--line);
 }
-h3 { font-size: 1rem; font-weight: 620; margin: 1rem 0 0.4rem; }
 p.lead { color: var(--muted); font-size: 1.02rem; max-width: 60rem; }
+ul, ol { max-width: 60rem; }
+ol.setup-steps li { margin-bottom: 0.35rem; }
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--brand); text-decoration: underline; }
 
-/* Buttons */
+code { font-family: var(--font-mono); font-size: 0.9em; }
+
+/* --- buttons ------------------------------------------------------------- */
+
 button {
   font-family: var(--font-ui); font-size: 0.9rem; font-weight: 500;
   color: var(--ink); background: var(--surface);
   border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
   padding: 5px 12px; cursor: pointer;
-  transition: background .12s ease, border-color .12s ease, box-shadow .12s ease, color .12s ease;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
 }
 button:hover:not(:disabled) { background: var(--surface-alt); border-color: var(--accent); }
-button:active:not(:disabled) { transform: translateY(0.5px); }
 button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 button.primary {
   background: var(--brand); color: #fff; border-color: var(--brand);
   padding: 6px 18px; font-weight: 600;
-  box-shadow: 0 1px 2px rgba(15,42,72,.18);
 }
 button.primary:hover:not(:disabled) { background: var(--brand-dark); border-color: var(--brand-dark); }
 button:disabled { opacity: 0.55; cursor: default; }
-/* A disabled primary isn't the current next step — drop it to a neutral grey
-   fill so only the actionable primary button reads as "do this now". */
+/* A disabled primary isn't the current next step, so drop it to neutral grey —
+   only the actionable primary should read as "do this now". */
 button.primary:disabled {
   background: var(--surface-alt); color: var(--muted);
-  border-color: var(--line-strong); box-shadow: none; opacity: 1;
+  border-color: var(--line-strong); opacity: 1;
+}
+button.link-btn {
+  background: none; border: none; color: var(--accent);
+  padding: 0 0.35rem; font-size: 0.88rem;
+}
+button.link-btn:hover { background: none; text-decoration: underline; }
+a.button-link {
+  display: inline-block; font-size: 0.9rem; font-weight: 500;
+  padding: 5px 12px; border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm); background: var(--surface); color: var(--ink);
+}
+a.button-link:hover { background: var(--surface-alt); border-color: var(--accent); text-decoration: none; }
+
+/* --- inputs -------------------------------------------------------------- */
+
+input[type=text], input[type=number], input[type=date], input:not([type]), select {
+  font-family: var(--font-ui); font-size: 0.9rem; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm); padding: 4px 8px;
+}
+input:focus, select:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* TCF input — sized for exactly "0.0000" in monospace. The number spinner is
-   suppressed so the box doesn't need extra room for it; 0.0001-step typing is
-   fine for the RO. Monospace is kept deliberately so the digits stay aligned. */
+/* TCF input — sized for exactly "0.0000". content-box so the ch width is pure
+   text space; the global border-box would fold padding in and clip the value. */
 input.tcf-input {
   font-family: var(--font-mono); width: 6.5ch; padding: 3px 5px; text-align: right;
-  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
-  /* content-box so the ch width is pure text space — box-sizing:border-box
-     (set globally) would otherwise fold padding+border in and clip the value. */
-  box-sizing: content-box;
-  -moz-appearance: textfield;
+  box-sizing: content-box; -moz-appearance: textfield;
 }
 input.tcf-input::-webkit-outer-spin-button,
 input.tcf-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input.tcf-input.dirty { background: var(--dirty-bg); border-color: var(--dirty-bd); }
 
-/* Time input — sized for exactly "00:00:00". Also kept monospace. */
+/* Time input — sized for exactly "00:00:00". */
 input.time-input {
   font-family: var(--font-mono); width: 8ch; padding: 3px 5px; text-align: right;
-  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
-  /* content-box so 8ch holds HH:MM:SS without padding/border eating into it
-     (the global box-sizing:border-box would otherwise clip it). */
   box-sizing: content-box;
 }
-input.time-input.dirty { background: var(--dirty-bg); border-color: var(--dirty-bd); }
 input.time-input:disabled { background: var(--surface-alt); color: var(--faint); }
-input.time-input:focus, input.tcf-input:focus {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
-}
+/* Unparseable input stays on screen for the user to fix rather than being
+   silently dropped — this is what marks it. */
+input.invalid { background: var(--err-bg); border-color: var(--err-bd); }
 
 button.now-btn {
-  font-size: 0.72rem; font-weight: 600; padding: 2px 7px; margin-left: 4px;
+  font-size: 0.72rem; font-weight: 600; padding: 2px 7px;
   color: var(--brand); background: var(--accent-soft); border-color: var(--info-bd);
   border-radius: 999px;
 }
 button.now-btn:hover:not(:disabled) { background: #dbe7f8; }
-button.now-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-/* NOW buttons live in their own narrow column so the header NOW button lines
-   up directly over the per-row buttons. */
 th.now-col, td.now-col { text-align: center; padding-left: 4px; padding-right: 4px; }
-.now-col .now-btn { margin-left: 0; }
 
-/* Navigation — a light top bar that reads as app chrome. */
+/* --- chrome -------------------------------------------------------------- */
+
 .site-nav {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-  padding: 0.55rem 1rem;
-  margin: 0 -1.5rem 1.25rem;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-  box-shadow: 0 1px 2px rgba(15,42,72,.04);
+  display: flex; gap: 0.4rem; align-items: center;
+  padding: 0.55rem 1rem; margin: 0 -1.5rem 1.25rem;
+  background: var(--surface); border-bottom: 1px solid var(--line);
   font-size: 0.92rem;
 }
 .site-nav a {
-  text-decoration: none; color: var(--muted);
-  padding: 0.3rem 0.7rem; border-radius: 999px; font-weight: 500;
-  transition: background .12s ease, color .12s ease;
+  color: var(--muted); padding: 0.3rem 0.7rem;
+  border-radius: 999px; font-weight: 500;
 }
-.site-nav a:hover { color: var(--brand); background: var(--accent-soft); }
+.site-nav a:hover { color: var(--brand); background: var(--accent-soft); text-decoration: none; }
 .site-nav a.active { color: #fff; background: var(--brand); }
-.site-nav a.active:hover { color: #fff; background: var(--brand-dark); }
-.site-nav a.nav-disabled,
-.site-nav a.nav-disabled:hover {
-  color: var(--faint); background: transparent; cursor: not-allowed; pointer-events: none;
-}
 .site-nav a.nav-home {
   font-weight: 700; font-size: 1.1rem; margin-right: 0.5rem; color: var(--ink);
-  padding: 0.15rem 0.3rem; background: none; letter-spacing: -0.01em;
+  padding: 0.15rem 0.3rem; background: none;
 }
-.site-nav a.nav-home:hover { background: none; color: var(--brand); }
-.site-nav a.nav-home.active { color: var(--ink); background: none; }
-.site-nav .auth-widget { margin-left: auto; font-size: 0.88rem; color: var(--muted); }
+.site-nav a.nav-home:hover, .site-nav a.nav-home.active { background: none; color: var(--brand); }
+.site-nav .build-widget { margin-left: auto; font-size: 0.85rem; color: var(--muted); }
+.build-version { color: var(--faint); }
+a.build-err, .build-err { color: var(--err-fg); font-weight: 600; }
 
-/* Banners */
 .banner {
   padding: 0.55rem 0.85rem; border-radius: var(--radius-sm);
   margin-bottom: 0.75rem; font-size: 0.9em; border: 1px solid transparent;
@@ -180,365 +180,174 @@ th.now-col, td.now-col { text-align: center; padding-left: 4px; padding-right: 4
 .banner-err   { background: var(--err-bg);  border-color: var(--err-bd);  color: var(--err-fg); }
 .banner-info  { background: var(--info-bg); border-color: var(--info-bd); color: var(--info-fg); }
 .banner-ok    { background: var(--ok-bg);   border-color: var(--ok-bd);   color: var(--ok-fg); }
+.banner ul { margin: 0.4rem 0 0; }
 
-/* State pills — compact, colour-coded status chips used in the status box
-   readouts (results source, unsaved changes, race-type tags). */
-.pill {
-  display: inline-block; padding: 1px 9px; border-radius: 999px;
-  font-size: 0.82em; font-weight: 600; line-height: 1.5;
-  border: 1px solid transparent;
+.hint  { color: var(--muted); font-size: 0.85em; }
+.mono  { font-family: var(--font-mono); }
+
+.tag {
+  display: inline-block; padding: 0 7px; border-radius: 999px;
+  font-size: 0.75em; font-weight: 600;
+  background: var(--surface-alt); border: 1px solid var(--line-strong); color: var(--muted);
 }
-.pill-ok    { background: var(--ok-bg);   border-color: var(--ok-bd);   color: var(--ok-fg); }
-.pill-warn  { background: var(--warn-bg); border-color: var(--warn-bd); color: var(--warn-fg); }
-.pill-err   { background: var(--err-bg);  border-color: var(--err-bd);  color: var(--err-fg); }
-.pill-info  { background: var(--info-bg); border-color: var(--info-bd); color: var(--info-fg); }
-.pill-muted { background: var(--surface-alt); border-color: var(--line); color: var(--muted); }
 
-/* Text utilities — replace the scattered inline color/size styles. */
-.muted { color: var(--muted); }
-.hint  { color: var(--muted); font-size: 0.85em; font-weight: normal; }
+.state-pending  { color: var(--muted); }
+.state-active   { color: var(--warn-fg); font-weight: 600; }
+.state-done     { color: var(--ok-fg); font-weight: 600; }
+.state-abandoned{ color: var(--err-fg); font-weight: 600; }
 
-/* Toolbar above a table: heading on the left, controls pushed to the right,
-   with the same hairline divider the bare <h2> used to carry. */
-.table-toolbar {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1rem;
-  margin: 1.75rem 0 0.6rem; padding-bottom: 0.3rem;
-  border-bottom: 1px solid var(--line);
+/* --- layout blocks ------------------------------------------------------- */
+
+.toolbar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem;
+  margin: 0.75rem 0;
 }
-.table-toolbar h2 { margin: 0; padding: 0; border: none; }
-.table-toolbar .toolbar-controls {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 1rem;
-  font-size: 0.85em; color: var(--muted); font-weight: normal;
-}
-.table-toolbar .toolbar-controls label { display: inline-flex; align-items: center; gap: 0.35rem; }
+.toolbar label { font-size: 0.9rem; color: var(--muted); display: inline-flex;
+  align-items: center; gap: 0.35rem; }
 
-/* Tables — sans-serif with tabular figures so times/numbers stay aligned
-   without needing a monospace face. Wrapped in a soft surface card. */
+.section-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  flex-wrap: wrap; gap: 0.5rem 1rem;
+}
+.section-head h2 { flex: 1 1 auto; }
+.filters { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); }
+.filters label { display: inline-flex; align-items: center; gap: 0.35rem; }
+
+.form-grid {
+  display: grid; grid-template-columns: max-content 1fr;
+  gap: 0.45rem 1rem; align-items: center;
+  margin: 0.75rem 0; max-width: 46rem;
+}
+.form-grid label { color: var(--muted); font-size: 0.9rem; }
+
+.race-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.race-nav { display: flex; gap: 0.4rem; }
+
+.save-bar {
+  position: sticky; bottom: 0; z-index: 20;
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.7rem 1rem; margin-top: 1rem;
+  background: var(--dirty-bg); border: 1px solid var(--dirty-bd);
+  border-radius: var(--radius); box-shadow: var(--shadow-pop);
+}
+.save-bar span { color: var(--muted); font-size: 0.88rem; }
+
+/* --- tables -------------------------------------------------------------- */
+
 table {
   width: 100%; border-collapse: collapse; font-size: 0.9rem;
-  font-variant-numeric: tabular-nums;
-  background: var(--surface);
+  font-variant-numeric: tabular-nums; background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
 }
 th {
   text-align: left; padding: 7px 10px; vertical-align: bottom;
   background: var(--surface-alt); color: var(--muted);
-  font-weight: 600; font-size: 0.82rem; letter-spacing: 0.01em;
+  font-weight: 600; font-size: 0.82rem;
   border-bottom: 1px solid var(--line-strong);
 }
 td { padding: 6px 10px; border-bottom: 1px solid var(--line); }
-/* Zebra striping for readability. The :not() guards ensure hover, current-race
-   highlighting, and the drag ghost still win on rows that match those states. */
-tbody tr:nth-child(even):not(:hover):not(.current-race):not(.dragging) td {
-  background: #e6ebf1;
-}
+tbody tr:nth-child(even):not(:hover) td { background: #f7f9fb; }
 tr:hover td { background: var(--accent-soft); }
-/* Entrants-table row hover. Each division gets its OWN hover colour — a deeper,
-   more saturated version of that division's tint — so a hovered row visibly
-   lifts yet still reads as its division's hue (you can still tell the division
-   while it's highlighted). These win over the per-division tint rules below
-   (which carry :not(:hover)) and over the generic hover above. The plain
-   tr:hover fallback covers any entrant row without a div-color class. */
-#entrants-table tbody tr:hover td              { background: #ffe9a3; }
-#entrants-table tbody tr.div-color-0:hover td { background: #c7d6ea; }
-#entrants-table tbody tr.div-color-1:hover td { background: #bfdfc2; }
-#entrants-table tbody tr.div-color-2:hover td { background: #f0d99e; }
-#entrants-table tbody tr.div-color-3:hover td { background: #d6c4ef; }
-#entrants-table tbody tr.div-color-4:hover td { background: #b3dde4; }
-#entrants-table tbody tr.div-color-5:hover td { background: #f3c4d1; }
-#entrants-table tbody tr.div-color-6:hover td { background: #d8e69e; }
-#entrants-table tbody tr.div-color-7:hover td { background: #f9cfa7; }
-#entrants-table tbody tr.div-color-8:hover td { background: #bccdf4; }
-#entrants-table tbody tr.div-color-9:hover td { background: #ddd5c5; }
+tbody tr:last-child td { border-bottom: none; }
 
-/* Per-division row tinting (entrants table). Each division is assigned one
-   .div-color-N pair (light = odd rows, dark = even rows) by its order in
-   SailSys's divisionTiming — div-color-0 is the original blue-grey so a
-   single-division race is unchanged. Subtle tints, harmonious with the navy
-   chrome; ordered best/most-distinct first. The :not() guards keep hover,
-   current-race, and drag-ghost states winning, matching the base zebra rule. */
-#entrants-table tbody tr.div-color-0:not(:hover):not(.current-race):not(.dragging) td { background: #ffffff; }
-#entrants-table tbody tr.div-color-1:not(:hover):not(.current-race):not(.dragging) td { background: #f1f7f1; }
-#entrants-table tbody tr.div-color-2:not(:hover):not(.current-race):not(.dragging) td { background: #fbf6ea; }
-#entrants-table tbody tr.div-color-3:not(:hover):not(.current-race):not(.dragging) td { background: #f5f2fb; }
-#entrants-table tbody tr.div-color-4:not(:hover):not(.current-race):not(.dragging) td { background: #ecf6f7; }
-#entrants-table tbody tr.div-color-5:not(:hover):not(.current-race):not(.dragging) td { background: #fbf2f4; }
-#entrants-table tbody tr.div-color-6:not(:hover):not(.current-race):not(.dragging) td { background: #f6f8ec; }
-#entrants-table tbody tr.div-color-7:not(:hover):not(.current-race):not(.dragging) td { background: #fdf3eb; }
-#entrants-table tbody tr.div-color-8:not(:hover):not(.current-race):not(.dragging) td { background: #eff2fc; }
-#entrants-table tbody tr.div-color-9:not(:hover):not(.current-race):not(.dragging) td { background: #f6f5f3; }
-#entrants-table tbody tr.div-color-0:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #e6ebf1; }
-#entrants-table tbody tr.div-color-1:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #dcebdd; }
-#entrants-table tbody tr.div-color-2:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #f1e6cf; }
-#entrants-table tbody tr.div-color-3:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #e7def2; }
-#entrants-table tbody tr.div-color-4:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #d6e9ec; }
-#entrants-table tbody tr.div-color-5:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #f2dde3; }
-#entrants-table tbody tr.div-color-6:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #e7eccf; }
-#entrants-table tbody tr.div-color-7:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #f8e2cf; }
-#entrants-table tbody tr.div-color-8:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #dce3f6; }
-#entrants-table tbody tr.div-color-9:nth-child(even):not(:hover):not(.current-race):not(.dragging) td { background: #e8e5df; }
+th.num-cell, td.num-cell { text-align: right; }
+td.notes-cell { color: var(--muted); font-size: 0.85em; max-width: 20rem; }
+td.actions-cell { white-space: nowrap; }
 
-/* The entrants/races tables shrink to their content and sit in a rounded,
-   shadowed card that scrolls horizontally if the columns overflow. */
-#entrants-table, #races-table { width: auto; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { background: var(--brand-dark); color: #fff; }
+
+tr.retired td { color: var(--faint); }
+tr.editing td { background: var(--dirty-bg) !important; }
+tr.selected-row td { background: var(--ok-bg); }
+tr.unplaced td { color: var(--muted); }
+.retire-label { font-size: 0.8rem; color: var(--muted); margin-left: 0.5rem; }
+
+#entrants-table { width: auto; }
 #entrants-table th, #entrants-table td { padding: 5px 8px; white-space: nowrap; }
-#races-table th, #races-table td { padding: 5px 12px; white-space: nowrap; }
-#entrants-table, #races-table {
-  border: 1px solid var(--line); border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  /* No overflow:hidden here — it would clip the adjustment tooltip when it
-     opens above a top row. Corners are rounded per-cell instead (below). */
-}
-#entrants-table th:first-child, #races-table th:first-child { border-top-left-radius: var(--radius); }
-#entrants-table th:last-child,  #races-table th:last-child  { border-top-right-radius: var(--radius); }
-#entrants-table tbody tr:last-child td:first-child,
-#races-table tbody tr:last-child td:first-child { border-bottom-left-radius: var(--radius); }
-#entrants-table tbody tr:last-child td:last-child,
-#races-table tbody tr:last-child td:last-child { border-bottom-right-radius: var(--radius); }
+#entrants-table thead th { background: var(--brand); color: #fff; border-bottom-color: var(--brand-dark); }
 
-/* Entrants table header row: a navy band like the SailSys page header. White
-   text, with the sortable hover going a shade darker and the sort marker /
-   pencil-affordance lightened for contrast on the dark background. */
-#entrants-table thead th {
-  background: var(--brand); color: #fff;
-  border-bottom-color: var(--brand-dark);
-}
-#entrants-table th.sortable:hover { background: var(--brand-dark); color: #fff; }
-#entrants-table thead th .sort-marker { color: #cfe0f5; }
-
-tr.clickable { cursor: pointer; }
-tr.clickable:hover td { background: var(--accent-soft); }
-tr.disabled { color: var(--faint); cursor: not-allowed; }
-tr.disabled:hover td { background: inherit; }
-tr.disabled td { background: #f8f9fb; }
-tr.current-race td { background: var(--dirty-bg); font-weight: 600; }
-tr.current-race:hover td { background: #fff1b8; }
-
-/* Drag-to-reorder handle on entrant rows */
+/* Drag-to-reorder handle on entrant rows. The working order matters on the
+   night: boats are watched in roughly the sequence they are expected to
+   finish. */
 td.drag-handle {
   cursor: grab; user-select: none; text-align: center;
   color: var(--faint); font-size: 1.1rem; width: 1.5em;
 }
-td.drag-handle:hover { color: var(--brand); background: var(--accent-soft); }
-tr.dragging { opacity: 0.4; }
+td.drag-handle:hover { color: var(--brand); }
 tr.drag-over td { border-top: 2px solid var(--accent); }
 
-/* Right-aligned numeric columns (e.g. Late). Applied via a column's
-   cellClass so the <th> and <td> both align. */
-th.num-cell, td.num-cell { text-align: right; }
-
-/* Jinx Adjustment column — right-aligned numeric value, with a hover
-   tooltip that shows the three-step calculation. */
 th.adjustment-cell, td.adjustment-cell { text-align: right; }
-.adjustment { position: relative; cursor: help; }
-.adjustment-tip {
-  display: none; position: absolute; bottom: calc(100% + 4px); right: 0;
-  background: #1f2a37; color: #fff; padding: 0.5rem 0.7rem; border-radius: var(--radius-sm);
-  font-family: var(--font-mono); font-size: 0.85rem; white-space: pre;
-  z-index: 10; box-shadow: var(--shadow-pop); text-align: left;
-}
-.adjustment:hover .adjustment-tip { display: block; }
+.adjustment { cursor: help; font-family: var(--font-mono); }
 
-/* Flags column — clickable cell with an editable-affordance hover hint and
-   a popover that lists every KNOWN_FLAGS checkbox. */
-td.flag-cell { cursor: pointer; }
+/* Flags cell — clickable, with a pencil hint that takes no layout space. */
+td.flag-cell { cursor: pointer; position: relative; }
 td.flag-cell:hover { background: #fff5cc; }
 td.flag-cell:hover::after {
-  content: ' \270E';   /* pencil — hints clickability without taking layout space */
-  color: var(--muted);
-  font-size: 0.9em;
-  margin-left: 0.3em;
+  content: ' \270E'; color: var(--muted); font-size: 0.9em; margin-left: 0.3em;
 }
 .flag-popover {
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-pop);
-  padding: 0.5rem 0.7rem;
-  font-size: 0.85rem;
-  z-index: 100;
-  min-width: 7em;
+  position: absolute; top: 100%; left: 0; z-index: 100;
+  background: var(--surface); border: 1px solid var(--line-strong);
+  border-radius: var(--radius); box-shadow: var(--shadow-pop);
+  padding: 0.5rem 0.7rem; font-size: 0.85rem; min-width: 8em; text-align: left;
 }
-.flag-popover-title {
-  font-weight: 600;
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 0.25rem;
-  margin-bottom: 0.3rem;
-}
-.flag-popover .flag-row { display: block; padding: 2px 0; cursor: pointer; border-radius: 3px; }
-.flag-popover .flag-row:hover { background: var(--surface-alt); }
-.flag-popover .flag-auto    { color: var(--muted); cursor: not-allowed; }
-.flag-popover .flag-sailsys { font-style: italic; }
-
-/* Sortable column headers */
-th.sortable { cursor: pointer; user-select: none; }
-th.sortable:hover { background: #e6ebf2; color: var(--brand); }
-th.sortable .sort-marker { color: var(--accent); margin-left: 0.3em; font-size: 0.85em; }
-
-/* Key/value status grid (race header) */
-.status-grid {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.3rem 1rem;
-  margin: 0.5rem 0 1rem;
-  font-size: 0.9rem;
-}
-.status-grid dt { color: var(--muted); }
-.status-grid dd { margin: 0; font-weight: 600; }
-
-/* Status area layout: the readout box and the workflow controls sit side by
-   side on a wide screen and stack on a narrow one, so the race page wastes less
-   vertical space before the entrants table. Pure CSS — renderStatusBox and
-   renderControls populate the two children independently. */
-#status-layout {
-  display: grid;
-  gap: 0.75rem;
-  /* align-items defaults to stretch so the workflow (left) and status box
-     (right) columns share the same height. */
-  grid-template-columns: 1fr;
-  margin: 0.5rem 0 1rem;
-}
-@media (min-width: 760px) {
-  /* Both boxes size to their content: the workflow (actions) on the left at
-     its natural width, the status box immediately to its right (small gap),
-     left-aligned with any leftover space falling to the right. */
-  #status-layout {
-    grid-template-columns: auto auto;
-    justify-content: start;
-  }
+.flag-popover label { display: block; padding: 2px 0; cursor: pointer; }
+.flag-popover label:hover { background: var(--surface-alt); }
+.flag-popover label.manual { font-weight: 600; }
+.flag-popover .popover-foot {
+  border-top: 1px solid var(--line); margin-top: 0.35rem; padding-top: 0.3rem;
+  white-space: normal; max-width: 14rem;
 }
 
-/* Race status box — readouts (race type / processing / results source /
-   unsaved) plus a reserved message line, so the layout never jumps as the
-   status text or operation feedback changes. */
-#status-box {
-  border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: var(--shadow);
-  padding: 0.85rem 1.1rem;
-  margin: 0;
+#filter-chip {
+  margin: 0 0 0.75rem; font-size: 0.9rem; color: var(--muted);
 }
-#status-box .status-grid { margin: 0; }
-/* Reserved-height operation message line: one wrapped line plus the 8px
-   .progress bar. ctrlMsg blanks the class/text when idle, so an empty line is
-   just slim reserved space that doesn't pad the left column. */
-#status-msg {
-  min-height: 1.7rem;
-  margin-top: 0.6rem;
-  padding: 0.35rem 0.55rem;
-  border-radius: var(--radius-sm);
-  font-size: 0.9em;
-  overflow: hidden;
+#filter-chip a { margin-left: 0.75rem; }
+
+/* --- reports ------------------------------------------------------------- */
+/* These get printed and read aloud. Bigger type, more leading, no decoration
+   that costs toner or attention. */
+
+body.report-page { background: var(--surface); }
+.report { max-width: 46rem; margin: 0 auto; }
+.report-toolbar {
+  display: flex; align-items: center; gap: 1rem;
+  max-width: 46rem; margin: 1rem auto 0;
+}
+.report-head { border-bottom: 2px solid var(--ink); padding-bottom: 0.5rem; margin-bottom: 1rem; }
+.report-head h1 { margin: 0; font-size: 1.4rem; }
+.report-sub { color: var(--muted); font-size: 0.95rem; margin-top: 0.2rem; }
+
+table.report-table {
+  width: 100%; box-shadow: none; border: none; border-radius: 0;
+  font-size: 1.02rem;
+}
+table.report-table th {
+  background: none; color: var(--ink); border-bottom: 1px solid var(--ink);
+  font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em;
+}
+table.report-table td { padding: 7px 10px; border-bottom: 1px solid var(--line); }
+table.report-table tbody tr:nth-child(even) td { background: none; }
+table.report-table tr:hover td { background: none; }
+
+.report-note {
+  margin-top: 1.25rem; padding: 0.6rem 0.8rem;
+  border-left: 3px solid var(--line-strong); color: var(--muted); font-size: 0.9rem;
+}
+.report-foot {
+  margin-top: 1.5rem; padding-top: 0.5rem; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 0.85rem;
 }
 
-/* Ordered workflow controls panel (right column / below the status box). */
-#workflow { margin: 0; }
-/* Each numbered step groups its action with its publish control. A hairline
-   divider between steps reinforces the top-to-bottom sequence. */
-.workflow-step { padding: 0.3rem 0 0.5rem; border-top: 1px solid var(--line); }
-.workflow-step:first-child { border-top: none; padding-top: 0; }
-.step-title {
-  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
-  text-transform: uppercase; color: var(--muted); margin: 0 0 0.15rem;
-}
-.workflow-step .controls-row { margin: 0.2rem 0; }
-
-/* Forms */
-.form-row { display: grid; grid-template-columns: 8em 1fr; gap: 0.5rem 0.8rem; max-width: 28em; margin: 0.5rem 0; }
-/* The .time-input / .tcf-input exclusions keep this generic rule from winning
-   on specificity and clobbering those inputs' deliberate monospace font — if
-   it did, `ch`-based widths would no longer match the glyphs (the placeholder
-   would render wider than the value and crop). */
-input:not([type=checkbox]):not([type=radio]):not(.time-input):not(.tcf-input), select {
-  font-family: var(--font-ui); font-size: 0.9rem;
-  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
-  padding: 5px 8px; color: var(--ink); background: var(--surface);
-}
-input:not([type=checkbox]):not([type=radio]):not(.time-input):not(.tcf-input):focus, select:focus {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
-}
-input[type=checkbox], input[type=radio] { accent-color: var(--brand); }
-.form-row input { padding: 5px 8px; }
-
-/* Race controls panel (publish/process row above entrants) */
-.controls-row {
-  display: flex; align-items: center; gap: 0.5rem;
-  flex-wrap: wrap; margin: 0.6rem 0;
-}
-.controls-row label { display: inline-flex; align-items: center; gap: 0.35rem; }
-.controls-row input[type=number] { font-family: var(--font-mono); padding: 4px 6px; text-align: right; }
-#controls-msg { margin-top: 0.3rem; }
-
-/* Inline publish/unpublish tickboxes in the status grid */
-.vis-toggle { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
-.vis-toggle input[type=checkbox] { cursor: pointer; }
-.vis-toggle input[type=checkbox]:disabled { cursor: default; }
-
-/* Skeleton placeholder used while status cells on the Races page are
-   awaiting their /api/races/{id}/status fetch. */
-td.status-loading {
-  color: var(--faint); text-align: center;
-  animation: status-pulse 1.2s ease-in-out infinite;
-}
-@keyframes status-pulse {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 1; }
-}
-
-/* Filter chip — used on the Races page when the list is constrained to a
-   single series. Clicking the × clears the filter and shows all races. */
-.filter-chip {
-  display: inline-flex; align-items: center;
-  background: var(--accent-soft); border: 1px solid var(--info-bd); color: var(--info-fg);
-  padding: 0.25rem 0.55rem 0.25rem 0.75rem; border-radius: 999px;
-  font-size: 0.85em;
-}
-.filter-chip .filter-clear {
-  margin-left: 0.5rem;
-  width: 1.25em; height: 1.25em; line-height: 1.15em; text-align: center;
-  border-radius: 50%; text-decoration: none;
-  background: var(--surface); color: var(--muted); border: 1px solid var(--info-bd);
-  font-weight: bold;
-}
-.filter-chip .filter-clear:hover { background: var(--brand); color: #fff; border-color: var(--brand); }
-
-/* Progress bar used while waiting for long-running SailSys actions
-   (e.g. results processing — up to 90 s). */
-.progress {
-  width: 100%; height: 8px; margin-top: 0.45rem;
-  background: var(--surface-alt); border: 1px solid var(--line-strong);
-  border-radius: 999px; overflow: hidden;
-}
-.progress-bar {
-  height: 100%; background: linear-gradient(90deg, var(--accent), var(--brand));
-  transition: width 0.4s linear;
-}
-
-/* NOW-log entries are draggable onto a start/finish time field. The ☰ handle
-   signals the affordance; the whole <li> is the drag source. */
-li.now-log-entry { cursor: grab; padding: 1px 0; }
-li.now-log-entry:active { cursor: grabbing; }
-li.now-log-entry code {
-  font-family: var(--font-mono);
-  background: var(--surface-alt); border: 1px solid var(--line);
-  border-radius: 4px; padding: 0 4px;
-}
-.now-drag-handle { color: var(--faint); cursor: grab; user-select: none; }
-li.now-log-entry:hover .now-drag-handle { color: var(--brand); }
-
-/* SAVE bar sits below the entrants table and sticks to the bottom of the
-   viewport while the RO is mid-table, so the buttons stay reachable without
-   scrolling all the way past the last row. A yellow background mirrors the
-   dirty colour used on TCF inputs. */
-#save-bar {
-  position: sticky;
-  bottom: 0;
-  z-index: 5;
-  display: flex; align-items: center; gap: 0.5rem;
-  background: var(--dirty-bg);
-  border: 1px solid var(--dirty-bd);
-  padding: 0.55rem 0.9rem;
-  margin: 0.6rem 0;
-  border-radius: var(--radius);
-  box-shadow: 0 -2px 8px rgba(15,42,72,.06);
+@media print {
+  body { padding: 0; background: #fff; }
+  .no-print, .site-nav { display: none !important; }
+  .report { max-width: none; }
+  .report-note { break-inside: avoid; }
+  table.report-table { font-size: 11pt; }
+  table.report-table th { border-bottom: 1pt solid #000; }
+  /* Repeat the header on every page — a fleet of forty can spill over. */
+  table.report-table thead { display: table-header-group; }
+  table.report-table tr { break-inside: avoid; }
 }

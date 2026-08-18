@@ -537,6 +537,38 @@ class JsonStoreTest
     }
 
     @Test
+    void aStoreDirectoryThatVanishesIsRecreatedOnTheNextWrite(@TempDir Path tmp) throws IOException
+    {
+        // A stray rm, an unmounted share, a backup script that moved instead of
+        // copied. Whatever the cause, the next save should heal it rather than
+        // failing until somebody restarts the server mid-race.
+        JsonStore store = new JsonStore(tmp);
+        store.start();
+        store.putBoat(boat("b-1", "AUS1", "Flashpoint", 1.0));
+
+        deleteRecursively(tmp.resolve("store"));
+
+        store.putBoat(boat("b-2", "AUS2", "Slow Poke", 0.9));
+        store.putRaceTimes("r-1", new RaceTimes("r-1", List.of(), null, Map.of()));
+
+        JsonStore reopened = new JsonStore(tmp);
+        reopened.start();
+        // b-1 is gone with the directory — nothing can bring that back. What
+        // matters is that the writes after the loss landed.
+        assertThat(reopened.boats().get("b-2").name(), equalTo("Slow Poke"));
+        assertThat(reopened.raceTimes("r-1").raceId(), equalTo("r-1"));
+    }
+
+    private static void deleteRecursively(Path dir) throws IOException
+    {
+        try (var walk = Files.walk(dir))
+        {
+            for (Path p : walk.sorted(java.util.Comparator.reverseOrder()).toList())
+                Files.deleteIfExists(p);
+        }
+    }
+
+    @Test
     void everyMutationIsJournalled(@TempDir Path tmp) throws IOException
     {
         JsonStore store = new JsonStore(tmp);

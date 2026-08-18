@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>sail-jinx — scoring tests</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- INCLUDE _nav.html -->
+
+<main>
+  <h1>Scoring tests</h1>
+  <p class="lead">
+    Executable specification for <code>scoring.js</code> — the wiki §5.1
+    primitives that decide places, corrected times, and what the handicap engine
+    is told. Open this page after changing that file. The Java side has its own
+    tests; this covers the half that lives in the browser.
+  </p>
+  <div id="summary" class="banner banner-info">Running…</div>
+  <table><thead><tr><th></th><th>Test</th><th>Expected</th><th>Actual</th></tr></thead>
+    <tbody id="results"></tbody></table>
+</main>
+
+<script src="/common.js"></script>
+<script src="/scoring.js"></script>
+<script>
+  const results = [];
+  function check(name, expected, actual) {
+    const pass = JSON.stringify(expected) === JSON.stringify(actual);
+    results.push({ name, expected, actual, pass });
+  }
+
+  // A three-boat pursuit fleet with a published start sheet at 18:00 / 18:07 / 18:15.
+  const ENTRANTS = [
+    { boatId: 'slow', sailNumber: 'A123', name: 'Slow Poke',    tcf: 0.8821, entryType: 'ROSTER' },
+    { boatId: 'mid',  sailNumber: '5678', name: 'Mid Fleet',    tcf: 0.9450, entryType: 'ROSTER' },
+    { boatId: 'fast', sailNumber: 'AUS9', name: 'Quick Silver', tcf: 1.0450, entryType: 'ROSTER' }
+  ];
+  const SHEET = {
+    earliestStart: '18:00:00',
+    starts: [
+      { boatId: 'slow', startTime: '18:00:00' },
+      { boatId: 'mid',  startTime: '18:07:00' },
+      { boatId: 'fast', startTime: '18:15:00' }
+    ]
+  };
+  const build = (times, opts = {}) => createScorer({
+    entrants: ENTRANTS, startSheet: SHEET, times,
+    dutyBoatId: opts.dutyBoatId || null,
+    flagOverrides: opts.flagOverrides || new Map(),
+    tcfOverrides: opts.tcfOverrides || new Map()
+  });
+  const came = (actualStart, finish) => ({ came: true, actualStart, finish });
+  const E = (id) => ENTRANTS.find(e => e.boatId === id);
+
+  // --- clean race ----------------------------------------------------------
+  {
+    const s = build({
+      slow: came('18:00:00', '19:46:10'),
+      mid:  came('18:07:00', '19:45:02'),
+      fast: came('18:15:00', '19:44:20')
+    });
+    check('clean race: no flags', [], s.flags(E('slow')));
+    check('clean race: corrected finish = finish',
+      '19:46:10', fmtTimeOfDay(s.correctedFinishSeconds(E('slow'))));
+    check('clean race: pursuit places follow finish order',
+      ['fast', 'mid', 'slow'],
+      [...s.places('pursuit').entries()].sort((a, b) => a[1] - b[1]).map(x => x[0]));
+    check('clean race: scored elapsed = finish - allocated',
+      '01:29:20', fmtElapsed(s.scoredElapsedSeconds(E('fast'))));
+  }
+
+  // --- the early start: the distinction the report depends on --------------
+  {
+    const s = build({
+      slow: came('17:59:55', '19:46:10'),   // 5s early
+      mid:  came('18:07:00', '19:45:02'),
+      fast: came('18:15:00', '19:44:20')
+    });
+    check('early start is flagged OCS automatically', ['OCS'], s.flags(E('slow')));
+    check('early start: 5s early', 5, s.earlySeconds(E('slow')));
+    // The report column: head start handed back, penalty NOT applied. This is
+    // the number a human transcribes, alongside the OCS flag.
+    check('early start: CORRECTED finish adds only the head start',
+      '19:46:15', fmtTimeOfDay(s.correctedFinishSeconds(E('slow'))));
+    // The place-sort and engine value: head start plus the 5-minute penalty.
+    check('early start: SCORED finish also carries the 5-min OCS penalty',
+      '19:51:15', fmtTimeOfDay(s.scoredFinishSeconds(E('slow'))));
+    check('early start: handicap elapsed measures real sailing time',
+      '01:46:15', fmtElapsed(s.handicapElapsedSeconds(E('slow'))));
+  }
+
+  // --- late start ----------------------------------------------------------
+  {
+    const s = build({
+      slow: came('18:00:30', '19:46:10'),   // 30s late
+      mid:  came('18:07:00', '19:45:02'),
+      fast: came('18:15:00', '19:44:20')
+    });
+    check('late start is not OCS', [], s.flags(E('slow')));
+    check('late start: corrected finish unchanged',
+      '19:46:10', fmtTimeOfDay(s.correctedFinishSeconds(E('slow'))));
+    check('late start: 30s late', 30, s.lateSeconds(E('slow')));
+    // A boat that started 30s late physically sailed 30s less, and the engine
+    // should see that (wiki §5.1).
+    check('late start: handicap elapsed is 30s shorter than scored elapsed',
+      s.scoredElapsedSeconds(E('slow')) - 30, s.handicapElapsedSeconds(E('slow')));
+  }
+
+  // --- automatic classification from the times -----------------------------
+  {
+    const s = build({
+      slow: { came: false, actualStart: null, finish: null },
+      mid:  came('18:07:00', null),
+      fast: { came: true, actualStart: null, finish: null }
+    });
+    check('never came -> DNC', ['DNC'], s.flags(E('slow')));
+    check('started, never finished -> DNF', ['DNF'], s.flags(E('mid')));
+    check('came but never started -> DNS', ['DNS'], s.flags(E('fast')));
+    check('non-finishers get no place', 0, s.places('pursuit').size);
+  }
+
+  // --- a finish with no captured start still scores ------------------------
+  {
+    const s = build({
+      slow: { came: true, actualStart: null, finish: '19:46:10' },
+      mid:  came('18:07:00', '19:45:02'),
+      fast: came('18:15:00', '19:44:20')
+    });
+    // The start sheet is for the start line, not the handicapper: a missing
+    // actual start means "use the allocated one", not "did not start".
+    check('missing actual start: no DNS flag', [], s.flags(E('slow')));
+    check('missing actual start: still placed', 3, s.places('pursuit').get('slow'));
+    check('missing actual start: elapsed measured from allocated',
+      '01:46:10', fmtElapsed(s.handicapElapsedSeconds(E('slow'))));
+  }
+
+  // --- manual flag overrides ------------------------------------------------
+  {
+    const overrides = new Map([['mid', { added: ['RET'], removed: [] }]]);
+    const s = build({
+      slow: came('18:00:00', '19:46:10'),
+      mid:  came('18:07:00', null),
+      fast: came('18:15:00', '19:44:20')
+    }, { flagOverrides: overrides });
+    // An explicit classification suppresses the derived one — the boat is RET,
+    // not also DNF.
+    check('explicit RET suppresses the derived DNF', ['RET'], s.flags(E('mid')));
+    check('explicit RET is reported to the engine', 'RET', s.jinxStatus(E('mid')));
+
+    const removeOcs = new Map([['slow', { added: [], removed: ['OCS'] }]]);
+    const s2 = build({
+      slow: came('17:59:55', '19:46:10'),
+      mid:  came('18:07:00', '19:45:02'),
+      fast: came('18:15:00', '19:44:20')
+    }, { flagOverrides: removeOcs });
+    check('removing OCS drops the penalty from the scored finish',
+      '19:46:10', fmtTimeOfDay(s2.scoredFinishSeconds(E('slow'))));
+  }
+
+  // --- duty boat ------------------------------------------------------------
+  {
+    const s = build({
+      slow: came('18:00:00', '19:46:10'),
+      mid:  came('18:07:00', '19:45:02'),
+      fast: came('18:15:00', '19:44:20')
+    }, { dutyBoatId: 'mid' });
+    check('duty boat is AVG', ['AVG'], s.flags(E('mid')));
+    check('duty boat takes no place', false, s.places('pursuit').has('mid'));
+    check('duty boat is excluded from the handicap run', 'DNC', s.jinxStatus(E('mid')));
+  }
+
+  // --- ties -----------------------------------------------------------------
+  {
+    const s = build({
+      slow: came('18:00:00', '19:45:02'),
+      mid:  came('18:07:00', '19:45:02'),   // same scored finish as slow
+      fast: came('18:15:00', '19:46:00')
+    });
+    const p = s.places('pursuit');
+    // Tied boats share the better place and the next distinct key jumps past
+    // them — the sailing convention.
+    check('tied boats share first place', [1, 1], [p.get('slow'), p.get('mid')]);
+    check('the next boat is third, not second', 3, p.get('fast'));
+  }
+
+  // --- scoring modes --------------------------------------------------------
+  {
+    const s = build({
+      slow: came('18:00:00', '19:46:10'),
+      mid:  came('18:07:00', '19:45:02'),
+      fast: came('18:15:00', '19:44:20')
+    });
+    // Pursuit ranks on finish order; scratch on elapsed, which in a properly
+    // staggered pursuit race inverts it — the last to start sailed least.
+    check('scratch mode ranks the shortest elapsed first',
+      'fast', [...s.places('scratch').entries()].find(x => x[1] === 1)[0]);
+    check('pursuit mode ranks the first to finish first',
+      'fast', [...s.places('pursuit').entries()].find(x => x[1] === 1)[0]);
+  }
+
+  // --- one-offs -------------------------------------------------------------
+  {
+    const withVisitor = ENTRANTS.concat([
+      { boatId: null, sailNumber: '??? 42', name: 'Visitor', tcf: 1.0, entryType: 'ONE_OFF' }
+    ]);
+    const s = createScorer({
+      entrants: withVisitor, startSheet: SHEET,
+      times: { slow: came('18:00:00', '19:46:10') },
+      flagOverrides: new Map(), tcfOverrides: new Map()
+    });
+    check('a one-off carries no handicap forward',
+      ['slow', 'mid', 'fast'], s.handicapEngineInput('pursuit').map(x => x.boatId));
+  }
+
+  // --- unsaved TCF edits ----------------------------------------------------
+  {
+    const s = build({
+      slow: came('18:00:00', '19:46:10'),
+      mid:  came('18:07:00', '19:45:02'),
+      fast: came('18:15:00', '19:44:20')
+    }, { tcfOverrides: new Map([['fast', 1.2000]]) });
+    check('an unsaved TCF edit reaches the engine input',
+      1.2, s.handicapEngineInput('pursuit').find(x => x.boatId === 'fast').currentTcf);
+  }
+
+  // --- formatting -----------------------------------------------------------
+  check('fmtSignedMinSec positive', '+3:17', fmtSignedMinSec(3.283));
+  check('fmtSignedMinSec negative', '-1:05', fmtSignedMinSec(-1.083));
+  check('fmtSignedMinSec zero', ' 0:00', fmtSignedMinSec(0));
+  check('fmtSignedMinSec rebalances 59.5s', '+4:00', fmtSignedMinSec(3.9999));
+  check('fmtTcf keeps four decimals', '1.0450', fmtTcf(1.045));
+  check('parseTime accepts HH:MM', 64800, parseTime('18:00'));
+  check('parseTime accepts HH:MM:SS', 64805, parseTime('18:00:05'));
+  check('parseTime rejects nonsense', null, parseTime('quarter past'));
+  check('reformatTime pads', '08:05:00', reformatTime('8:5'));
+  check('reformatTime rejects impossible times', null, reformatTime('25:00:00'));
+
+  // --- render ---------------------------------------------------------------
+  const passed = results.filter(r => r.pass).length;
+  const summary = document.getElementById('summary');
+  summary.className = 'banner ' + (passed === results.length ? 'banner-ok' : 'banner-err');
+  summary.textContent = passed + ' of ' + results.length + ' passed'
+    + (passed === results.length ? '.' : ' — see the failures below.');
+
+  document.getElementById('results').innerHTML = results.map(r =>
+    '<tr' + (r.pass ? '' : ' style="background:var(--err-bg)"') + '>'
+    + '<td>' + (r.pass ? '✓' : '✗') + '</td>'
+    + '<td>' + esc(r.name) + '</td>'
+    + '<td class="mono">' + esc(JSON.stringify(r.expected)) + '</td>'
+    + '<td class="mono">' + esc(JSON.stringify(r.actual)) + '</td>'
+    + '</tr>').join('');
+</script>
+</body>
+</html>

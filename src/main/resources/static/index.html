@@ -12,124 +12,94 @@
 <main>
     <h1>Sail-Jinx</h1>
     <p class="lead">
-        A companion application to <a href="sailsys.com.au">SailSys</a> that provides an alternate race processing UI and
-        the Jinx handicap solution for pursuit races. After each race, a boat's handicap is adjusted to achieve the effect on
-        their next starting time as follows:
+        A standalone race-management application for pursuit racing, with a
+        punitive handicap on the side. After each race a boat's handicap is
+        adjusted to change its next start time:
+    </p>
     <ul>
-        <li><b>Top finishers receive fixed time penalties</b> by place. For example: 6 minutes for first, 4 for second, 2 for
-            third, 1 for fourth. This is added to their next start time.
-        </li>
-        <li><b>All starters receive a variable time bonus</b> equal to the total time penalties given (e.g. 6+4+2+1),
-            distributed so that slower boats get a larger share, especially in longer races.
-        </li>
-        <li><b>Fleet adjusted for the earliest starter</b> so that the slowest boat starts exactly on the earliest allowed start
-            time.
-        </li>
+        <li><b>Top finishers receive fixed time penalties</b> by place — for example
+            6 minutes for first, 4 for second, 2 for third. That is added to their
+            next start time.</li>
+        <li><b>All starters receive a variable time bonus</b> totalling the penalties
+            given, distributed so that slower boats get a larger share, especially
+            in longer races.</li>
+        <li><b>The fleet is re-anchored</b> so the slowest boat starts exactly on the
+            earliest allowed start time.</li>
     </ul>
-    <p>
+
+    <div id="store-errors" class="banner banner-err" style="display:none;"></div>
+
+    <section>
+        <h2>Race night</h2>
+        <div id="next-race" class="banner banner-info">Looking for a race…</div>
+    </section>
+
+    <section>
+        <h2>Getting set up</h2>
+        <ol class="setup-steps">
+            <li><a href="/boats.html">Boats</a> — enter the fleet: sail number, name,
+                and each boat's starting TCF.</li>
+            <li><a href="/series.html">Series</a> — create the season, then build its
+                roster from the fleet.</li>
+            <li><a href="/races.html">Races</a> — add the race dates.</li>
+            <li>On the night, open the race, compute the start times, print the start
+                sheet, and capture finishes as they cross.</li>
+        </ol>
+    </section>
+
+    <section>
+        <h2>Getting results into SailSys</h2>
+        <p>
+            sail-jinx has no connection to SailSys or any other system. Each race
+            produces two printable reports — a start sheet and a corrected-finish
+            sheet — which someone types into SailSys by hand. That transcription
+            is the only link between the two, and it happens outside this software.
+        </p>
+    </section>
+
+    <p class="lead">
         Further reading:
         <a href="https://github.com/gregw/sail-jinx/wiki/Home" target="_blank">project overview</a>
         &middot;
-        <a href="https://github.com/gregw/sail-jinx/wiki/Jinx-Handicaps" target="_blank">Jinx Handicaps</a>
+        <a href="https://github.com/gregw/sail-jinx/wiki/Jinx-Handicaps" target="_blank">the Jinx handicap</a>
     </p>
-
-    <section>
-        <h2>Sign in to SailSys</h2>
-        <div id="auth-state" class="banner banner-warn">Checking session…</div>
-
-        <form id="login-form" onsubmit="doLogin(event)" style="display:none;">
-            <p>
-                Enter the SailSys credentials of a club admin for the configured club.
-                They are sent once to SailSys to obtain a session token and then
-                discarded — sail-jinx never persists them.
-            </p>
-            <div class="form-row">
-                <label for="login-email">Email</label>
-                <input type="email" id="login-email" autocomplete="username" required>
-
-                <label for="login-password">Password</label>
-                <input type="password" id="login-password" autocomplete="current-password" required>
-            </div>
-            <button type="submit" id="login-btn">Sign in</button>
-            <div id="login-result" class="banner" style="margin-top:0.75rem; display:none;"></div>
-        </form>
-
-        <div id="signed-in-actions" style="display:none;">
-            <button onclick="doLogout()">Sign out</button>
-            <p style="margin-top:0.75rem;">
-                Next steps:
-                <a href="/series.html">Series</a> &middot;
-                <a href="/races.html">Races</a> &middot;
-                <a href="/race.html">Race</a>
-            </p>
-        </div>
-    </section>
 </main>
 
 <script src="/common.js"></script>
 <script>
-    async function refreshState() {
-        const statusR = await fetchJson('/api/auth/status');
-
-        const authEl = document.getElementById('auth-state');
-        const form = document.getElementById('login-form');
-        const signedIn = document.getElementById('signed-in-actions');
-        if (statusR.ok && statusR.body.authenticated) {
-            const u = statusR.body.user;
-            authEl.className = 'banner banner-ok';
-            authEl.textContent = 'Signed in as ' + (u.email || '?') +
-                (statusR.body.loginTime ? ' (since ' + statusR.body.loginTime + ')' : '');
-            form.style.display = 'none';
-            signedIn.style.display = 'block';
-        } else {
-            authEl.className = 'banner banner-warn';
-            authEl.textContent = 'Not signed in.';
-            form.style.display = 'block';
-            signedIn.style.display = 'none';
-        }
+  (async () => {
+    const cfg = await getConfig();
+    if (cfg && (cfg.storeErrors || []).length) {
+      const el = document.getElementById('store-errors');
+      el.style.display = '';
+      el.innerHTML = '<strong>Some data files could not be read.</strong> They have been '
+        + 'skipped, not lost — fix or restore them before racing:<ul>'
+        + cfg.storeErrors.map(e => '<li>' + esc(e) + '</li>').join('') + '</ul>';
     }
 
-    async function doLogin(e) {
-        e.preventDefault();
-        const email = document.getElementById('login-email').value.trim();
-        const password = document.getElementById('login-password').value;
-        const btn = document.getElementById('login-btn');
-        const out = document.getElementById('login-result');
-
-        btn.disabled = true;
-        out.style.display = 'block';
-        out.className = 'banner banner-info';
-        out.textContent = 'Signing in…';
-
-        const r = await postJson('/api/auth/login', {email, password});
-
-        // Clear the password field as soon as the request returns, regardless of
-        // outcome. The credentials are never echoed back from the server.
-        document.getElementById('login-password').value = '';
-
-        if (r.ok) {
-            out.className = 'banner banner-ok';
-            out.textContent = 'Signed in as ' + (r.body.user?.email || email);
-        } else {
-            out.className = 'banner banner-err';
-            out.textContent = 'Sign in failed: ' + (r.body?.error || ('HTTP ' + r.status));
-        }
-        btn.disabled = false;
-        // Drop the cached pre-login auth state so the widget + nav pick up
-        // the new role (admin vs race officer) without needing a reload.
-        invalidateAuth();
-        refreshAuthWidget();
-        refreshState();
+    // Point at the race most likely wanted tonight: the earliest one that
+    // hasn't been processed yet, else the most recent race there is.
+    const r = await fetchJson('/api/races');
+    const el = document.getElementById('next-race');
+    if (!r.ok) {
+      el.className = 'banner banner-err';
+      el.textContent = 'Could not load races: ' + errorOf(r);
+      return;
     }
-
-    async function doLogout() {
-        await postJson('/api/auth/logout', {});
-        invalidateAuth();
-        refreshAuthWidget();
-        refreshState();
+    const races = r.body || [];
+    if (!races.length) {
+      el.className = 'banner banner-info';
+      el.innerHTML = 'No races yet — work through the setup steps below.';
+      return;
     }
-
-    refreshState();
+    const pending = races.filter(x => !x.locked && !x.abandoned);
+    const race = pending.length ? pending[0] : races[races.length - 1];
+    el.className = 'banner banner-ok';
+    el.innerHTML = '<a href="/race.html?raceId=' + encodeURIComponent(race.id) + '">'
+      + esc(race.seriesName || 'Race') + ' — race ' + esc(race.number)
+      + (race.date ? ', ' + esc(fmtDate(race.date)) : '') + '</a>'
+      + (pending.length ? '' : ' <span class="tag">every race processed</span>');
+  })();
 </script>
 </body>
 </html>

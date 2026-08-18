@@ -11,371 +11,213 @@
 
 <main>
   <h1>Series</h1>
-  <p class="lead">
-    All series at the configured SailSys club. Every series is clickable —
-    click one to load its races. Series whose default handicap matches the
-    configured jinx handicap (MYC TCF, id 15 at MYC) get the full editing
-    workflow including writing TCFs back. Other <em>pursuit</em> series can
-    also be [Configure]d and have Process Handicaps run for review /
-    check purposes — only saving back to SailSys is gated.
-  </p>
+  <p class="lead">One series per season. Create it once, then build its roster
+    and add races.</p>
 
   <div id="series-state" class="banner banner-info">Loading…</div>
 
+  <div class="toolbar">
+    <label><input type="checkbox" id="show-archived"> Show archived</label>
+    <button id="add-btn" class="primary" type="button">New series</button>
+  </div>
+
   <table id="series-table" style="display:none;">
     <thead>
-      <tr>
-        <th>ID</th>
-        <th>Name</th>
-        <th>Status</th>
-        <th>Races</th>
-        <th>Divisions</th>
-        <th>Entries</th>
-        <th>Default handicap</th>
-        <th>Configure</th>
-      </tr>
+      <tr><th>Name</th><th class="num-cell">Races</th><th class="num-cell">Roster</th><th></th></tr>
     </thead>
     <tbody id="series-tbody"></tbody>
   </table>
 
-  <section id="configure-panel" style="display:none; margin-top: 1.5rem;">
-    <h2>Configure <span id="cfg-series-name"></span></h2>
-    <p class="lead" id="cfg-source"></p>
-    <div id="cfg-state"></div>
-    <div class="form-row" style="max-width: 32em;">
-      <label for="cfg-penalty-list">Penalty list</label>
-      <input id="cfg-penalty-list" type="text" placeholder="5, 4, 3, 2, 1, 0.5, 0.25">
+  <section id="config-panel" style="display:none;">
+    <h2>Handicap settings — <span id="config-series-name"></span></h2>
+    <p class="lead" id="config-origin"></p>
+    <div class="form-grid">
+      <label for="cfg-penalties">Penalties (minutes, 1st, 2nd, …)</label>
+      <input id="cfg-penalties" placeholder="6, 4, 2">
 
-      <label for="cfg-ideal">Ideal race duration (min)</label>
-      <input id="cfg-ideal" type="number" min="1" step="1">
+      <label for="cfg-duration">Ideal race duration (min)</label>
+      <input id="cfg-duration" type="number" min="1">
 
       <label for="cfg-dnf">DNF allowance (min)</label>
-      <input id="cfg-dnf" type="number" min="0" step="1">
+      <input id="cfg-dnf" type="number" min="1">
 
-      <label for="cfg-v0knots">V₀ (kn)</label>
-      <input id="cfg-v0knots" type="number" min="0" step="any" placeholder="5.5">
+      <label for="cfg-earliest">Earliest start</label>
+      <input id="cfg-earliest" placeholder="18:00">
 
-      <label for="cfg-earliest">Earliest start (HH:MM)</label>
-      <input id="cfg-earliest" type="time">
+      <label for="cfg-v0">V₀ (knots of a 1.0000-TCF boat)</label>
+      <input id="cfg-v0" type="number" step="0.1" min="0.1">
 
-      <label for="cfg-lat">Latitude</label>
-      <input id="cfg-lat" type="number" step="any" placeholder="-33.8000">
-
-      <label for="cfg-lng">Longitude</label>
-      <input id="cfg-lng" type="number" step="any" placeholder="151.2833">
-
-      <label for="cfg-limit-sunset">Limit by sunset</label>
-      <label class="vis-toggle" style="justify-self: start;">
-        <input id="cfg-limit-sunset" type="checkbox">
-        <span>Cap estimated race length so the slowest boat finishes before sunset</span>
-      </label>
+      <label for="cfg-sunset">Cap duration at sunset</label>
+      <input id="cfg-sunset" type="checkbox">
     </div>
-    <div style="margin-top: 0.6rem;">
-      <button id="cfg-save" class="primary">Save</button>
-      <button id="cfg-reset">Reset</button>
-      <button id="cfg-defaults">Restore defaults</button>
-      <button id="cfg-close" style="float: right;">Close</button>
+    <div class="toolbar">
+      <button id="cfg-save" class="primary" type="button">Save settings</button>
+      <button id="cfg-defaults" type="button">Restore defaults</button>
+      <button id="cfg-close" type="button">Close</button>
+      <span id="cfg-msg"></span>
     </div>
   </section>
 </main>
 
 <script src="/common.js"></script>
 <script>
-  (async () => {
-    const state = document.getElementById('series-state');
-    const table = document.getElementById('series-table');
+  let series = [];
+  let raceCounts = new Map();
+  let rosterCounts = new Map();
+  let showArchived = false;
+  let configSeriesId = null;
+  let configDefaults = null;
+
+  function render() {
     const tbody = document.getElementById('series-tbody');
+    const table = document.getElementById('series-table');
+    const state = document.getElementById('series-state');
+    const rows = series.filter(s => showArchived || !s.archived);
 
-    const r = await fetchJson('/api/series');
-
-    if (r.status === 401) {
-      state.className = 'banner banner-warn';
-      state.innerHTML = 'You are not signed in. <a href="/">Sign in to SailSys</a> to load the series list.';
-      return;
-    }
-    if (!r.ok) {
-      state.className = 'banner banner-err';
-      const detail = (r.body && r.body.error) ? r.body.error : ('HTTP ' + r.status);
-      state.textContent = 'Could not load series: ' + detail;
-      return;
-    }
-
-    const series = r.body.series || [];
-    const requiredHandicapId = r.body.handicapDefinitionId;
-    const handicapDefs = r.body.handicapDefinitions || {};
-    // Pursuit detection is lazy. The table renders immediately; for each
-    // series row we then fire /api/series/{id}/is-pursuit in parallel and
-    // add the Configure button to that row when the response arrives.
-    // (Series that match the configured handicap get Configure straight
-    // away — they're MYC TCF and so always tunable.)
-    const pursuitSeriesIds = new Set();
-    // SailSys returns the catalogue as an array we flattened server-side into
-    // {"<id>": {shortName, fullName}}. Render `fullName (shortName)` when we
-    // have an entry, fall back to the bare id when we don't (unknown id, or
-    // catalogue fetch failed).
-    const handicapLabel = (id) => {
-      const def = handicapDefs[String(id)];
-      if (!def) return String(id);
-      const full = def.fullName || '';
-      const short = def.shortName || '';
-      if (full && short && full !== short) return `${full} (${short})`;
-      return full || short || String(id);
-    };
-    if (!series.length) {
-      state.className = 'banner banner-info';
-      state.textContent = 'No series returned for club ' + r.body.clubId + '.';
-      return;
-    }
-
-    const statusLabel = (n) => ({0: 'upcoming', 1: 'active', 2: 'completed'}[n] || ('status=' + n));
-
-    const eligibleCount = series.filter(s => s.defaultHandicap === requiredHandicapId).length;
-    state.className = 'banner banner-ok';
-    state.textContent =
-      series.length + ' series at club ' + r.body.clubId +
-      ' — ' + eligibleCount + ' using handicap ' + handicapLabel(requiredHandicapId) +
-      ' (full editing). Pursuit detection in progress…';
     table.style.display = '';
+    if (!rows.length) {
+      state.style.display = '';
+      state.className = 'banner banner-info';
+      state.textContent = series.length
+        ? 'All series are archived. Tick "Show archived" to see them.'
+        : 'No series yet. Create one to get started.';
+    } else {
+      state.style.display = 'none';
+    }
 
-    const cfgBtnFor = (s) =>
-      `<button class="cfg-btn" data-series-id="${esc(s.id)}" data-series-name="${esc(s.name).replace(/"/g, '&quot;')}">Configure</button>`;
-
-    tbody.innerHTML = series.map(s => {
-      const handicapText = handicapLabel(s.defaultHandicap);
-      const title = `title="Open races for ${esc(s.name).replace(/"/g, '&quot;')}"`;
-      // MYC TCF series always get Configure immediately — they're known
-      // pursuit / known scope. For other series the cell starts empty and
-      // we fill it in if the per-series pursuit probe comes back true.
-      const isOurHandicap = s.defaultHandicap === requiredHandicapId;
-      const cfgCell = isOurHandicap ? cfgBtnFor(s) : '';
-      return `
-        <tr class="clickable" data-series-id="${esc(s.id)}" ${title}>
-          <td>${esc(s.id)}</td>
-          <td>${esc(s.name)}</td>
-          <td>${esc(statusLabel(s.status))}</td>
-          <td>${esc(s.racesCount)}</td>
-          <td>${esc(s.divisionsCount)}</td>
-          <td><a class="entries-link" data-series-id="${esc(s.id)}"
-                 href="/entries.html?seriesId=${esc(s.id)}"
-                 title="Open entries for ${esc(s.name).replace(/"/g, '&quot;')}">entries</a></td>
-          <td>${esc(handicapText)}</td>
-          <td class="cfg-cell" data-series-id="${esc(s.id)}">${cfgCell}</td>
-        </tr>`;
+    tbody.innerHTML = rows.map(s => {
+      const races = raceCounts.get(s.id) || 0;
+      const roster = rosterCounts.get(s.id) || 0;
+      return '<tr class="' + (s.archived ? 'retired' : '') + '">'
+        + '<td>' + esc(s.name)
+        + (s.archived ? ' <span class="tag">archived</span>' : '') + '</td>'
+        + '<td class="num-cell"><a href="/races.html?seriesId=' + encodeURIComponent(s.id) + '">'
+        + races + '</a></td>'
+        + '<td class="num-cell"><a href="/roster.html?seriesId=' + encodeURIComponent(s.id) + '">'
+        + roster + '</a></td>'
+        + '<td class="actions-cell">'
+        + '<button type="button" class="link-btn cfg-btn" data-id="' + esc(s.id) + '">Handicap settings</button> '
+        + '<button type="button" class="link-btn arch-btn" data-id="' + esc(s.id) + '">'
+        + (s.archived ? 'Unarchive' : 'Archive') + '</button>'
+        + '</td></tr>';
     }).join('');
 
-    // Fire pursuit probes in parallel for the non-MYC-TCF series. Each
-    // arrival updates its row's Configure cell independently — the table
-    // doesn't have to wait for the slowest series.
-    const toProbe = series.filter(s => s.defaultHandicap !== requiredHandicapId);
-    let probeRemaining = toProbe.length;
-    let probePursuitCount = 0;
-    const updateStateText = () => {
-      const done = toProbe.length - probeRemaining;
-      const inflight = probeRemaining > 0 ? ` (${done}/${toProbe.length} probed)` : '';
-      state.textContent =
-        series.length + ' series at club ' + r.body.clubId +
-        ' — ' + eligibleCount + ' using handicap ' + handicapLabel(requiredHandicapId) +
-        ' (full editing); ' + probePursuitCount + ' other pursuit series configurable'
-        + inflight + '.';
-    };
-    updateStateText();
-    for (const s of toProbe) {
-      fetchJson('/api/series/' + encodeURIComponent(s.id) + '/is-pursuit')
-        .then(pr => {
-          probeRemaining--;
-          if (pr && pr.ok && pr.body && pr.body.isPursuit) {
-            probePursuitCount++;
-            pursuitSeriesIds.add(Number(s.id));
-            const cell = tbody.querySelector(`.cfg-cell[data-series-id="${CSS.escape(String(s.id))}"]`);
-            if (cell) {
-              cell.innerHTML = cfgBtnFor(s);
-              const btn = cell.querySelector('.cfg-btn');
-              if (btn) btn.addEventListener('click', (ev) => {
-                ev.stopPropagation();
-                openConfigurePanel(btn.getAttribute('data-series-id'),
-                                    btn.getAttribute('data-series-name'));
-              });
-            }
-          }
-          updateStateText();
-        })
-        .catch(() => { probeRemaining--; updateStateText(); });
-    }
-
-    // Entry counts are lazy, like the pursuit probes: one
-    // /api/series/{id}/entry-count per row, in parallel, each arrival
-    // upgrading its "entries" link to "N entries". A failed probe just
-    // leaves the plain label — the count is visible on the entries page.
-    for (const s of series) {
-      fetchJson('/api/series/' + encodeURIComponent(s.id) + '/entry-count')
-        .then(cr => {
-          if (!(cr && cr.ok && cr.body && typeof cr.body.count === 'number')) return;
-          const link = tbody.querySelector(`.entries-link[data-series-id="${CSS.escape(String(s.id))}"]`);
-          if (link) link.textContent = cr.body.count + ' entries';
-        })
-        .catch(() => {});
-    }
-
-    // Clicking a row navigates to its races — but clicks landing on the
-    // Configure button or the entries link should not also open the races
-    // page. We bind to the row and check the click target.
-    tbody.querySelectorAll('tr').forEach(tr => {
-      tr.addEventListener('click', (ev) => {
-        if (ev.target.closest('.cfg-btn, a')) return;
-        const id = tr.getAttribute('data-series-id');
-        location.href = '/races.html?seriesId=' + id;
-      });
+    document.querySelectorAll('.cfg-btn').forEach(b => {
+      b.onclick = () => openConfig(b.dataset.id);
     });
-    tbody.querySelectorAll('.cfg-btn').forEach(btn => {
-      btn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        openConfigurePanel(btn.getAttribute('data-series-id'), btn.getAttribute('data-series-name'));
-      });
+    document.querySelectorAll('.arch-btn').forEach(b => {
+      b.onclick = () => toggleArchive(b.dataset.id);
     });
-  })();
-
-  // --- Configure panel ---
-
-  const cfgPanel    = document.getElementById('configure-panel');
-  const cfgName     = document.getElementById('cfg-series-name');
-  const cfgSource   = document.getElementById('cfg-source');
-  const cfgState    = document.getElementById('cfg-state');
-  const cfgPenalty  = document.getElementById('cfg-penalty-list');
-  const cfgIdeal    = document.getElementById('cfg-ideal');
-  const cfgDnf      = document.getElementById('cfg-dnf');
-  const cfgV0       = document.getElementById('cfg-v0knots');
-  const cfgEarliest = document.getElementById('cfg-earliest');
-  const cfgLat      = document.getElementById('cfg-lat');
-  const cfgLng      = document.getElementById('cfg-lng');
-  const cfgLimit    = document.getElementById('cfg-limit-sunset');
-  const cfgSave     = document.getElementById('cfg-save');
-  const cfgReset    = document.getElementById('cfg-reset');
-  const cfgDefaults = document.getElementById('cfg-defaults');
-  const cfgClose    = document.getElementById('cfg-close');
-
-  // Holds the last successfully-loaded payload from /api/series/{id}/config
-  // so Reset and Restore defaults can fall back without a round-trip.
-  let cfgLoaded = { seriesId: null, loaded: null, defaults: null };
-
-  function setBanner(cls, text) {
-    cfgState.className = 'banner ' + cls;
-    cfgState.textContent = text;
-  }
-  function clearBanner() {
-    cfgState.className = '';
-    cfgState.textContent = '';
   }
 
-  function fillForm(cfg) {
-    cfgPenalty.value  = Array.isArray(cfg.penaltyList) ? cfg.penaltyList.join(', ') : '';
-    cfgIdeal.value    = cfg.idealRaceDuration ?? '';
-    cfgDnf.value      = cfg.dnfAllowance ?? '';
-    cfgV0.value       = cfg.v0knots ?? '';
-    cfgEarliest.value = cfg.earliestStart || '';
-    cfgLat.value      = cfg.latitude ?? '';
-    cfgLng.value      = cfg.longitude ?? '';
-    cfgLimit.checked  = !!cfg.limitBySunset;
+  async function toggleArchive(id) {
+    const s = series.find(x => x.id === id);
+    if (!s) return;
+    const r = await postJson('/api/series', { id: s.id, name: s.name, archived: !s.archived });
+    if (!r.ok) { alert('Could not update: ' + errorOf(r)); return; }
+    await load();
   }
 
-  function readForm() {
-    // Penalty list is parsed from a comma/space-separated string of numbers.
-    // Fractional penalties are allowed (e.g. 5, 4, 3, 2, 1, 0.5, 0.25).
-    // Anything that doesn't parse as a number is silently dropped, which
-    // matches the "trust the user, validate at boundaries" tradeoff — the
-    // server-side canonical constructor re-defaults to a safe value if the
-    // resulting list comes back empty.
-    const tokens = (cfgPenalty.value || '').split(/[,\s]+/).filter(t => t.length);
-    const penaltyList = tokens
-      .map(t => parseFloat(t))
-      .filter(n => !Number.isNaN(n));
-    // Lat/long: parseFloat on blank → NaN. Send null in that case so the
-    // server-side canonical constructor backfills the MYC default.
-    const lat = parseFloat(cfgLat.value);
-    const lng = parseFloat(cfgLng.value);
-    // V₀: blank → null so the server-side canonical constructor backfills the
-    // 5.5 kn default.
-    const v0 = parseFloat(cfgV0.value);
-    return {
-      penaltyList,
-      idealRaceDuration: parseInt(cfgIdeal.value, 10) || 0,
-      dnfAllowance: parseInt(cfgDnf.value, 10) || 0,
-      v0knots: Number.isNaN(v0) ? null : v0,
-      earliestStart: cfgEarliest.value || '',
-      latitude: Number.isNaN(lat) ? null : lat,
-      longitude: Number.isNaN(lng) ? null : lng,
-      limitBySunset: cfgLimit.checked
-    };
-  }
+  document.getElementById('add-btn').onclick = async () => {
+    const name = prompt('Series name', new Date().getFullYear() + ' Twilight Series');
+    if (!name) return;
+    const r = await postJson('/api/series', { name });
+    if (!r.ok) { alert('Could not create: ' + errorOf(r)); return; }
+    await load();
+  };
 
-  async function openConfigurePanel(seriesId, seriesName) {
-    cfgName.textContent = seriesName + ' (id ' + seriesId + ')';
-    cfgPanel.style.display = '';
-    cfgSource.textContent = 'Loading…';
-    clearBanner();
-    [cfgPenalty, cfgIdeal, cfgDnf, cfgV0, cfgEarliest, cfgLat, cfgLng].forEach(i => i.value = '');
-    cfgLimit.checked = false;
-    cfgPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  document.getElementById('show-archived').onchange = (ev) => {
+    showArchived = ev.target.checked;
+    render();
+  };
 
+  // --- handicap settings ---------------------------------------------------
+
+  async function openConfig(seriesId) {
+    configSeriesId = seriesId;
+    const s = series.find(x => x.id === seriesId);
+    document.getElementById('config-series-name').textContent = s ? s.name : seriesId;
     const r = await fetchJson('/api/series/' + encodeURIComponent(seriesId) + '/config');
+    if (!r.ok) { alert('Could not load settings: ' + errorOf(r)); return; }
+    configDefaults = r.body.defaults;
+    fillConfig(r.body.config);
+    document.getElementById('config-origin').textContent = r.body.isCustom
+      ? 'This series overrides the club defaults.'
+      : 'This series uses the club defaults from config.yaml.';
+    document.getElementById('config-panel').style.display = '';
+    document.getElementById('cfg-msg').textContent = '';
+    document.getElementById('config-panel').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function fillConfig(c) {
+    document.getElementById('cfg-penalties').value = (c.penaltyList || []).join(', ');
+    document.getElementById('cfg-duration').value = c.idealRaceDuration;
+    document.getElementById('cfg-dnf').value = c.dnfAllowance;
+    document.getElementById('cfg-earliest').value = c.earliestStart;
+    document.getElementById('cfg-v0').value = c.v0knots;
+    document.getElementById('cfg-sunset').checked = !!c.limitBySunset;
+  }
+
+  document.getElementById('cfg-defaults').onclick = () => {
+    if (configDefaults) fillConfig(configDefaults);
+  };
+  document.getElementById('cfg-close').onclick = () => {
+    document.getElementById('config-panel').style.display = 'none';
+    configSeriesId = null;
+  };
+  document.getElementById('cfg-save').onclick = async () => {
+    const penalties = document.getElementById('cfg-penalties').value
+      .split(',').map(s => Number(s.trim())).filter(n => !isNaN(n));
+    const payload = {
+      penaltyList: penalties,
+      idealRaceDuration: Number(document.getElementById('cfg-duration').value),
+      dnfAllowance: Number(document.getElementById('cfg-dnf').value),
+      earliestStart: document.getElementById('cfg-earliest').value.trim(),
+      v0knots: Number(document.getElementById('cfg-v0').value),
+      limitBySunset: document.getElementById('cfg-sunset').checked
+    };
+    const r = await postJson('/api/series/' + encodeURIComponent(configSeriesId) + '/config', payload);
+    const msg = document.getElementById('cfg-msg');
     if (!r.ok) {
-      cfgSource.textContent = '';
-      setBanner('banner-err', 'Could not load config: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
+      msg.className = 'banner banner-err';
+      msg.textContent = 'Could not save: ' + errorOf(r);
       return;
     }
-    cfgLoaded = {
-      seriesId,
-      loaded: r.body.config,
-      defaults: r.body.defaults
-    };
-    cfgSource.textContent = r.body.isCustom
-      ? 'Custom per-series configuration in store. Defaults from config.yaml are available via "Restore defaults".'
-      : 'No saved per-series configuration — showing config.yaml defaults. Edit and Save to override.';
-    fillForm(r.body.config);
+    msg.className = 'banner banner-ok';
+    msg.textContent = 'Saved.';
+    document.getElementById('config-origin').textContent =
+      'This series overrides the club defaults.';
+  };
+
+  // --- load ----------------------------------------------------------------
+
+  async function load() {
+    const r = await fetchJson('/api/series');
+    const state = document.getElementById('series-state');
+    if (!r.ok) {
+      state.className = 'banner banner-err';
+      state.textContent = 'Could not load series: ' + errorOf(r);
+      return;
+    }
+    series = r.body || [];
+
+    // Race and roster counts, so the list says how far each season has got.
+    const races = await fetchJson('/api/races');
+    raceCounts = new Map();
+    if (races.ok) {
+      for (const race of races.body || [])
+        raceCounts.set(race.seriesId, (raceCounts.get(race.seriesId) || 0) + 1);
+    }
+    rosterCounts = new Map();
+    await Promise.all(series.map(async s => {
+      const rr = await fetchJson('/api/series/' + encodeURIComponent(s.id) + '/roster');
+      if (rr.ok) rosterCounts.set(s.id, (rr.body.entries || []).length);
+    }));
+
+    render();
   }
 
-  cfgSave.addEventListener('click', async () => {
-    if (!cfgLoaded.seriesId) return;
-    const body = readForm();
-    clearBanner();
-    cfgSave.disabled = true;
-    try {
-      const r = await fetchJson('/api/series/' + encodeURIComponent(cfgLoaded.seriesId) + '/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      if (!r.ok) {
-        setBanner('banner-err', 'Save failed: ' + ((r.body && r.body.error) || ('HTTP ' + r.status)));
-        return;
-      }
-      cfgLoaded.loaded = r.body.config;
-      cfgSource.textContent = 'Custom per-series configuration in store. Defaults from config.yaml are available via "Restore defaults".';
-      fillForm(r.body.config);
-      setBanner('banner-ok', 'Saved.');
-    } finally {
-      cfgSave.disabled = false;
-    }
-  });
-
-  cfgReset.addEventListener('click', () => {
-    if (cfgLoaded.loaded) {
-      fillForm(cfgLoaded.loaded);
-      clearBanner();
-    }
-  });
-
-  cfgDefaults.addEventListener('click', () => {
-    if (cfgLoaded.defaults) {
-      fillForm(cfgLoaded.defaults);
-      setBanner('banner-info', 'Defaults loaded into the form. Click Save to persist them as this series’s override, or Reset to revert to the last loaded values.');
-    }
-  });
-
-  cfgClose.addEventListener('click', () => {
-    cfgPanel.style.display = 'none';
-    clearBanner();
-    cfgLoaded = { seriesId: null, loaded: null, defaults: null };
-  });
+  load();
 </script>
 </body>
 </html>

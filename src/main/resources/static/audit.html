@@ -11,29 +11,67 @@
 
 <main>
   <h1>Audit log</h1>
-  <p class="banner banner-info">Skeleton — every TCF adjustment will be recorded here.</p>
-  <table>
-    <thead><tr><th>When</th><th>Race</th><th>Action</th><th>γ</th><th>Pool</th><th>Notes</th></tr></thead>
-    <tbody id="audit-tbody"><tr><td colspan="6"><em>Loading…</em></td></tr></tbody>
+  <p class="lead">
+    Every handicap processing step, in order. This store is the only record
+    there is, so it is worth being able to see what changed and when.
+  </p>
+
+  <div id="store-errors" class="banner banner-err" style="display:none;"></div>
+  <div id="audit-state" class="banner banner-info">Loading…</div>
+
+  <table id="audit-table" style="display:none;">
+    <thead>
+      <tr><th>When</th><th>Race</th><th>Action</th><th class="num-cell">Pool</th>
+        <th class="num-cell">Boats</th><th>Notes</th></tr>
+    </thead>
+    <tbody id="audit-tbody"></tbody>
   </table>
 </main>
 
 <script src="/common.js"></script>
 <script>
   (async () => {
-    const r = await fetchJson('/api/audit');
-    const tbody = document.getElementById('audit-tbody');
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6">Error loading audit.</td></tr>'; return; }
-    if (!r.body.length) { tbody.innerHTML = '<tr><td colspan="6"><em>No entries yet.</em></td></tr>'; return; }
-    tbody.innerHTML = r.body.map(e => `
-      <tr>
-        <td>${esc(e.timestamp)}</td>
-        <td>${esc(e.raceId)}</td>
-        <td>${esc(e.action)}</td>
-        <td>${e.gamma?.toFixed(3) ?? ''}</td>
-        <td>${e.penaltyPool?.toFixed(2) ?? ''}</td>
-        <td>${esc(e.notes ?? '')}</td>
-      </tr>`).join('');
+    const cfg = await getConfig();
+    if (cfg && (cfg.storeErrors || []).length) {
+      const el = document.getElementById('store-errors');
+      el.style.display = '';
+      el.innerHTML = '<strong>Unreadable data files.</strong> These were skipped at '
+        + 'startup. The data is still on disk — fix the JSON, or recover it from '
+        + '<code>data/store/journal/</code>:<ul>'
+        + cfg.storeErrors.map(e => '<li>' + esc(e) + '</li>').join('') + '</ul>';
+    }
+
+    const [auditR, racesR] = await Promise.all([
+      fetchJson('/api/audit'),
+      fetchJson('/api/races')
+    ]);
+    const state = document.getElementById('audit-state');
+    if (!auditR.ok) {
+      state.className = 'banner banner-err';
+      state.textContent = 'Could not load the audit log: ' + errorOf(auditR);
+      return;
+    }
+    const entries = auditR.body || [];
+    if (!entries.length) {
+      state.className = 'banner banner-info';
+      state.textContent = 'Nothing logged yet — the first handicap processing will appear here.';
+      return;
+    }
+    const raceNames = new Map((racesR.ok ? racesR.body || [] : [])
+      .map(r => [r.id, (r.seriesName ? r.seriesName + ' ' : '') + 'race ' + r.number]));
+
+    state.style.display = 'none';
+    document.getElementById('audit-table').style.display = '';
+    document.getElementById('audit-tbody').innerHTML = entries.slice().reverse().map(e =>
+      '<tr>'
+      + '<td>' + esc(new Date(e.timestamp).toLocaleString()) + '</td>'
+      + '<td><a href="/race.html?raceId=' + encodeURIComponent(e.raceId) + '">'
+      + esc(raceNames.get(e.raceId) || e.raceId) + '</a></td>'
+      + '<td>' + esc(e.action) + '</td>'
+      + '<td class="num-cell">' + (e.penaltyPool ? e.penaltyPool.toFixed(1) : '') + '</td>'
+      + '<td class="num-cell">' + ((e.adjustments || []).length || '') + '</td>'
+      + '<td>' + esc(e.notes || '') + '</td>'
+      + '</tr>').join('');
   })();
 </script>
 </body>

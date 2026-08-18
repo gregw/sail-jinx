@@ -360,12 +360,20 @@ public class JsonStore
      *
      * <p>The temp file is a sibling rather than in the system temp directory so
      * the move stays within one filesystem, where it is atomic.
+     *
+     * <p>The parent directory is re-created on every write rather than only at
+     * startup. It costs a stat and it means a store directory that vanishes
+     * underneath a running server — a stray {@code rm}, an unmounted share, a
+     * backup script that moved rather than copied — heals on the next save
+     * instead of failing every write until someone restarts. On a system that
+     * holds the only copy of the season, "keep going" beats "fail loudly".
      */
     private static void write(Path file, Object value) throws IOException
     {
         Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
         try
         {
+            Files.createDirectories(file.getParent());
             byte[] bytes = MAPPER.writeValueAsBytes(value);
             Files.write(tmp, bytes,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
@@ -459,6 +467,7 @@ public class JsonStore
         Path file = journalDir.resolve(LocalDate.now().format(JOURNAL_MONTH) + ".jsonl");
         try
         {
+            Files.createDirectories(journalDir);
             String json = JOURNAL_MAPPER.writeValueAsString(line) + "\n";
             Files.writeString(file, json, StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE, StandardOpenOption.APPEND);
