@@ -151,8 +151,12 @@
     return dirtyTcf.has(e.boatId) ? dirtyTcf.get(e.boatId) : e.tcf;
   }
 
+  // Everything the user can change. Entrants are in here because adding a boat is an
+  // edit like any other: leaving them out meant the Save bar never appeared for a boat
+  // added on the night, and a reload dropped it without a word.
   function stateJson() {
     return JSON.stringify({
+      entrants,
       times: timesMap,
       dutyBoatId,
       boatOrder,
@@ -179,6 +183,7 @@
       const raw = sessionStorage.getItem(sessionKey());
       if (!raw || raw === baseline) return false;
       const p = JSON.parse(raw);
+      if (Array.isArray(p.entrants)) entrants = p.entrants;
       timesMap = p.times || timesMap;
       dutyBoatId = p.dutyBoatId ?? dutyBoatId;
       boatOrder = p.boatOrder || boatOrder;
@@ -691,14 +696,13 @@
   async function onAddExisting() {
     if (!addResolved) return;
     const b = addResolved;
-    // A boat has no handicap of its own — it has one per entry — so a boat joining
-    // mid-race has to be given one.
-    const tcf = askTcf(b.name || b.sailNumber);
-    if (tcf == null) { setMsg('add-msg', 'Cancelled — no TCF given.'); return; }
+    // A boat has no handicap of its own — it has one per entry — so one is set here.
+    const tcf = DEFAULT_ENTRY_TCF;
     addEntrant({ boatId: b.id, sailNumber: b.sailNumber, name: b.name,
       designId: b.designId, division: null, spinnaker: null, tcf,
       entryType: b.casual ? 'CASUAL' : 'ROSTER' });
-    setMsg('add-msg', 'Added ' + b.sailNumber + ' (' + b.id + '). Save to keep it.');
+    setMsg('add-msg', 'Added ' + b.sailNumber + ' on TCF ' + fmtTcf(tcf)
+      + ' — edit it in the table, then Save.');
   }
 
   async function onAddNew() {
@@ -707,8 +711,7 @@
     const name = f.name.value.trim();
     const design = f.design.value.trim();
     if (!sail && !name) { setMsg('add-msg', 'Type a sail number or a name first.'); return; }
-    const tcf = askTcf(name || sail);
-    if (tcf == null) { setMsg('add-msg', 'Cancelled — no TCF given.'); return; }
+    const tcf = DEFAULT_ENTRY_TCF;
 
     // The register takes the boat's identity — including the design, if one was given;
     // the handicap belongs to this entry.
@@ -732,22 +735,21 @@
       + b.sailNumber + ' (' + b.id + ').');
   }
 
-  /** Ask for the handicap this boat enters on. Null when cancelled or nonsense. */
-  function askTcf(who) {
-    const v = Number(prompt('TCF for ' + who + ' in this race', '1.0000'));
-    return (isFinite(v) && v > 0) ? v : null;
-  }
+  // A boat joining on the night enters on scratch. Asking for a handicap in a popup
+  // interrupted the one moment the RO has no attention to spare, and 1.0000 was the
+  // answer nearly every time anyway — it is editable in the TCF column afterwards.
+  const DEFAULT_ENTRY_TCF = 1.0;
 
   function onAddOneOff() {
     const f = addFields();
     const sail = f.sail.value.trim();
     const name = f.name.value.trim();
     if (!sail && !name) { setMsg('add-msg', 'Type a sail number or a name first.'); return; }
-    const tcf = askTcf(name || sail);
-    if (tcf == null) { setMsg('add-msg', 'Cancelled — no TCF given.'); return; }
+    const tcf = DEFAULT_ENTRY_TCF;
     addEntrant({ boatId: null, sailNumber: sail, name: name || sail,
       designId: null, division: null, spinnaker: null, tcf, entryType: 'ONE_OFF' });
-    setMsg('add-msg', 'Added as a one-off — it carries no handicap forward.');
+    setMsg('add-msg', 'Added as a one-off on TCF ' + fmtTcf(tcf)
+      + ' — it carries no handicap forward.');
   }
 
   // --- save ------------------------------------------------------------------
@@ -762,7 +764,7 @@
   async function doSave() {
     // Entrants first: a TCF edit changes what the times are scored against, and
     // saving times against the old handicaps would be briefly wrong.
-    if (dirtyTcf.size || entrantsChanged()) {
+    if (entrantsChanged()) {
       const payload = {
         tcfSource: dirtyTcf.size ? 'MANUAL_EDIT' : undefined,
         entrants: entrants.map(e => ({
@@ -785,9 +787,16 @@
     setCtrlMsg('banner-ok', 'Saved.');
   }
 
+  /**
+   * True when the entrant list differs from what the server last gave us — a boat added
+   * or removed, or a TCF edited. Compared by content rather than by length, so swapping
+   * one boat for another is not mistaken for no change.
+   */
   function entrantsChanged() {
-    const saved = (bundle.entrants && bundle.entrants.entrants) || [];
-    return saved.length !== entrants.length;
+    const saved = ((bundle.entrants && bundle.entrants.entrants) || [])
+      .map(e => [e.boatId, e.sailNumber, e.name, e.tcf, e.entryType]);
+    const now = entrants.map(e => [e.boatId, e.sailNumber, e.name, tcfOf(e), e.entryType]);
+    return JSON.stringify(saved) !== JSON.stringify(now);
   }
 
   // --- setup + start times ---------------------------------------------------

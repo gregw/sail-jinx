@@ -11,15 +11,42 @@
 
 <main>
   <h1>Races</h1>
-  <div id="filter-chip" style="display:none;"></div>
+
+  <div class="toolbar">
+    <label for="series-select">Series</label>
+    <select id="series-select"><option value="">— all series —</option></select>
+    <a id="roster-link" href="#" style="display:none;">roster</a>
+  </div>
+
   <div id="races-state" class="banner banner-info">Loading…</div>
 
-  <div class="toolbar" id="add-toolbar" style="display:none;">
-    <label for="new-date">New race date</label>
-    <input type="date" id="new-date">
-    <input id="new-name" placeholder="Name (optional)">
-    <button id="add-btn" class="primary" type="button">Add race</button>
-  </div>
+  <section id="add-panel" style="display:none;">
+    <h2>Add races</h2>
+    <div class="form-grid">
+      <label for="new-date">First race date</label>
+      <input type="date" id="new-date">
+
+      <label for="new-name">Name</label>
+      <input id="new-name" placeholder="optional — e.g. Commodore's Cup">
+
+      <label for="new-repeat">Repeat</label>
+      <span>
+        every <input id="new-days" type="number" min="0" step="1" size="3"
+                     style="width:5em;" placeholder="7"> days
+        for <input id="new-count" type="number" min="1" step="1"
+                   style="width:5em;" placeholder="10"> races
+      </span>
+    </div>
+    <p class="hint" style="max-width:60rem;">
+      Leave both blank for a single race. <code>7</code> days for <code>10</code> races
+      gives a race a week for ten weeks; <code>0</code> days for <code>3</code> gives
+      three races on the same day.
+    </p>
+    <div class="toolbar">
+      <button id="add-btn" class="primary" type="button">Add</button>
+      <span id="add-msg" class="hint"></span>
+    </div>
+  </section>
 
   <table id="races-table" style="display:none;">
     <thead>
@@ -36,7 +63,9 @@
 
 <script src="/common.js"></script>
 <script>
-  const seriesId = new URLSearchParams(location.search).get('seriesId');
+  // The series is a filter, not a page identity: the Races tab on its own shows
+  // everything, and choosing one here narrows it and lets races be added to it.
+  let seriesId = new URLSearchParams(location.search).get('seriesId') || '';
   let races = [];
   let series = [];
 
@@ -49,6 +78,7 @@
     if (r.abandoned) return { label: 'abandoned', cls: 'state-abandoned' };
     if (r.locked) return { label: 'processed', cls: 'state-done' };
     if (r.hasResults) return { label: 'results captured', cls: 'state-active' };
+    if (r.hasStartSheet) return { label: 'start times set', cls: 'state-active' };
     return { label: 'scheduled', cls: 'state-pending' };
   }
 
@@ -65,7 +95,9 @@
       state.className = 'banner banner-info';
       state.textContent = seriesId
         ? 'No races in this series yet. Add the first one above.'
-        : 'No races yet. Pick a series to add one.';
+        : (series.length
+            ? 'No races yet. Choose a series above to add some.'
+            : 'No series yet — create one on the Series page first.');
       table.style.display = 'none';
       return;
     }
@@ -87,23 +119,48 @@
     }).join('');
   }
 
-  function renderChip() {
-    const chip = document.getElementById('filter-chip');
-    if (!seriesId) return;
-    const s = series.find(x => x.id === seriesId);
-    chip.style.display = '';
-    chip.innerHTML = 'Series: <strong>' + esc(s ? s.name : seriesId) + '</strong> '
-      + '<a href="/roster.html?seriesId=' + encodeURIComponent(seriesId) + '">roster</a> '
-      + '<a href="/races.html">show all races</a>';
-    document.getElementById('add-toolbar').style.display = '';
+  function renderSeriesChoice() {
+    const sel = document.getElementById('series-select');
+    sel.innerHTML = '<option value="">— all series —</option>'
+      + series.filter(s => !s.archived || s.id === seriesId)
+        .map(s => '<option value="' + esc(s.id) + '"'
+          + (s.id === seriesId ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('');
+
+    // Races belong to a series, so one has to be chosen before any can be added.
+    document.getElementById('add-panel').style.display = seriesId ? '' : 'none';
+    const roster = document.getElementById('roster-link');
+    roster.style.display = seriesId ? '' : 'none';
+    roster.href = '/roster.html?seriesId=' + encodeURIComponent(seriesId);
   }
 
+  document.getElementById('series-select').onchange = (ev) => {
+    seriesId = ev.target.value;
+    // Keep the URL honest, so the page can be bookmarked or reloaded on this series.
+    const url = seriesId
+      ? '?seriesId=' + encodeURIComponent(seriesId) : location.pathname;
+    history.replaceState(null, '', url);
+    renderSeriesChoice();
+    render();
+  };
+
   document.getElementById('add-btn').onclick = async () => {
+    const msg = document.getElementById('add-msg');
     const date = document.getElementById('new-date').value;
-    if (!date) { alert('Pick a date for the race.'); return; }
+    if (!date) { msg.textContent = 'Pick a date for the first race.'; return; }
+
     const name = document.getElementById('new-name').value.trim();
-    const r = await postJson('/api/races', { seriesId, date, name: name || null });
-    if (!r.ok) { alert('Could not add race: ' + errorOf(r)); return; }
+    const days = document.getElementById('new-days').value.trim();
+    const count = document.getElementById('new-count').value.trim();
+
+    const r = await postJson('/api/races', {
+      seriesId, date, name: name || null,
+      repeatDays: days === '' ? 0 : Number(days),
+      repeatCount: count === '' ? 1 : Number(count)
+    });
+    if (!r.ok) { msg.textContent = 'Could not add: ' + errorOf(r); return; }
+
+    msg.textContent = r.body.created === 1
+      ? 'Added 1 race.' : 'Added ' + r.body.created + ' races.';
     document.getElementById('new-name').value = '';
     await load();
   };
@@ -121,7 +178,7 @@
     }
     races = racesR.body || [];
     series = seriesR.ok ? (seriesR.body || []) : [];
-    renderChip();
+    renderSeriesChoice();
     render();
   }
 

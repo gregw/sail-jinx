@@ -110,6 +110,9 @@ public class ApiServlet extends HttpServlet
     private static final Pattern RACE_SAVE_HANDICAPS = Pattern.compile("/races/([^/]+)/save-handicaps");
     private static final Pattern RACE_ADJUSTMENTS = Pattern.compile("/races/([^/]+)/adjustments");
 
+    /** A season is twenty-odd races; a request for hundreds is a typo, not a season. */
+    private static final int MAX_RACES_PER_REQUEST = 100;
+
     private static final JsonMapper MAPPER = JsonMapper.builder()
         .addModule(new JavaTimeModule())
         .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
@@ -445,7 +448,8 @@ public class ApiServlet extends HttpServlet
                 out.put("boatId", boat.id());
                 out.put("designId", boat.designId());
                 if (seriesId != null)
-                    roster.put(boat.id(), rosterEntryFor(boat, row.terms(), roster.get(boat.id())));
+                    roster.put(boat.id(),
+                        rosterEntryFor(seriesId, boat, row.terms(), roster.get(boat.id())));
             }
             results.add(out);
         }
@@ -479,14 +483,15 @@ public class ApiServlet extends HttpServlet
      * supply. A fleet list with no spinnaker column should not quietly reset a boat that
      * was already entered as non-spinnaker.
      */
-    private Roster.Entry rosterEntryFor(Boat boat, BoatCsv.EntryTerms terms, Roster.Entry existing)
+    private Roster.Entry rosterEntryFor(String seriesId, Boat boat, BoatCsv.EntryTerms terms,
+                                        Roster.Entry existing)
     {
         double tcf = terms.tcf() != null ? terms.tcf()
             : (existing != null ? existing.startingTcf() : 1.0);
         String division = terms.division() != null ? terms.division()
             : (existing != null ? existing.division() : null);
         Spinnaker spinnaker = terms.spinnaker() != null ? terms.spinnaker()
-            : (existing != null ? existing.spinnaker() : registry.defaultSpinnaker(boat.designId()));
+            : (existing != null ? existing.spinnaker() : defaultSpinnakerFor(seriesId, boat));
         return new Roster.Entry(boat.id(), tcf, division, spinnaker);
     }
 
@@ -516,7 +521,26 @@ public class ApiServlet extends HttpServlet
         if (isBlank(id))
             id = IdGenerator.generateSeriesId(config.club().domain(), name);
 
-        Series s = new Series(id, name.trim(), body.path("archived").asBoolean(false));
+        Series.RaceFormat format = enumOf(Series.RaceFormat.class,
+            text(body, "raceFormat"), Series.RaceFormat.PURSUIT);
+        Series.HandicapAlgorithm algorithm = enumOf(Series.HandicapAlgorithm.class,
+            text(body, "handicapAlgorithm"), Series.HandicapAlgorithm.JINX);
+        if (!format.isSupported())
+        {
+            badRequest(resp, format + " races are not implemented yet");
+            return;
+        }
+        if (!algorithm.isSupported())
+        {
+            badRequest(resp, "the " + algorithm + " handicap is not implemented yet");
+            return;
+        }
+
+        Series s = new Series(id, name.trim(),
+            enumOf(Series.SpinnakerPolicy.class, text(body, "spinnakerPolicy"),
+                Series.SpinnakerPolicy.MIXED),
+            format, algorithm,
+            body.path("archived").asBoolean(false));
         store.putSeries(s);
         writeJson(resp, mapOf("ok", true, "series", s));
     }
@@ -598,11 +622,27 @@ public class ApiServlet extends HttpServlet
             double tcf = e.hasNonNull("startingTcf") ? e.path("startingTcf").asDouble() : 1.0;
             Spinnaker spinnaker = e.hasNonNull("spinnaker")
                 ? spinnakerOf(e.path("spinnaker"))
-                : (boat == null ? null : registry.defaultSpinnaker(boat.designId()));
+                : defaultSpinnakerFor(seriesId, boat);
             out.add(new Roster.Entry(boatId, tcf, text(e, "division"), spinnaker));
         }
         store.putRoster(new Roster(seriesId, out));
         writeJson(resp, mapOf("ok", true, "seriesId", seriesId, "saved", out.size()));
+    }
+
+    /**
+     * The spinnaker a boat defaults to when entering a series: the series policy when it
+     * has one, otherwise whether the hull can physically fly a kite.
+     */
+    private Spinnaker defaultSpinnakerFor(String seriesId, Boat boat)
+    {
+        Series series = store.series().get(seriesId);
+        if (series != null)
+        {
+            Spinnaker byPolicy = series.spinnakerPolicy().defaultSpinnaker();
+            if (byPolicy != null)
+                return byPolicy;
+        }
+        return boat == null ? null : registry.defaultSpinnaker(boat.designId());
     }
 
     // --- Races ---------------------------------------------------------------
@@ -619,12 +659,22 @@ public class ApiServlet extends HttpServlet
                 Map<String, Object> row = new LinkedHashMap<>(raceMap(r));
                 row.put("seriesName", s == null ? null : s.name());
                 row.put("locked", isLocked(r.id()));
-                row.put("hasResults", store.raceTimes(r.id()) != null);
+                row.put("hasStartSheet", store.startSheet(r.id()) != null);
+                row.put("hasResults", hasCapturedResults(r.id()));
                 return row;
             })
             .toList();
     }
 
+    /**
+     * Create or update a race.
+     *
+     * <p>A season is a run of dates a fixed interval apart, so the body may ask for the
+     * whole run at once: {@code repeatDays} and {@code repeatCount} create that many
+     * races, each that many days after the last. Omitted (or a count of 1) makes a single
+     * race. An interval of 0 is allowed and means several races on one day, which is what
+     * a regatta weekend looks like.
+     */
     private void handleSaveRace(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
         requireAdmin(resp);
@@ -635,35 +685,60 @@ public class ApiServlet extends HttpServlet
             badRequest(resp, "a known seriesId is required");
             return;
         }
+
         JinxConfig.Algorithm alg = algorithmFor(seriesId);
         LocalDate date = parseDate(text(body, "date"));
-        int number = body.path("number").asInt(nextRaceNumber(seriesId));
+        String name = text(body, "name");
+        LocalTime earliest = parseTime(text(body, "earliestStart"),
+            LocalTime.parse(alg.earliestStart()));
+        Integer target = body.hasNonNull("targetElapsedMinutes")
+            ? body.path("targetElapsedMinutes").asInt() : alg.idealRaceDuration();
+        Double course = body.hasNonNull("courseLengthNm")
+            ? body.path("courseLengthNm").asDouble() : null;
 
-        // myc.org.au-2026-06-05-0001. A race's identity comes from the club and the day,
-        // not its series: a race can belong to more than one series, but it happens once.
+        // An edit keeps the id it was given, so renaming a race never orphans its
+        // entrants or times. Only a new race can be a repeating run.
         String id = text(body, "id");
-        if (isBlank(id))
+        if (!isBlank(id))
         {
-            if (date == null)
-            {
-                badRequest(resp, "a race needs a date");
-                return;
-            }
-            id = IdGenerator.generateRaceId(config.club().domain(), date, number);
+            Race race = new Race(id, seriesId, body.path("number").asInt(nextRaceNumber(seriesId)),
+                name, date, earliest, target, course, body.path("abandoned").asBoolean(false));
+            store.putRace(race);
+            writeJson(resp, mapOf("ok", true, "created", 1, "race", raceMap(race)));
+            return;
         }
-        Race race = new Race(
-            id,
-            seriesId,
-            number,
-            text(body, "name"),
-            date,
-            parseTime(text(body, "earliestStart"), LocalTime.parse(alg.earliestStart())),
-            body.hasNonNull("targetElapsedMinutes")
-                ? body.path("targetElapsedMinutes").asInt() : alg.idealRaceDuration(),
-            body.hasNonNull("courseLengthNm") ? body.path("courseLengthNm").asDouble() : null,
-            body.path("abandoned").asBoolean(false));
-        store.putRace(race);
-        writeJson(resp, mapOf("ok", true, "race", raceMap(race)));
+
+        if (date == null)
+        {
+            badRequest(resp, "a race needs a date");
+            return;
+        }
+
+        int count = Math.max(1, body.path("repeatCount").asInt(1));
+        int everyDays = Math.max(0, body.path("repeatDays").asInt(0));
+        if (count > MAX_RACES_PER_REQUEST)
+        {
+            badRequest(resp, "that would create " + count + " races; the most in one go is "
+                + MAX_RACES_PER_REQUEST);
+            return;
+        }
+
+        int number = body.path("number").asInt(nextRaceNumber(seriesId));
+        List<Map<String, Object>> created = new ArrayList<>(count);
+        for (int i = 0; i < count; i++)
+        {
+            LocalDate raceDate = date.plusDays((long)everyDays * i);
+            // Several races on one day need distinct ids, and the id carries only the
+            // date — so the race number is what separates them.
+            String raceId = IdGenerator.generateRaceId(config.club().domain(), raceDate, number + i);
+            Race race = new Race(raceId, seriesId, number + i, name, raceDate,
+                earliest, target, course, false);
+            store.putRace(race);
+            created.add(raceMap(race));
+        }
+
+        writeJson(resp, mapOf("ok", true, "created", created.size(),
+            "race", created.getFirst(), "races", created));
     }
 
     private int nextRaceNumber(String seriesId)
@@ -725,6 +800,23 @@ public class ApiServlet extends HttpServlet
     private boolean isLocked(String raceId)
     {
         return !store.adjustments(raceId).isEmpty();
+    }
+
+    /**
+     * True when something was actually captured for this race — a boat marked as having
+     * come, or a finish recorded.
+     *
+     * <p>Not merely "a times file exists": saving the race page writes one whether or not
+     * anything was entered, so the file's presence said "results captured" for a race
+     * nobody had touched.
+     */
+    private boolean hasCapturedResults(String raceId)
+    {
+        RaceTimes times = store.raceTimes(raceId);
+        if (times == null)
+            return false;
+        return times.times().values().stream()
+            .anyMatch(t -> t.came() || (t.finish() != null && !t.finish().isBlank()));
     }
 
     // --- Entrants ------------------------------------------------------------
@@ -1327,6 +1419,21 @@ public class ApiServlet extends HttpServlet
     private static boolean isBlank(String s)
     {
         return s == null || s.isBlank();
+    }
+
+    /** Parse an enum by name, falling back rather than failing on an unknown value. */
+    private static <E extends Enum<E>> E enumOf(Class<E> type, String name, E fallback)
+    {
+        if (isBlank(name))
+            return fallback;
+        try
+        {
+            return Enum.valueOf(type, name.trim().toUpperCase());
+        }
+        catch (IllegalArgumentException e)
+        {
+            return fallback;
+        }
     }
 
     private static Spinnaker spinnakerOf(JsonNode node)

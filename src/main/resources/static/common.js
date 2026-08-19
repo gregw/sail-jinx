@@ -102,6 +102,16 @@ async function refreshBuildWidget() {
   widget.innerHTML = html;
 }
 
+/**
+ * A series id for use in a URL path. Series ids are club-scoped and contain a slash
+ * (myc.org.au/2026-winter-twilight); encodeURIComponent would turn that into %2F, which
+ * the server rejects as an ambiguous path separator. Encode each segment and keep the
+ * separator, so the path stays a path.
+ */
+function seriesPath(id) {
+  return String(id || '').split('/').map(encodeURIComponent).join('/');
+}
+
 /** Remember the race the user was last looking at, so /race.html has a default. */
 function rememberRaceId(raceId) {
   if (raceId) localStorage.setItem('sail-jinx.lastRaceId', raceId);

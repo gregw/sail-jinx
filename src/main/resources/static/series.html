@@ -21,9 +21,43 @@
     <button id="add-btn" class="primary" type="button">New series</button>
   </div>
 
+  <section id="new-panel" style="display:none;">
+    <h2>New series</h2>
+    <div class="form-grid">
+      <label for="new-name">Name</label>
+      <input id="new-name" placeholder="2026 Winter Twilight">
+
+      <label for="new-spin">Spinnakers</label>
+      <select id="new-spin">
+        <option value="MIXED">Mixed — each boat decides</option>
+        <option value="SPINNAKER">Spinnaker</option>
+        <option value="NON_SPINNAKER">Non-spinnaker</option>
+      </select>
+
+      <label for="new-format">Race format</label>
+      <select id="new-format">
+        <option value="PURSUIT">Pursuit</option>
+        <option value="TCF_PURSUIT" disabled>TCF pursuit (not implemented)</option>
+        <option value="PHS" disabled>PHS (not implemented)</option>
+      </select>
+
+      <label for="new-algorithm">Handicap</label>
+      <select id="new-algorithm">
+        <option value="JINX">Jinx</option>
+        <option value="SCRATCH" disabled>Scratch (not implemented)</option>
+      </select>
+    </div>
+    <div class="toolbar">
+      <button id="new-save" class="primary" type="button">Create series</button>
+      <button id="new-cancel" type="button">Cancel</button>
+      <span id="new-msg" class="hint"></span>
+    </div>
+  </section>
+
   <table id="series-table" style="display:none;">
     <thead>
-      <tr><th>Name</th><th class="num-cell">Races</th><th class="num-cell">Roster</th><th></th></tr>
+      <tr><th>Name</th><th>Format</th><th>Spin</th>
+        <th class="num-cell">Races</th><th class="num-cell">Roster</th><th></th></tr>
     </thead>
     <tbody id="series-tbody"></tbody>
   </table>
@@ -113,16 +147,52 @@
   async function toggleArchive(id) {
     const s = series.find(x => x.id === id);
     if (!s) return;
-    const r = await postJson('/api/series', { id: s.id, name: s.name, archived: !s.archived });
+    const r = await postJson('/api/series', {
+      id: s.id, name: s.name, archived: !s.archived,
+      spinnakerPolicy: s.spinnakerPolicy,
+      raceFormat: s.raceFormat,
+      handicapAlgorithm: s.handicapAlgorithm
+    });
     if (!r.ok) { alert('Could not update: ' + errorOf(r)); return; }
     await load();
   }
 
-  document.getElementById('add-btn').onclick = async () => {
-    const name = prompt('Series name', new Date().getFullYear() + ' Twilight Series');
-    if (!name) return;
-    const r = await postJson('/api/series', { name });
-    if (!r.ok) { alert('Could not create: ' + errorOf(r)); return; }
+  const SPIN_LABELS = { MIXED: 'mixed', SPINNAKER: 'spin', NON_SPINNAKER: 'non-spin' };
+  const FORMAT_LABELS = { PURSUIT: 'pursuit', TCF_PURSUIT: 'TCF pursuit', PHS: 'PHS' };
+
+  function spinLabel(policy) { return SPIN_LABELS[policy] || policy || ''; }
+  function formatLabel(s) {
+    const f = FORMAT_LABELS[s.raceFormat] || s.raceFormat || '';
+    const h = (s.handicapAlgorithm || '').toLowerCase();
+    return h && h !== 'jinx' ? f + ' / ' + h : f;
+  }
+
+  document.getElementById('add-btn').onclick = () => {
+    const panel = document.getElementById('new-panel');
+    const open = panel.style.display === 'none';
+    panel.style.display = open ? '' : 'none';
+    if (open) {
+      document.getElementById('new-name').value =
+        new Date().getFullYear() + ' Twilight Series';
+      document.getElementById('new-msg').textContent = '';
+      document.getElementById('new-name').focus();
+    }
+  };
+  document.getElementById('new-cancel').onclick = () => {
+    document.getElementById('new-panel').style.display = 'none';
+  };
+  document.getElementById('new-save').onclick = async () => {
+    const name = document.getElementById('new-name').value.trim();
+    const msg = document.getElementById('new-msg');
+    if (!name) { msg.textContent = 'A series needs a name.'; return; }
+    const r = await postJson('/api/series', {
+      name,
+      spinnakerPolicy: document.getElementById('new-spin').value,
+      raceFormat: document.getElementById('new-format').value,
+      handicapAlgorithm: document.getElementById('new-algorithm').value
+    });
+    if (!r.ok) { msg.textContent = 'Could not create: ' + errorOf(r); return; }
+    document.getElementById('new-panel').style.display = 'none';
     await load();
   };
 
@@ -137,7 +207,7 @@
     configSeriesId = seriesId;
     const s = series.find(x => x.id === seriesId);
     document.getElementById('config-series-name').textContent = s ? s.name : seriesId;
-    const r = await fetchJson('/api/series/' + encodeURIComponent(seriesId) + '/config');
+    const r = await fetchJson('/api/series/' + seriesPath(seriesId) + '/config');
     if (!r.ok) { alert('Could not load settings: ' + errorOf(r)); return; }
     configDefaults = r.body.defaults;
     fillConfig(r.body.config);
@@ -176,7 +246,7 @@
       v0knots: Number(document.getElementById('cfg-v0').value),
       limitBySunset: document.getElementById('cfg-sunset').checked
     };
-    const r = await postJson('/api/series/' + encodeURIComponent(configSeriesId) + '/config', payload);
+    const r = await postJson('/api/series/' + seriesPath(configSeriesId) + '/config', payload);
     const msg = document.getElementById('cfg-msg');
     if (!r.ok) {
       msg.className = 'banner banner-err';
@@ -210,7 +280,7 @@
     }
     rosterCounts = new Map();
     await Promise.all(series.map(async s => {
-      const rr = await fetchJson('/api/series/' + encodeURIComponent(s.id) + '/roster');
+      const rr = await fetchJson('/api/series/' + seriesPath(s.id) + '/roster');
       if (rr.ok) rosterCounts.set(s.id, (rr.body.entries || []).length);
     }));
 

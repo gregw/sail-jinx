@@ -144,7 +144,7 @@
       division: t.division || null,
       spinnaker: t.spinnaker
     }));
-    const r = await postJson('/api/series/' + encodeURIComponent(seriesId) + '/roster', { entries });
+    const r = await postJson('/api/series/' + seriesPath(seriesId) + '/roster', { entries });
     const state = document.getElementById('roster-state');
     state.style.display = '';
     if (!r.ok) {
@@ -170,7 +170,7 @@
 
     const [boatsR, rosterR, seriesR, designsR] = await Promise.all([
       fetchJson('/api/boats'),
-      fetchJson('/api/series/' + encodeURIComponent(seriesId) + '/roster'),
+      fetchJson('/api/series/' + seriesPath(seriesId) + '/roster'),
       fetchJson('/api/series'),
       fetchJson('/api/designs')
     ]);
