@@ -56,7 +56,7 @@ class BoatRegistryTest
 
     private static BoatRegistry.RawBoat raw(String sail, String name, String design)
     {
-        return new BoatRegistry.RawBoat(sail, name, design, null, null, 1.0, null, false);
+        return new BoatRegistry.RawBoat(sail, name, design, null, false);
     }
 
     private BoatRegistry.Resolution add(String sail, String name, String design) throws IOException
@@ -155,7 +155,7 @@ class BoatRegistryTest
 
         store.putEntrants(new RaceEntrants("r-1", Instant.now(),
             RaceEntrants.TcfSource.ROSTER, null, null,
-            List.of(Entrant.fromBoat(boat, 1.0450))));
+            List.of(Entrant.fromRosterEntry(boat, new Roster.Entry(oldId, 1.0450)))));
         store.putRaceTimes("r-1", new RaceTimes("r-1", List.of(oldId), oldId,
             Map.of(oldId, new RaceTimes.BoatTimes(true, "18:00:00", "19:30:00"))));
         store.putRoster(new Roster("s-1", List.of(new Roster.Entry(oldId, 1.0450))));
@@ -240,14 +240,18 @@ class BoatRegistryTest
     }
 
     @Test
-    void aDesignThatCannotFlyASpinnakerDefaultsToNonSpinnaker() throws Exception
+    void aDesignThatCannotFlyASpinnakerIsFlaggedAndDefaultsEntriesToNS() throws Exception
     {
         rebuild("boats: {}\ndesigns: {}\n", "noSpinnaker:\n- \"radford12catrig\"\n");
 
         BoatRegistry.Resolution r = add("MYC12", "San Toy", "Radford 12 Cat Rig");
 
-        assertThat(r.boat().spinnaker(), equalTo(Spinnaker.NS));
+        // Not being able to fly a kite is a property of the hull, so it lives on the
+        // design. What a boat actually enters on is a property of the entry, so the
+        // design only supplies the default.
         assertThat(store.designs().get("radford12catrig").noSpinnaker(), is(true));
+        assertThat(registry.defaultSpinnaker(r.boat().designId()), equalTo(Spinnaker.NS));
+        assertThat(registry.defaultSpinnaker("j24"), equalTo(Spinnaker.S));
     }
 
     @Test

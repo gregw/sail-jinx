@@ -170,17 +170,46 @@ projects, not just a local regression.
 
 | File | Holds |
 |---|---|
-| `boats.json` | the fleet register; `currentTcf` is a **seed**, not authoritative |
+| `boats.json` | the fleet register: identity only — sail number, name, design |
 | `designs.json` | hull types, learned from boat entry |
 | `series.json`, `races.json` | seasons and race dates |
-| `roster/{seriesId}.json` | who is in for the season, and their starting TCF |
+| `roster/{seriesId}.json` | who is in for the season, **and the terms they enter on** |
 | `entrants/{raceId}.json` | who is in this race **and the TCF it was sailed on** |
 | `start-sheet/{raceId}.json` | the published stagger |
 | `race-times/{raceId}.json` | came / actual start / finish, as typed |
 | `adjustments/{raceId}.json` | saved handicap output — **also the race lock** |
 | `audit.json`, `journal/` | history |
 
-Two things follow from this that are easy to get wrong:
+### What belongs to a boat, and what does not
+
+**TCF, division and spinnaker are not properties of a boat.** A boat does not have
+a handicap — it has one *for a given series*, and a different one by the end of
+it. It can sail one season in Division 1 and the next in Division 2, and enter
+one series with a kite and one without.
+
+| Lives on | Holds |
+|---|---|
+| `Boat` | sail number, name, design, active, casual, notes |
+| `Roster.Entry` | starting TCF, division, spinnaker — the terms of a **series** entry |
+| `Entrant` | the TCF actually in force for a **race**, plus division and spinnaker |
+| `Design` | `noSpinnaker` — a cat rig genuinely cannot fly one; that *is* a hull fact |
+
+Consequences worth knowing:
+
+- The handicap engine takes `Competitor(boatId, tcf)`, not `Boat`. Handing it a
+  Boat would mean inventing a handicap field on the register just to have
+  somewhere to put the value in transit — which is how the field got there in
+  the first place.
+- A boat joining a series has to be **given** a TCF; there is no register value
+  to inherit. The default is 1.0, visibly a starting point rather than a figure
+  anybody chose.
+- A CSV fleet list carries both kinds of column. The identity ones go to the
+  register; the entry ones need `?seriesId=` to land on. Without one they are
+  read and reported as not applied, never written onto the register.
+- `Design.noSpinnaker` supplies the *default* for an entry, not the value: a boat
+  that can fly a kite may still enter without one.
+
+Two more things that are easy to get wrong:
 
 1. **Each race's entrants carry their own TCF.** That is the per-race handicap
    history — processing race 5 cannot disturb what race 4 says. SailSys only

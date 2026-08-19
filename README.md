@@ -93,6 +93,11 @@ work. Every column is optional — including the design, which a later import ca
 fill in without creating a second boat. **Preview** shows what an import would do
 before it does it.
 
+Choose a series in the import panel and the list's TCF, division and spinnaker
+columns build that season's roster as well. Leave it on "register only" and the
+boats are still added; those columns are reported as not applied rather than
+written onto the register, where they do not belong.
+
 ### There is no login
 
 Every connection is treated as an administrator. The machine it runs on is the
@@ -103,6 +108,13 @@ authentication is one method, and it must happen before this is hosted.
 ---
 
 ## Knowing which boat is which
+
+A boat's record holds only what is true of the hull: what it is called, what is
+on its sail, and what it was built as. **Handicap, division and spinnaker are
+not there** — a boat does not have a TCF, it has one for a given series and a
+different one by the end of it, and the same hull can sail one season in
+Division 1 with a kite and the next in Division 2 without. Those are set on a
+series roster, which is also where a fleet list's TCF column lands.
 
 Boats are identified the same way as in
 [sailing-pf](https://github.com/gregw/sailing-pf), which analyses this fleet's

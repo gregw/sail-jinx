@@ -39,7 +39,7 @@ class JsonStoreTest
 {
     private static Boat boat(String id, String sail, String name, double tcf)
     {
-        return new Boat(id, sail, name, "Div 1", null, Spinnaker.S, tcf, false, true, null);
+        return new Boat(id, sail, name, null, false, true, null);
     }
 
     @Test
@@ -60,8 +60,7 @@ class JsonStoreTest
     {
         JsonStore first = new JsonStore(tmp);
         first.start();
-        first.putBoat(new Boat("b-1", "AUS5678", "Flashpoint", "Div 1", "j24",
-            Spinnaker.NS, 1.0450, false, true, "spare main"));
+        first.putBoat(new Boat("b-1", "AUS5678", "Flashpoint", "j24", false, true, "spare main"));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
@@ -69,9 +68,7 @@ class JsonStoreTest
         Boat read = reopened.boats().get("b-1");
         assertThat(read.name(), equalTo("Flashpoint"));
         assertThat(read.sailNumber(), equalTo("AUS5678"));
-        assertThat(read.division(), equalTo("Div 1"));
-        assertThat(read.spinnaker(), equalTo(Spinnaker.NS));
-        assertThat(read.currentTcf(), equalTo(1.0450));
+        assertThat(read.designId(), equalTo("j24"));
         assertThat(read.active(), is(true));
         assertThat(read.notes(), equalTo("spare main"));
     }
@@ -84,8 +81,7 @@ class JsonStoreTest
         JsonStore store = new JsonStore(tmp);
         store.start();
         store.putBoat(boat("b-1", "AUS1", "Gone Fishing", 0.98));
-        store.putBoat(new Boat("b-1", "AUS1", "Gone Fishing", "Div 1", null,
-            Spinnaker.S, 0.98, false, false, null));
+        store.putBoat(new Boat("b-1", "AUS1", "Gone Fishing", null, false, false, null));
 
         assertThat(store.boats(), aMapWithSize(1));
         assertThat(store.boats().get("b-1").active(), is(false));
@@ -184,8 +180,8 @@ class JsonStoreTest
         JsonStore first = new JsonStore(tmp);
         first.start();
         first.putRoster(new Roster("s-1", List.of(
-            new Roster.Entry("b-1", 1.0450),
-            new Roster.Entry("b-2", 0.9340))));
+            new Roster.Entry("b-1", 1.0450, "Div 1", Spinnaker.S),
+            new Roster.Entry("b-2", 0.9340, null, Spinnaker.NS))));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
@@ -194,6 +190,11 @@ class JsonStoreTest
         assertThat(read.entries(), hasSize(2));
         assertThat(read.entries().get(0).boatId(), equalTo("b-1"));
         assertThat(read.entries().get(0).startingTcf(), equalTo(1.0450));
+        // The terms of the entry, not of the boat.
+        assertThat(read.entries().get(0).division(), equalTo("Div 1"));
+        assertThat(read.entries().get(0).spinnaker(), equalTo(Spinnaker.S));
+        assertThat(read.entries().get(1).spinnaker(), equalTo(Spinnaker.NS));
+        assertThat(read.entries().get(1).division(), nullValue());
     }
 
     // --- Race entrants -------------------------------------------------------
@@ -214,8 +215,8 @@ class JsonStoreTest
         first.putEntrants(new RaceEntrants("r-2", Instant.parse("2026-06-12T07:00:00Z"),
             RaceEntrants.TcfSource.CARRIED_FORWARD, "r-1", 1,
             List.of(
-                Entrant.fromBoat(boat("b-1", "AUS1", "Flashpoint", 1.0450), 1.0666),
-                Entrant.fromBoat(boat("b-2", "AUS2", "Slow Poke", 0.9340), 0.9485))));
+                Entrant.fromRosterEntry(boat("b-1", "AUS1", "Flashpoint", 1.0450), new Roster.Entry("b-1", 1.0666)),
+                Entrant.fromRosterEntry(boat("b-2", "AUS2", "Slow Poke", 0.9340), new Roster.Entry("b-2", 0.9485)))));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
@@ -239,10 +240,10 @@ class JsonStoreTest
         Boat b = boat("b-1", "AUS1", "Flashpoint", 1.0450);
         store.putEntrants(new RaceEntrants("r-1", Instant.now(),
             RaceEntrants.TcfSource.ROSTER, null, null,
-            List.of(Entrant.fromBoat(b, 1.0450))));
+            List.of(Entrant.fromRosterEntry(b, new Roster.Entry("b-1", 1.0450)))));
         store.putEntrants(new RaceEntrants("r-2", Instant.now(),
             RaceEntrants.TcfSource.CARRIED_FORWARD, "r-1", 1,
-            List.of(Entrant.fromBoat(b, 1.0666))));
+            List.of(Entrant.fromRosterEntry(b, new Roster.Entry("b-1", 1.0666)))));
 
         assertThat(store.entrants("r-1").entrants().get(0).tcf(), equalTo(1.0450));
         assertThat(store.entrants("r-2").entrants().get(0).tcf(), equalTo(1.0666));
@@ -259,7 +260,7 @@ class JsonStoreTest
         first.start();
         first.putEntrants(new RaceEntrants("r-1", Instant.now(),
             RaceEntrants.TcfSource.ROSTER, null, null,
-            List.of(Entrant.fromBoat(boat("b-1", "AUS1", "Flashpoint", 1.0), 0.9287868))));
+            List.of(Entrant.fromRosterEntry(boat("b-1", "AUS1", "Flashpoint", 1.0), new Roster.Entry("b-1", 0.9287868)))));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();

@@ -336,8 +336,8 @@ public class JsonStore
 
     private static Boat withId(Boat b, String id)
     {
-        return new Boat(id, b.sailNumber(), b.name(), b.division(), b.designId(),
-            b.spinnaker(), b.currentTcf(), b.casual(), b.active(), b.notes());
+        return new Boat(id, b.sailNumber(), b.name(), b.designId(),
+            b.casual(), b.active(), b.notes());
     }
 
     private static boolean referencesBoat(RaceTimes times, String boatId)

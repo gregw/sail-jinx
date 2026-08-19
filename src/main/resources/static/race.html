@@ -605,8 +605,12 @@
       return;
     }
     const b = matches[0];
+    // A boat has no handicap of its own — it has one per entry — so a boat joining
+    // mid-race has to be given one.
+    const tcf = askTcf(b.name || b.sailNumber);
+    if (tcf == null) { setMsg('add-msg', 'Cancelled — no TCF given.'); return; }
     addEntrant({ boatId: b.id, sailNumber: b.sailNumber, name: b.name,
-      division: b.division, spinnaker: b.spinnaker, tcf: b.currentTcf,
+      designId: b.designId, division: null, spinnaker: null, tcf,
       entryType: b.casual ? 'CASUAL' : 'ROSTER' });
     setMsg('add-msg', 'Added ' + b.sailNumber + '. Save to keep it.');
   }
@@ -615,27 +619,34 @@
     const text = document.getElementById('add-boat').value.trim();
     if (!text) { setMsg('add-msg', 'Type a sail number or name first.'); return; }
     const { sail, name } = splitSailAndName(text);
-    const tcf = Number(prompt('Starting TCF for ' + (name || sail), '1.0000'));
-    if (!isFinite(tcf) || tcf <= 0) { setMsg('add-msg', 'Cancelled — no TCF given.'); return; }
+    const tcf = askTcf(name || sail);
+    if (tcf == null) { setMsg('add-msg', 'Cancelled — no TCF given.'); return; }
 
+    // The register takes the boat's identity; the handicap belongs to this entry.
     const r = await postJson('/api/boats',
-      { sailNumber: sail, name: name || sail, currentTcf: tcf, casual: true });
+      { sailNumber: sail, name: name || sail, casual: true });
     if (!r.ok) { setMsg('add-msg', 'Could not register: ' + errorOf(r)); return; }
     const b = r.body.boat;
     register.push(b);
     addEntrant({ boatId: b.id, sailNumber: b.sailNumber, name: b.name,
-      division: b.division, spinnaker: b.spinnaker, tcf: b.currentTcf, entryType: 'CASUAL' });
+      designId: b.designId, division: null, spinnaker: null, tcf, entryType: 'CASUAL' });
     setMsg('add-msg', 'Registered and added ' + b.sailNumber + '.');
+  }
+
+  /** Ask for the handicap this boat enters on. Null when cancelled or nonsense. */
+  function askTcf(who) {
+    const v = Number(prompt('TCF for ' + who + ' in this race', '1.0000'));
+    return (isFinite(v) && v > 0) ? v : null;
   }
 
   function onAddOneOff() {
     const text = document.getElementById('add-boat').value.trim();
     if (!text) { setMsg('add-msg', 'Type a sail number or name first.'); return; }
     const { sail, name } = splitSailAndName(text);
-    const tcf = Number(prompt('TCF for this race only', '1.0000'));
-    if (!isFinite(tcf) || tcf <= 0) { setMsg('add-msg', 'Cancelled — no TCF given.'); return; }
+    const tcf = askTcf(name || sail);
+    if (tcf == null) { setMsg('add-msg', 'Cancelled — no TCF given.'); return; }
     addEntrant({ boatId: null, sailNumber: sail, name: name || sail,
-      division: null, spinnaker: null, tcf, entryType: 'ONE_OFF' });
+      designId: null, division: null, spinnaker: null, tcf, entryType: 'ONE_OFF' });
     setMsg('add-msg', 'Added as a one-off — it carries no handicap forward.');
   }
 

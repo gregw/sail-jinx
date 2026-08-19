@@ -4,7 +4,6 @@ import java.util.List;
 import java.util.Map;
 
 import org.mortbay.sailing.jinx.model.Adjustment;
-import org.mortbay.sailing.jinx.model.Boat;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.Result;
 import org.mortbay.sailing.jinx.model.StartTime;
@@ -23,19 +22,19 @@ public interface HandicapEngine
     /**
      * Compute pursuit start times for the given race.
      *
-     * @param boats   participating boats with their current TCFs
+     * @param boats   participating boats with the TCF in force for this race
      * @param race    race with {@code targetElapsedMinutes} and {@code earliestStart} set
      * @return one entry per boat, ordered slowest start first
      */
-    List<StartTime> computeStartTimes(List<Boat> boats, Race race);
+    List<StartTime> computeStartTimes(List<Competitor> boats, Race race);
 
     /**
      * Compute TCF adjustments from a race's results.
      *
-     * @param boats   participating boats (current TCFs)
+     * @param boats   participating boats with the TCF in force for this race
      * @param race    race that has just finished
      * @param results boatId → Result; missing boats are treated as DNC
      * @return one {@link Adjustment} per boat in {@code boats}, sum of deltas = 0
      */
-    List<Adjustment> processResults(List<Boat> boats, Race race, Map<String, Result> results);
+    List<Adjustment> processResults(List<Competitor> boats, Race race, Map<String, Result> results);
 }

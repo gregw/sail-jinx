@@ -9,7 +9,6 @@ import java.util.Map;
 
 import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.model.Adjustment;
-import org.mortbay.sailing.jinx.model.Boat;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.Result;
 import org.mortbay.sailing.jinx.model.StartTime;
@@ -28,7 +27,7 @@ public class PursuitHandicapEngine implements HandicapEngine
     }
 
     @Override
-    public List<StartTime> computeStartTimes(List<Boat> boats, Race race)
+    public List<StartTime> computeStartTimes(List<Competitor> boats, Race race)
     {
         if (boats == null || boats.isEmpty())
             return List.of();
@@ -38,13 +37,13 @@ public class PursuitHandicapEngine implements HandicapEngine
             ? race.earliestStart()
             : LocalTime.parse(config.earliestStart());
 
-        double tcfMed = median(boats.stream().map(Boat::currentTcf).toList());
+        double tcfMed = median(boats.stream().map(Competitor::tcf).toList());
 
         double[] tau = new double[boats.size()];
         double tauMax = Double.NEGATIVE_INFINITY;
         for (int i = 0; i < boats.size(); i++)
         {
-            tau[i] = tTarget * tcfMed / boats.get(i).currentTcf();
+            tau[i] = tTarget * tcfMed / boats.get(i).tcf();
             if (tau[i] > tauMax) tauMax = tau[i];
         }
 
@@ -53,13 +52,13 @@ public class PursuitHandicapEngine implements HandicapEngine
         {
             long minutesAfterEarliest = Math.round(tauMax - tau[i]);
             LocalTime startTime = tEarliest.plusMinutes(minutesAfterEarliest);
-            out.add(new StartTime(boats.get(i).id(), boats.get(i).currentTcf(), tau[i], startTime));
+            out.add(new StartTime(boats.get(i).boatId(), boats.get(i).tcf(), tau[i], startTime));
         }
         return out;
     }
 
     @Override
-    public List<Adjustment> processResults(List<Boat> boats, Race race, Map<String, Result> results)
+    public List<Adjustment> processResults(List<Competitor> boats, Race race, Map<String, Result> results)
     {
         // The sunset cap is not applied here. It shapes the course the RO lays
         // before the race (see the course planner), not the handicap maths
@@ -71,13 +70,13 @@ public class PursuitHandicapEngine implements HandicapEngine
         // Carry through any per-result finishPosition so the engine can
         // assign penalties by official place rather than by raw-elapsed
         // sort. Position-less finishers fall back to elapsed-sort.
-        record Entry(Boat boat, double elapsedMinutes, Integer position) {}
+        record Entry(Competitor boat, double elapsedMinutes, Integer position) {}
         List<Entry> finishers = new ArrayList<>();
-        List<Boat> dnfRet = new ArrayList<>();
-        List<Boat> excluded = new ArrayList<>();
-        for (Boat b : boats)
+        List<Competitor> dnfRet = new ArrayList<>();
+        List<Competitor> excluded = new ArrayList<>();
+        for (Competitor b : boats)
         {
-            Result r = results == null ? null : results.get(b.id());
+            Result r = results == null ? null : results.get(b.boatId());
             if (r == null)
             {
                 excluded.add(b);
@@ -120,7 +119,7 @@ public class PursuitHandicapEngine implements HandicapEngine
         // Penalty draws from penaltyList by sorted position — when official
         // positions were supplied, that's the official finish order; else
         // elapsed-sort order.
-        record Participant(Boat boat, Integer position, double elapsed, double penalty) {}
+        record Participant(Competitor boat, Integer position, double elapsed, double penalty) {}
         List<Participant> participants = new ArrayList<>();
         for (int i = 0; i < finishers.size(); i++)
         {
@@ -132,7 +131,7 @@ public class PursuitHandicapEngine implements HandicapEngine
                 : 0.0;
             participants.add(new Participant(e.boat(), position, e.elapsedMinutes(), penalty));
         }
-        for (Boat b : dnfRet)
+        for (Competitor b : dnfRet)
             participants.add(new Participant(b, null, dnfElapsed, 0.0));
 
         // §6.1 — penalty pool actually awarded.
@@ -179,7 +178,7 @@ public class PursuitHandicapEngine implements HandicapEngine
         {
             List<Double> dEstimates = new ArrayList<>(finishers.size());
             for (Entry f : finishers)
-                dEstimates.add(f.boat().currentTcf() * v0 * f.elapsedMinutes() / 60.0);
+                dEstimates.add(f.boat().tcf() * v0 * f.elapsedMinutes() / 60.0);
             dRaceNm = median(dEstimates);
         }
         double tMinutesPerUnitTcf = 60.0 * dRaceNm / v0;
@@ -190,16 +189,16 @@ public class PursuitHandicapEngine implements HandicapEngine
             Participant p = participants.get(i);
             double reward = weightSum > 0 ? pool * weights[i] / weightSum : 0.0;
             double net = p.penalty() - reward;
-            double oldTcf = p.boat().currentTcf();
+            double oldTcf = p.boat().tcf();
             double denom = 1.0 - net * oldTcf / tMinutesPerUnitTcf;
             double newTcf = (denom == 0.0) ? oldTcf : oldTcf / denom;
             adjustments.add(new Adjustment(
-                p.boat().id(), p.position(), p.penalty(), reward, net, oldTcf, newTcf));
+                p.boat().boatId(), p.position(), p.penalty(), reward, net, oldTcf, newTcf));
         }
         // Excluded boats appear in the result with zero deltas and a frozen TCF
         // so the audit/UI can still show them in the table.
-        for (Boat b : excluded)
-            adjustments.add(new Adjustment(b.id(), null, 0.0, 0.0, 0.0, b.currentTcf(), b.currentTcf()));
+        for (Competitor b : excluded)
+            adjustments.add(new Adjustment(b.boatId(), null, 0.0, 0.0, 0.0, b.tcf(), b.tcf()));
 
         return adjustments;
     }

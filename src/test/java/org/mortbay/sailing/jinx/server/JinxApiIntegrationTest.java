@@ -106,24 +106,69 @@ class JinxApiIntegrationTest
     }
 
     @Test
-    void boatsAreCreatedWithMintedIdsAndListedBySailNumber() throws Exception
+    void boatsAreCreatedWithReadableIdsAndListedBySailNumber() throws Exception
     {
         post("/api/boats", """
-            {"sailNumber":"AUS9","name":"Quick Silver","currentTcf":1.0450}""");
+            {"sailNumber":"AUS9","name":"Quick Silver","design":"J/24"}""");
         post("/api/boats", """
-            {"sailNumber":"A123","name":"Slow Poke","currentTcf":0.8821,"spinnaker":"NS"}""");
+            {"sailNumber":"A123","name":"Slow Poke"}""");
 
         JsonNode boats = get("/api/boats");
         assertThat(boats.size(), equalTo(2));
         // AUS9 canonicalises to its bare form — the country prefix is normalisation, not
         // identity — so it sorts before A123.
         assertThat(boats.get(0).path("sailNumber").asText(), equalTo("9"));
-        assertThat(boats.get(0).path("id").asText(), equalTo("9-quicksilver"));
+        // No alias seed in this test's config, so the design id is the plain
+        // normalisation of what was typed. With the shipped seed it would resolve
+        // further, to jboatsj24.
+        assertThat(boats.get(0).path("id").asText(), equalTo("9-quicksilver-j24"));
         assertThat(boats.get(1).path("sailNumber").asText(), equalTo("A123"));
-        assertThat(boats.get(1).path("spinnaker").asText(), equalTo("NS"));
         // Defaults: a boat is active and not casual unless told otherwise.
         assertThat(boats.get(0).path("active").asBoolean(), is(true));
         assertThat(boats.get(0).path("casual").asBoolean(), is(false));
+    }
+
+    @Test
+    void theRegisterHoldsNoHandicapDivisionOrSpinnaker() throws Exception
+    {
+        // None of them is a property of a hull. A boat has a handicap for a series, and
+        // a different one by the end of it; it can sail one season in Division 1 and the
+        // next in Division 2, with or without a kite.
+        post("/api/boats", """
+            {"sailNumber":"AUS9","name":"Quick Silver","currentTcf":1.0450,
+             "division":"Div 1","spinnaker":"NS"}""");
+
+        JsonNode boat = get("/api/boats").get(0);
+        assertThat(boat.has("currentTcf"), is(false));
+        assertThat(boat.has("division"), is(false));
+        assertThat(boat.has("spinnaker"), is(false));
+    }
+
+    @Test
+    void theSameBoatCanEnterTwoSeriesOnDifferentTerms() throws Exception
+    {
+        String boatId = createBoat("AUS9", "Quick Silver");
+        String summer = createSeries("Summer");
+        String winter = createSeries("Winter");
+
+        post("/api/series/" + summer + "/roster",
+            "{\"entries\":[{\"boatId\":\"" + boatId + "\",\"startingTcf\":1.0450,"
+            + "\"division\":\"Div 1\",\"spinnaker\":\"S\"}]}");
+        post("/api/series/" + winter + "/roster",
+            "{\"entries\":[{\"boatId\":\"" + boatId + "\",\"startingTcf\":0.9800,"
+            + "\"division\":\"Div 2\",\"spinnaker\":\"NS\"}]}");
+
+        JsonNode s = get("/api/series/" + summer + "/roster").path("entries").get(0);
+        JsonNode w = get("/api/series/" + winter + "/roster").path("entries").get(0);
+
+        assertThat(s.path("startingTcf").asDouble(), closeTo(1.0450, 1e-9));
+        assertThat(w.path("startingTcf").asDouble(), closeTo(0.9800, 1e-9));
+        assertThat(s.path("division").asText(), equalTo("Div 1"));
+        assertThat(w.path("division").asText(), equalTo("Div 2"));
+        assertThat(s.path("spinnaker").asText(), equalTo("S"));
+        assertThat(w.path("spinnaker").asText(), equalTo("NS"));
+        // One hull, one register record.
+        assertThat(get("/api/boats").size(), equalTo(1));
     }
 
     @Test
@@ -160,8 +205,8 @@ class JinxApiIntegrationTest
     void entrantsSeedFromTheRosterOnTheFirstRace() throws Exception
     {
         String seriesId = createSeries("2026 Winter Twilight");
-        String fast = createBoat("AUS9", "Quick Silver", 1.0450);
-        String slow = createBoat("A123", "Slow Poke", 0.8821);
+        String fast = createBoat("AUS9", "Quick Silver");
+        String slow = createBoat("A123", "Slow Poke");
         putRoster(seriesId, fast, 1.0450, slow, 0.8821);
         String raceId = createRace(seriesId, "2026-06-05");
 
@@ -178,7 +223,7 @@ class JinxApiIntegrationTest
     void seedingRefusesToClobberAnExistingEntrantList() throws Exception
     {
         String seriesId = createSeries("S");
-        String boatId = createBoat("AUS9", "Quick Silver", 1.0);
+        String boatId = createBoat("AUS9", "Quick Silver");
         putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
@@ -191,9 +236,9 @@ class JinxApiIntegrationTest
     void startTimesStaggerTheFleetWithTheSlowestBoatOnTheEarliestGun() throws Exception
     {
         String seriesId = createSeries("2026 Winter Twilight");
-        String fast = createBoat("AUS9", "Quick Silver", 1.0450);
-        String mid = createBoat("5678", "Mid Fleet", 0.9450);
-        String slow = createBoat("A123", "Slow Poke", 0.8821);
+        String fast = createBoat("AUS9", "Quick Silver");
+        String mid = createBoat("5678", "Mid Fleet");
+        String slow = createBoat("A123", "Slow Poke");
         putRoster(seriesId, fast, 1.0450, mid, 0.9450, slow, 0.8821);
         String raceId = createRace(seriesId, "2026-06-05");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
@@ -226,8 +271,8 @@ class JinxApiIntegrationTest
     void coursePlanSizesTheCourseFromTheSlowestEntrant() throws Exception
     {
         String seriesId = createSeries("S");
-        String fast = createBoat("AUS9", "Quick Silver", 1.0450);
-        String slow = createBoat("A123", "Slow Poke", 0.8000);
+        String fast = createBoat("AUS9", "Quick Silver");
+        String slow = createBoat("A123", "Slow Poke");
         putRoster(seriesId, fast, 1.0450, slow, 0.8000);
         String raceId = createRace(seriesId, "2026-06-05");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
@@ -262,7 +307,7 @@ class JinxApiIntegrationTest
     void aOneOffEntrantNeedsNoRegisterBoat() throws Exception
     {
         String seriesId = createSeries("S");
-        String boatId = createBoat("AUS9", "Quick Silver", 1.0);
+        String boatId = createBoat("AUS9", "Quick Silver");
         putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
@@ -299,9 +344,9 @@ class JinxApiIntegrationTest
     void processingHandicapsCarriesNewTcfsToTheNextRace() throws Exception
     {
         String seriesId = createSeries("2026 Winter Twilight");
-        String fast = createBoat("AUS9", "Quick Silver", 1.0000);
-        String mid = createBoat("5678", "Mid Fleet", 1.0000);
-        String slow = createBoat("A123", "Slow Poke", 1.0000);
+        String fast = createBoat("AUS9", "Quick Silver");
+        String mid = createBoat("5678", "Mid Fleet");
+        String slow = createBoat("A123", "Slow Poke");
         putRoster(seriesId, fast, 1.0, mid, 1.0, slow, 1.0);
         String race1 = createRace(seriesId, "2026-06-05");
         String race2 = createRace(seriesId, "2026-06-12");
@@ -358,7 +403,7 @@ class JinxApiIntegrationTest
     void savingHandicapsLocksTheRaceAndUnlockingReleasesIt() throws Exception
     {
         String seriesId = createSeries("S");
-        String boatId = createBoat("AUS9", "Quick Silver", 1.0);
+        String boatId = createBoat("AUS9", "Quick Silver");
         putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
@@ -388,7 +433,7 @@ class JinxApiIntegrationTest
     void theRaceBundleCarriesEverythingThePageNeeds() throws Exception
     {
         String seriesId = createSeries("2026 Winter Twilight");
-        String boatId = createBoat("AUS9", "Quick Silver", 1.0);
+        String boatId = createBoat("AUS9", "Quick Silver");
         putRoster(seriesId, boatId, 1.0);
         String race1 = createRace(seriesId, "2026-06-05");
         String race2 = createRace(seriesId, "2026-06-12");
@@ -418,7 +463,7 @@ class JinxApiIntegrationTest
     void savingHandicapsIsAudited() throws Exception
     {
         String seriesId = createSeries("S");
-        String boatId = createBoat("AUS9", "Quick Silver", 1.0);
+        String boatId = createBoat("AUS9", "Quick Silver");
         putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
@@ -454,7 +499,7 @@ class JinxApiIntegrationTest
         assertThat(after.path("defaults").path("idealRaceDuration").asInt(), equalTo(90));
 
         // And the override reaches the course calculator for this series' races.
-        String boatId = createBoat("AUS9", "Quick Silver", 1.0);
+        String boatId = createBoat("AUS9", "Quick Silver");
         putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
@@ -467,7 +512,7 @@ class JinxApiIntegrationTest
     void theRosterJoinsToTheRegister() throws Exception
     {
         String seriesId = createSeries("S");
-        String boatId = createBoat("AUS9", "Quick Silver", 1.0450);
+        String boatId = createBoat("AUS9", "Quick Silver");
         putRoster(seriesId, boatId, 0.9900);
 
         JsonNode roster = get("/api/series/" + seriesId + "/roster");
@@ -480,23 +525,25 @@ class JinxApiIntegrationTest
     }
 
     @Test
-    void aRosterEntryWithoutATcfTakesTheRegisterSeed() throws Exception
+    void aRosterEntryWithoutATcfStartsOnScratch() throws Exception
     {
+        // There is no "the boat's TCF" to inherit — a handicap belongs to the entry. 1.0
+        // is visibly a starting point rather than a considered figure.
         String seriesId = createSeries("S");
-        String boatId = createBoat("AUS9", "Quick Silver", 1.0450);
+        String boatId = createBoat("AUS9", "Quick Silver");
         post("/api/series/" + seriesId + "/roster",
             "{\"entries\":[{\"boatId\":\"" + boatId + "\"}]}");
 
         JsonNode roster = get("/api/series/" + seriesId + "/roster");
         assertThat(roster.path("entries").get(0).path("startingTcf").asDouble(),
-            closeTo(1.0450, 1e-9));
+            closeTo(1.0, 1e-9));
     }
 
     @Test
     void everythingSurvivesARestart() throws Exception
     {
         String seriesId = createSeries("2026 Winter Twilight");
-        String boatId = createBoat("AUS9", "Quick Silver", 1.0450);
+        String boatId = createBoat("AUS9", "Quick Silver");
         putRoster(seriesId, boatId, 1.0450);
         String raceId = createRace(seriesId, "2026-06-05");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
@@ -549,18 +596,69 @@ class JinxApiIntegrationTest
     void columnOrderAndSpellingDoNotMatter() throws Exception
     {
         // Same fleet, different spreadsheet.
+        String seriesId = createSeries("Summer");
         JsonNode report = importCsv("""
             Handicap;Yacht;Sail #;Spin
             1.0450;Quick Silver;AUS9;S
             0.8821;Slow Poke;A123;NS
-            """);
+            """, seriesId);
 
         assertThat(report.path("ok").asBoolean(), is(true));
-        JsonNode boats = get("/api/boats");
-        assertThat(boats.size(), equalTo(2));
-        assertThat(boats.get(0).path("name").asText(), equalTo("Quick Silver"));
-        assertThat(boats.get(0).path("currentTcf").asDouble(), closeTo(1.0450, 1e-9));
-        assertThat(boats.get(1).path("spinnaker").asText(), equalTo("NS"));
+        assertThat(get("/api/boats").size(), equalTo(2));
+
+        JsonNode entries = get("/api/series/" + seriesId + "/roster").path("entries");
+        assertThat(entries.size(), equalTo(2));
+        assertThat(entries.get(0).path("name").asText(), equalTo("Quick Silver"));
+        assertThat(entries.get(0).path("startingTcf").asDouble(), closeTo(1.0450, 1e-9));
+        assertThat(entries.get(1).path("spinnaker").asText(), equalTo("NS"));
+    }
+
+    @Test
+    void entryColumnsWithoutASeriesAreReadButNotApplied() throws Exception
+    {
+        // TCF, division and spinnaker have nowhere to go without a series. The boats are
+        // still registered; the terms are reported rather than written onto the register.
+        JsonNode report = importCsv("""
+            sail,name,tcf,division
+            AUS9,Quick Silver,1.0450,Div 1
+            """);
+
+        assertThat(get("/api/boats").size(), equalTo(1));
+        assertThat(report.path("rosterEntries").asInt(), equalTo(0));
+        assertThat(report.path("problems").get(0).asText(),
+            containsString("terms of a series entry"));
+    }
+
+    @Test
+    void importingAgainstASeriesBuildsItsRoster() throws Exception
+    {
+        String seriesId = createSeries("Summer");
+        JsonNode report = importCsv("""
+            sail,name,design,tcf,division
+            AUS9,Quick Silver,J/24,1.0450,Div 1
+            A123,Slow Poke,,0.8821,Div 2
+            """, seriesId);
+
+        assertThat(report.path("problems").size(), equalTo(0));
+        assertThat(report.path("rosterEntries").asInt(), equalTo(2));
+
+        JsonNode entries = get("/api/series/" + seriesId + "/roster").path("entries");
+        assertThat(entries.get(0).path("division").asText(), equalTo("Div 1"));
+        assertThat(entries.get(1).path("startingTcf").asDouble(), closeTo(0.8821, 1e-9));
+    }
+
+    @Test
+    void aReimportDoesNotResetTermsTheListDoesNotCarry() throws Exception
+    {
+        // The second list has no spinnaker column. A boat already entered as
+        // non-spinnaker must stay that way rather than being quietly reset.
+        String seriesId = createSeries("Summer");
+        importCsv("sail,name,tcf,spin\nAUS9,Quick Silver,1.0450,NS\n", seriesId);
+        importCsv("sail,name,tcf\nAUS9,Quick Silver,1.0600\n", seriesId);
+
+        JsonNode entry = get("/api/series/" + seriesId + "/roster").path("entries").get(0);
+        assertThat(entry.path("spinnaker").asText(), equalTo("NS"));
+        assertThat(entry.path("startingTcf").asDouble(), closeTo(1.0600, 1e-9));
     }
 
     @Test
@@ -634,7 +732,7 @@ class JinxApiIntegrationTest
             AUS9,Quick Silver,1.0450
             ,,0.9
             5678,Mid Fleet,not-a-number
-            """);
+            """, createSeries("Summer"));
 
         // One boat with nothing to identify it, one with a typo'd handicap. Neither
         // should cost the rest of the list.
@@ -688,11 +786,11 @@ class JinxApiIntegrationTest
             .path("series").path("id").asText();
     }
 
-    private String createBoat(String sail, String name, double tcf) throws Exception
+    private String createBoat(String sail, String name) throws Exception
     {
         return post("/api/boats", """
-            {"sailNumber":"%s","name":"%s","currentTcf":%s}"""
-            .formatted(sail, name, tcf)).path("boat").path("id").asText();
+            {"sailNumber":"%s","name":"%s"}""".formatted(sail, name))
+            .path("boat").path("id").asText();
     }
 
     private String createRace(String seriesId, String date) throws Exception
@@ -718,7 +816,15 @@ class JinxApiIntegrationTest
 
     private JsonNode importCsv(String csv) throws Exception
     {
-        HttpResponse<String> r = http.send(HttpRequest.newBuilder(URI.create(base + "/api/boats/import"))
+        return importCsv(csv, null);
+    }
+
+    private JsonNode importCsv(String csv, String seriesId) throws Exception
+    {
+        String url = base + "/api/boats/import"
+            + (seriesId == null ? "" : "?seriesId=" + java.net.URLEncoder.encode(
+                seriesId, java.nio.charset.StandardCharsets.UTF_8));
+        HttpResponse<String> r = http.send(HttpRequest.newBuilder(URI.create(url))
                 .header("Content-Type", "text/csv")
                 .POST(HttpRequest.BodyPublishers.ofString(csv)).build(),
             HttpResponse.BodyHandlers.ofString());

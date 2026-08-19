@@ -65,9 +65,26 @@ public final class BoatCsv
     {
     }
 
-    /** One parsed row, plus the line number so a problem can be pointed at. */
-    public record Row(int line, BoatRegistry.RawBoat boat)
+    /**
+     * One parsed row: the boat's identity, and separately the terms it would enter a
+     * series on. They are kept apart because they belong to different things — the hull
+     * goes in the register, the terms go on a roster — and a fleet list happens to carry
+     * both in one line.
+     */
+    public record Row(int line, BoatRegistry.RawBoat boat, EntryTerms terms)
     {
+    }
+
+    /**
+     * The per-entry columns of a fleet list. All nullable: a list may carry none of them,
+     * and they only mean anything once a series is named to apply them to.
+     */
+    public record EntryTerms(Double tcf, String division, Spinnaker spinnaker)
+    {
+        public boolean isEmpty()
+        {
+            return tcf == null && division == null && spinnaker == null;
+        }
     }
 
     /** What came out of a parse: the rows, and what the header row was understood to mean. */
@@ -184,8 +201,9 @@ public final class BoatCsv
                 problems.add("line " + lineNo + ": no sail number and no name — skipped");
                 continue;
             }
-            rows.add(new Row(lineNo, new BoatRegistry.RawBoat(
-                sail, name, design, division, spinnaker, tcf, notes, false)));
+            rows.add(new Row(lineNo,
+                new BoatRegistry.RawBoat(sail, name, design, notes, false),
+                new EntryTerms(tcf, division, spinnaker)));
         }
 
         if (rows.isEmpty() && problems.isEmpty())

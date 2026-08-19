@@ -42,6 +42,7 @@ import org.mortbay.sailing.jinx.model.Series;
 import org.mortbay.sailing.jinx.model.Spinnaker;
 import org.mortbay.sailing.jinx.model.StartSheet;
 import org.mortbay.sailing.jinx.model.StartTime;
+import org.mortbay.sailing.jinx.pursuit.Competitor;
 import org.mortbay.sailing.jinx.pursuit.HandicapEngine;
 import org.mortbay.sailing.jinx.pursuit.PursuitHandicapEngine;
 import org.mortbay.sailing.jinx.pursuit.SolarTimes;
@@ -60,6 +61,7 @@ import org.slf4j.LoggerFactory;
  *   GET    /api/designs                       hull types, learned from boat entry
  *   POST   /api/boats                         create or update a boat
  *   POST   /api/boats/import                  bulk-load the fleet from CSV
+ *                                             (?seriesId= also builds that roster)
  *   GET    /api/series                        all series
  *   POST   /api/series                        create or update a series
  *   GET    /api/series/{id}/config            per-series algorithm settings
@@ -333,10 +335,7 @@ public class ApiServlet extends HttpServlet
             id,
             sailNumber == null ? "" : sailNumber.trim(),
             name == null ? "" : name.trim(),
-            text(body, "division"),
             existing == null ? text(body, "designId") : existing.designId(),
-            spinnakerOf(body.path("spinnaker")),
-            body.path("currentTcf").asDouble(1.0),
             body.path("casual").asBoolean(false),
             !body.has("active") || body.path("active").asBoolean(true),
             text(body, "notes"));
@@ -351,9 +350,6 @@ public class ApiServlet extends HttpServlet
             text(body, "sailNumber"),
             text(body, "name"),
             text(body, "design"),
-            text(body, "division"),
-            body.hasNonNull("spinnaker") ? spinnakerOf(body.path("spinnaker")) : null,
-            body.hasNonNull("currentTcf") ? body.path("currentTcf").asDouble() : null,
             text(body, "notes"),
             body.path("casual").asBoolean(false));
     }
@@ -374,6 +370,12 @@ public class ApiServlet extends HttpServlet
      * matches rather than duplicating, and a list that gained a design column upgrades the
      * boats already registered without it.
      *
+     * <p>A fleet list usually carries TCF, division and spinnaker as well. Those are terms
+     * of a <em>series entry</em>, not facts about a boat, so they have nowhere to go
+     * unless a series is named: pass {@code ?seriesId=...} and they are applied to that
+     * series' roster. Without one the boats are still registered and the entry columns are
+     * reported as not applied, rather than being silently written onto the register.
+     *
      * <p>Returns a per-row report rather than a count. A bulk import of a hand-maintained
      * spreadsheet always has surprises in it, and the useful answer is which rows they
      * were — the ones that conflicted, the ones matched under another name, and the
@@ -386,53 +388,108 @@ public class ApiServlet extends HttpServlet
         String body = new String(req.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         String csv = body;
         if (body.stripLeading().startsWith("{"))
-        {
-            JsonNode json = MAPPER.readTree(body);
-            csv = json.path("csv").asText("");
-        }
+            csv = MAPPER.readTree(body).path("csv").asText("");
 
         BoatCsv.Parsed parsed = BoatCsv.parse(csv);
         boolean dryRun = "true".equalsIgnoreCase(req.getParameter("dryRun"));
+        String seriesId = req.getParameter("seriesId");
+        if (seriesId != null && !store.series().containsKey(seriesId))
+        {
+            badRequest(resp, "unknown series: " + seriesId);
+            return;
+        }
+
+        // Roster entries are collected and written once at the end, so a failure part way
+        // through the list cannot leave a half-built roster.
+        Map<String, Roster.Entry> roster = new LinkedHashMap<>();
+        if (seriesId != null)
+        {
+            Roster existing = store.roster(seriesId);
+            if (existing != null)
+            {
+                for (Roster.Entry e : existing.entries())
+                    roster.put(e.boatId(), e);
+            }
+        }
 
         List<Map<String, Object>> results = new ArrayList<>();
         Map<String, Integer> tally = new LinkedHashMap<>();
+        boolean termsSeen = false;
+
         for (BoatCsv.Row row : parsed.rows())
         {
+            if (!row.terms().isEmpty())
+                termsSeen = true;
+
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("line", row.line());
             out.put("sailNumber", row.boat().sailNumber());
             out.put("name", row.boat().name());
+
             if (dryRun)
             {
                 // Let the RO look before committing forty rows to the only copy there is.
                 out.put("outcome", "PREVIEW");
+                results.add(out);
+                continue;
             }
-            else
+
+            BoatRegistry.Resolution r = registry.findOrCreate(row.boat(), null);
+            out.put("outcome", r.outcome().name());
+            if (r.note() != null)
+                out.put("note", r.note());
+            tally.merge(r.outcome().name(), 1, Integer::sum);
+            if (r.resolved())
             {
-                BoatRegistry.Resolution r = registry.findOrCreate(row.boat(), null);
-                out.put("outcome", r.outcome().name());
-                if (r.note() != null)
-                    out.put("note", r.note());
-                if (r.resolved())
-                {
-                    out.put("boatId", r.boat().id());
-                    out.put("designId", r.boat().designId());
-                }
-                tally.merge(r.outcome().name(), 1, Integer::sum);
+                Boat boat = r.boat();
+                out.put("boatId", boat.id());
+                out.put("designId", boat.designId());
+                if (seriesId != null)
+                    roster.put(boat.id(), rosterEntryFor(boat, row.terms(), roster.get(boat.id())));
             }
             results.add(out);
         }
 
+        if (seriesId != null && !dryRun)
+            store.putRoster(new Roster(seriesId, new ArrayList<>(roster.values())));
+
         Map<String, Object> report = new LinkedHashMap<>();
         report.put("ok", parsed.problems().isEmpty());
         report.put("dryRun", dryRun);
+        report.put("seriesId", seriesId);
         report.put("rows", results);
         report.put("tally", tally);
         report.put("recognisedColumns", parsed.recognisedColumns());
         report.put("ignoredColumns", parsed.ignoredColumns());
-        report.put("problems", parsed.problems());
+        report.put("rosterEntries", seriesId == null ? 0 : roster.size());
+
+        List<String> problems = new ArrayList<>(parsed.problems());
+        if (termsSeen && seriesId == null)
+        {
+            problems.add("TCF / division / spinnaker columns were read but not applied: "
+                + "they are terms of a series entry, not properties of a boat. "
+                + "Re-run the import against a series to set them.");
+        }
+        report.put("problems", problems);
         writeJson(resp, report);
     }
+
+    /**
+     * Build the roster entry for an imported boat, keeping anything the list did not
+     * supply. A fleet list with no spinnaker column should not quietly reset a boat that
+     * was already entered as non-spinnaker.
+     */
+    private Roster.Entry rosterEntryFor(Boat boat, BoatCsv.EntryTerms terms, Roster.Entry existing)
+    {
+        double tcf = terms.tcf() != null ? terms.tcf()
+            : (existing != null ? existing.startingTcf() : 1.0);
+        String division = terms.division() != null ? terms.division()
+            : (existing != null ? existing.division() : null);
+        Spinnaker spinnaker = terms.spinnaker() != null ? terms.spinnaker()
+            : (existing != null ? existing.spinnaker() : registry.defaultSpinnaker(boat.designId()));
+        return new Roster.Entry(boat.id(), tcf, division, spinnaker);
+    }
+
 
     // --- Series --------------------------------------------------------------
 
@@ -514,8 +571,9 @@ public class ApiServlet extends HttpServlet
                 if (b == null)
                     continue;
                 rows.add(mapOf("boatId", b.id(), "sailNumber", b.sailNumber(),
-                    "name", b.name(), "division", b.division(),
-                    "spinnaker", b.spinnaker(), "startingTcf", e.startingTcf()));
+                    "name", b.name(), "designId", b.designId(),
+                    "division", e.division(), "spinnaker", e.spinnaker(),
+                    "startingTcf", e.startingTcf()));
             }
         }
         return mapOf("seriesId", seriesId, "entries", rows);
@@ -534,12 +592,14 @@ public class ApiServlet extends HttpServlet
             if (isBlank(boatId))
                 continue;
             Boat boat = store.boats().get(boatId);
-            // Default a missing starting TCF to the register's seed value, so
-            // adding a boat to a roster is one click.
-            double tcf = e.hasNonNull("startingTcf")
-                ? e.path("startingTcf").asDouble()
-                : (boat != null ? boat.currentTcf() : 1.0);
-            out.add(new Roster.Entry(boatId, tcf));
+            // A boat entering a series has to be given a handicap: there is no such thing
+            // as "the boat's TCF" to fall back on. 1.0 is the scratch default — visibly a
+            // starting point rather than a considered figure.
+            double tcf = e.hasNonNull("startingTcf") ? e.path("startingTcf").asDouble() : 1.0;
+            Spinnaker spinnaker = e.hasNonNull("spinnaker")
+                ? spinnakerOf(e.path("spinnaker"))
+                : (boat == null ? null : registry.defaultSpinnaker(boat.designId()));
+            out.add(new Roster.Entry(boatId, tcf, text(e, "division"), spinnaker));
         }
         store.putRoster(new Roster(seriesId, out));
         writeJson(resp, mapOf("ok", true, "seriesId", seriesId, "saved", out.size()));
@@ -709,7 +769,11 @@ public class ApiServlet extends HttpServlet
             }
             Entrant.EntryType type = entryTypeOf(row.path("entryType"),
                 boat.casual() ? Entrant.EntryType.CASUAL : Entrant.EntryType.ROSTER);
-            entrants.add(Entrant.fromBoat(boat, tcf, type));
+            entrants.add(Entrant.fromBoat(boat, tcf, text(row, "division"),
+                row.hasNonNull("spinnaker")
+                    ? spinnakerOf(row.path("spinnaker"))
+                    : registry.defaultSpinnaker(boat.designId()),
+                type));
         }
 
         RaceEntrants existing = store.entrants(raceId);
@@ -783,7 +847,7 @@ public class ApiServlet extends HttpServlet
             {
                 Boat b = boats.get(e.boatId());
                 if (b != null && b.active())
-                    entrants.add(Entrant.fromBoat(b, e.startingTcf()));
+                    entrants.add(Entrant.fromRosterEntry(b, e));
             }
         }
         return new RaceEntrants(race.id(), Instant.now(),
@@ -829,15 +893,15 @@ public class ApiServlet extends HttpServlet
             race.earliestStart() != null
                 ? race.earliestStart() : LocalTime.parse(alg.earliestStart()));
 
-        // The engine works in Boats. Entrants are not register boats — a
-        // one-off has no register entry at all — so hand it the two fields it
-        // actually reads: the id it should key the answer by, and the TCF.
-        List<Boat> forEngine = new ArrayList<>();
+        // The engine wants an id to key its answer by and the TCF in force. Entrants are
+        // not register boats — a one-off has no register entry at all — and the TCF
+        // belongs to the entry rather than the hull, so a Competitor is exactly the pair
+        // the algorithm needs.
+        List<Competitor> forEngine = new ArrayList<>();
         for (int i = 0; i < entrants.entrants().size(); i++)
         {
             Entrant e = entrants.entrants().get(i);
-            forEngine.add(new Boat(entrantKey(e, i), e.sailNumber(), e.name(),
-                e.division(), e.designId(), e.spinnaker(), e.tcf(), false, true, null));
+            forEngine.add(new Competitor(entrantKey(e, i), e.tcf()));
         }
         Race forEngineRace = new Race(race.id(), race.seriesId(), race.number(), race.name(),
             race.date(), earliest, target, race.courseLengthNm(), race.abandoned());
@@ -1034,7 +1098,7 @@ public class ApiServlet extends HttpServlet
             return;
         }
 
-        List<Boat> boats = new ArrayList<>(boatsNode.size());
+        List<Competitor> boats = new ArrayList<>(boatsNode.size());
         Map<String, Result> results = new LinkedHashMap<>(boatsNode.size());
         for (JsonNode b : boatsNode)
         {
@@ -1042,7 +1106,7 @@ public class ApiServlet extends HttpServlet
             if (isBlank(boatId))
                 continue;
             double tcf = b.path("currentTcf").asDouble(1.0);
-            boats.add(new Boat(boatId, "", "", null, null, null, tcf, false, true, null));
+            boats.add(new Competitor(boatId, tcf));
 
             FinishStatus status;
             try

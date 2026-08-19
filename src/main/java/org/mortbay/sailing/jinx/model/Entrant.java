@@ -52,17 +52,27 @@ public record Entrant(
         ONE_OFF
     }
 
-    /** Entrant for a registered boat, on the roster, with the given race TCF. */
-    public static Entrant fromBoat(Boat boat, double tcf)
-    {
-        return fromBoat(boat, tcf, EntryType.ROSTER);
-    }
-
-    /** Entrant for a registered boat with an explicit entry type. */
-    public static Entrant fromBoat(Boat boat, double tcf, EntryType entryType)
+    /**
+     * Entrant for a registered boat on the terms of its series entry. The TCF, division
+     * and spinnaker come from the entry rather than the boat, because they are not
+     * properties of the hull — see {@link Boat}.
+     */
+    public static Entrant fromRosterEntry(Boat boat, Roster.Entry entry)
     {
         return new Entrant(boat.id(), boat.sailNumber(), boat.name(),
-            boat.division(), boat.designId(), boat.spinnaker(), tcf, entryType);
+            entry.division(), boat.designId(), entry.spinnaker(), entry.startingTcf(),
+            EntryType.ROSTER);
+    }
+
+    /**
+     * Entrant for a registered boat entered directly into a race — a casual arriving on
+     * the night, with no series entry to take its terms from.
+     */
+    public static Entrant fromBoat(Boat boat, double tcf, String division,
+                                   Spinnaker spinnaker, EntryType entryType)
+    {
+        return new Entrant(boat.id(), boat.sailNumber(), boat.name(),
+            division, boat.designId(), spinnaker, tcf, entryType);
     }
 
     /**

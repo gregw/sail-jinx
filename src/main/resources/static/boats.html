@@ -12,8 +12,16 @@
 <main>
   <h1>Fleet register</h1>
   <p class="lead">
-    Every boat sail-jinx knows about. Roughly forty regulars plus whoever turns
-    up. Retiring a boat keeps it here — races it has already sailed still name it.
+    Every boat sail-jinx knows about — what it is called, what is on its sail, and
+    what it was built as. Roughly forty regulars plus whoever turns up. Retiring a
+    boat keeps it here, because races it has already sailed still name it.
+  </p>
+  <p class="lead">
+    <strong>Handicap, division and spinnaker are not here.</strong> A boat does not
+    have a TCF — it has one for a given series, and a different one by the end of
+    it. Those are set on a
+    <a href="/series.html">series roster</a>, which is also where a fleet list's
+    TCF column lands.
   </p>
 
   <div id="boats-state" class="banner banner-info">Loading…</div>
@@ -38,6 +46,16 @@
       Every column is optional. Boats already registered are matched, not duplicated —
       including when a later list fills in a design they were imported without.
     </p>
+    <div class="form-grid">
+      <label for="import-series">Enter these boats in</label>
+      <select id="import-series"><option value="">— register only —</option></select>
+    </div>
+    <p class="hint" style="max-width:60rem;">
+      A fleet list's <code>tcf</code>, <code>division</code> and <code>spinnaker</code>
+      columns are terms of a series entry, not facts about a boat, so they need a series
+      to land on. Leave this as "register only" and the boats are still added — those
+      columns are just reported as not applied.
+    </p>
 
     <div class="toolbar">
       <input type="file" id="csv-file" accept=".csv,text/csv,text/plain">
@@ -56,8 +74,7 @@
   <table id="boats-table" style="display:none;">
     <thead>
       <tr>
-        <th>Sail #</th><th>Name</th><th>Design</th><th>Division</th><th>Spin</th>
-        <th class="num-cell">TCF</th><th>Notes</th><th></th>
+        <th>Sail #</th><th>Name</th><th>Design</th><th>Notes</th><th></th>
       </tr>
     </thead>
     <tbody id="boats-tbody"></tbody>
@@ -112,18 +129,14 @@
       + '<td>' + (b.designId
           ? esc(designName(b.designId))
           : '<span class="hint" title="Not known yet — a later import can fill it in">—</span>') + '</td>'
-      + '<td>' + esc(b.division) + '</td>'
-      + '<td>' + esc(b.spinnaker) + '</td>'
-      + '<td class="num-cell mono">' + esc(fmtTcf(b.currentTcf)) + '</td>'
       + '<td class="notes-cell">' + esc(b.notes) + '</td>'
       + '<td><button type="button" class="link-btn edit-btn" data-id="' + esc(b.id) + '">Edit</button></td>'
       + '</tr>';
   }
 
   function editRow(b) {
-    const v = b || { id: '', sailNumber: '', name: '', division: '', designId: null,
-                     spinnaker: 'S', currentTcf: 1.0, active: true, notes: '' };
-    const sel = (k) => v.spinnaker === k ? ' selected' : '';
+    const v = b || { id: '', sailNumber: '', name: '', designId: null,
+                     active: true, notes: '' };
     return '<tr class="editing">'
       + '<td><input class="f-sail" value="' + esc(v.sailNumber) + '" placeholder="AUS123"></td>'
       + '<td><input class="f-name" value="' + esc(v.name) + '" placeholder="Boat name"></td>'
@@ -132,12 +145,8 @@
       + '<td>' + (b
           ? esc(designName(v.designId)) || '<span class="hint">—</span>'
           : '<input class="f-design" placeholder="J/24">') + '</td>'
-      + '<td><input class="f-division" value="' + esc(v.division || '') + '" placeholder="Div 1"></td>'
-      + '<td><select class="f-spin"><option value="S"' + sel('S') + '>S</option>'
-      + '<option value="NS"' + sel('NS') + '>NS</option></select></td>'
-      + '<td class="num-cell"><input class="f-tcf" type="number" step="0.0001" value="'
-      + esc(fmtTcf(v.currentTcf)) + '"></td>'
       + '<td><input class="f-notes" value="' + esc(v.notes || '') + '" placeholder="optional"></td>'
+      + 
       + '<td class="actions-cell">'
       + '<button type="button" class="primary save-btn" data-id="' + esc(v.id) + '">Save</button> '
       + '<button type="button" class="cancel-btn">Cancel</button>'
@@ -168,9 +177,6 @@
     const payload = {
       sailNumber: row.querySelector('.f-sail').value.trim(),
       name: row.querySelector('.f-name').value.trim(),
-      division: row.querySelector('.f-division').value.trim(),
-      spinnaker: row.querySelector('.f-spin').value,
-      currentTcf: Number(row.querySelector('.f-tcf').value) || 1.0,
       notes: row.querySelector('.f-notes').value.trim(),
       active: activeBox ? activeBox.checked : true
     };
@@ -236,7 +242,11 @@
     if (!csv.trim()) { setImportMsg('Nothing to import.'); return; }
     setImportMsg(dryRun ? 'Checking…' : 'Importing…');
 
-    const r = await fetchJson('/api/boats/import' + (dryRun ? '?dryRun=true' : ''), {
+    const seriesId = document.getElementById('import-series').value;
+    const query = [];
+    if (dryRun) query.push('dryRun=true');
+    if (seriesId) query.push('seriesId=' + encodeURIComponent(seriesId));
+    const r = await fetchJson('/api/boats/import' + (query.length ? '?' + query.join('&') : ''), {
       method: 'POST',
       headers: { 'Content-Type': 'text/csv' },
       body: csv
@@ -261,6 +271,11 @@
     }
     if ((report.ignoredColumns || []).length) {
       parts.push('<p class="hint">Columns ignored: ' + esc(report.ignoredColumns.join(', ')) + '</p>');
+    }
+
+    if (report.seriesId) {
+      parts.push('<p class="hint">Roster entries for <strong>'
+        + esc(seriesName(report.seriesId)) + '</strong>: ' + report.rosterEntries + '</p>');
     }
 
     const tally = report.tally || {};
@@ -301,15 +316,31 @@
 
   // --- load ----------------------------------------------------------------
 
+  let seriesList = [];
+
+  function seriesName(id) {
+    const s = seriesList.find(x => x.id === id);
+    return s ? s.name : id;
+  }
+
   async function load() {
-    const [boatsR, designsR] = await Promise.all([
+    const [boatsR, designsR, seriesR] = await Promise.all([
       fetchJson('/api/boats'),
-      fetchJson('/api/designs')
+      fetchJson('/api/designs'),
+      fetchJson('/api/series')
     ]);
     if (!boatsR.ok) { showError('Could not load boats: ' + errorOf(boatsR)); return; }
     boats = boatsR.body || [];
     designs = new Map((designsR.ok ? designsR.body || [] : [])
       .map(d => [d.id, d.canonicalName || d.id]));
+    seriesList = (seriesR.ok ? seriesR.body || [] : []).filter(s => !s.archived);
+
+    const sel = document.getElementById('import-series');
+    const chosen = sel.value;
+    sel.innerHTML = '<option value="">— register only —</option>'
+      + seriesList.map(s => '<option value="' + esc(s.id) + '"'
+        + (s.id === chosen ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('');
+
     render();
   }
 

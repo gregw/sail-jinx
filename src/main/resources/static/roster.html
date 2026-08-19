@@ -12,9 +12,14 @@
 <main>
   <h1>Series roster — <span id="series-name"></span></h1>
   <p class="lead">
-    Who is in for the season, and the TCF each boat starts on. The roster seeds
-    the first race; after that every race inherits its handicaps from the one
-    before.
+    Who is in for the season, and the terms each boat enters on — its starting
+    handicap, its division, and whether it flies a kite. These belong to the entry,
+    not to the boat: the same hull can sail one season in Division 1 and the next in
+    Division 2, on a different TCF.
+  </p>
+  <p class="lead">
+    The roster seeds the first race; after that every race inherits its handicaps
+    from the one before.
   </p>
 
   <div id="roster-state" class="banner banner-info">Loading…</div>
@@ -23,7 +28,7 @@
     <thead>
       <tr>
         <th><input type="checkbox" id="check-all" title="Select all"></th>
-        <th>Sail #</th><th>Name</th><th>Division</th><th>Spin</th>
+        <th>Sail #</th><th>Name</th><th>Design</th><th>Division</th><th>Spin</th>
         <th class="num-cell">Starting TCF</th>
       </tr>
     </thead>
@@ -43,11 +48,22 @@
   const seriesId = new URLSearchParams(location.search).get('seriesId');
 
   let boats = [];
-  let selected = new Map();   // boatId -> startingTcf
+  let designs = new Map();
+  // boatId -> {startingTcf, division, spinnaker}: the terms of this boat's entry.
+  let selected = new Map();
   let savedJson = '';         // serialised baseline, for dirty detection
 
   function currentJson() {
-    return JSON.stringify([...selected.entries()].sort());
+    return JSON.stringify([...selected.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+  }
+
+  function designName(id) {
+    return id ? (designs.get(id) || id) : '';
+  }
+
+  /** A boat joining the roster starts on scratch — there is no boat TCF to inherit. */
+  function blankTerms() {
+    return { startingTcf: 1.0, division: '', spinnaker: 'S' };
   }
 
   function isDirty() {
@@ -58,40 +74,47 @@
     const tbody = document.getElementById('roster-tbody');
     tbody.innerHTML = boats.map(b => {
       const on = selected.has(b.id);
-      const tcf = on ? selected.get(b.id) : b.currentTcf;
+      const t = on ? selected.get(b.id) : blankTerms();
+      const off = on ? '' : ' disabled';
+      const sel = (k) => t.spinnaker === k ? ' selected' : '';
       return '<tr class="' + (on ? 'selected-row' : '') + '">'
         + '<td><input type="checkbox" class="pick" data-id="' + esc(b.id) + '"'
         + (on ? ' checked' : '') + '></td>'
-        + '<td>' + esc(b.sailNumber) + '</td>'
+        + '<td class="mono">' + esc(b.sailNumber) + '</td>'
         + '<td>' + esc(b.name) + '</td>'
-        + '<td>' + esc(b.division) + '</td>'
-        + '<td>' + esc(b.spinnaker) + '</td>'
+        + '<td>' + esc(designName(b.designId)) + '</td>'
+        + '<td><input class="division" data-id="' + esc(b.id) + '" value="'
+        + esc(t.division || '') + '" placeholder="Div 1"' + off + '></td>'
+        + '<td><select class="spin" data-id="' + esc(b.id) + '"' + off + '>'
+        + '<option value="S"' + sel('S') + '>S</option>'
+        + '<option value="NS"' + sel('NS') + '>NS</option></select></td>'
         + '<td class="num-cell"><input type="number" step="0.0001" class="tcf" data-id="'
-        + esc(b.id) + '" value="' + esc(fmtTcf(tcf)) + '"' + (on ? '' : ' disabled') + '></td>'
+        + esc(b.id) + '" value="' + esc(fmtTcf(t.startingTcf)) + '"' + off + '></td>'
         + '</tr>';
     }).join('');
 
     document.querySelectorAll('.pick').forEach(cb => {
       cb.onchange = () => {
         const id = cb.dataset.id;
-        if (cb.checked) {
-          const boat = boats.find(b => b.id === id);
-          const field = document.querySelector('.tcf[data-id="' + CSS.escape(id) + '"]');
-          selected.set(id, Number(field.value) || (boat ? boat.currentTcf : 1.0));
-        } else {
-          selected.delete(id);
-        }
+        if (cb.checked) selected.set(id, blankTerms());
+        else selected.delete(id);
         render();
         updateSaveBar();
       };
     });
-    document.querySelectorAll('.tcf').forEach(input => {
-      input.onchange = () => {
-        const id = input.dataset.id;
-        if (selected.has(id)) selected.set(id, Number(input.value) || 1.0);
-        updateSaveBar();
-      };
-    });
+    const edit = (selector, apply) => {
+      document.querySelectorAll(selector).forEach(input => {
+        input.onchange = () => {
+          const t = selected.get(input.dataset.id);
+          if (!t) return;
+          apply(t, input.value);
+          updateSaveBar();
+        };
+      });
+    };
+    edit('.tcf', (t, v) => { t.startingTcf = Number(v) || 1.0; });
+    edit('.division', (t, v) => { t.division = v.trim(); });
+    edit('.spin', (t, v) => { t.spinnaker = v; });
 
     document.getElementById('check-all').checked =
       boats.length > 0 && selected.size === boats.length;
@@ -106,7 +129,7 @@
 
   document.getElementById('check-all').onchange = (ev) => {
     if (ev.target.checked) {
-      for (const b of boats) if (!selected.has(b.id)) selected.set(b.id, b.currentTcf);
+      for (const b of boats) if (!selected.has(b.id)) selected.set(b.id, blankTerms());
     } else {
       selected.clear();
     }
@@ -115,7 +138,12 @@
   };
 
   document.getElementById('save-btn').onclick = async () => {
-    const entries = [...selected.entries()].map(([boatId, startingTcf]) => ({ boatId, startingTcf }));
+    const entries = [...selected.entries()].map(([boatId, t]) => ({
+      boatId,
+      startingTcf: t.startingTcf,
+      division: t.division || null,
+      spinnaker: t.spinnaker
+    }));
     const r = await postJson('/api/series/' + encodeURIComponent(seriesId) + '/roster', { entries });
     const state = document.getElementById('roster-state');
     state.style.display = '';
@@ -140,11 +168,14 @@
       return;
     }
 
-    const [boatsR, rosterR, seriesR] = await Promise.all([
+    const [boatsR, rosterR, seriesR, designsR] = await Promise.all([
       fetchJson('/api/boats'),
       fetchJson('/api/series/' + encodeURIComponent(seriesId) + '/roster'),
-      fetchJson('/api/series')
+      fetchJson('/api/series'),
+      fetchJson('/api/designs')
     ]);
+    designs = new Map((designsR.ok ? designsR.body || [] : [])
+      .map(d => [d.id, d.canonicalName || d.id]));
 
     if (!boatsR.ok) {
       state.className = 'banner banner-err';
@@ -163,7 +194,13 @@
 
     selected = new Map();
     if (rosterR.ok) {
-      for (const e of rosterR.body.entries || []) selected.set(e.boatId, e.startingTcf);
+      for (const e of rosterR.body.entries || []) {
+        selected.set(e.boatId, {
+          startingTcf: e.startingTcf,
+          division: e.division || '',
+          spinnaker: e.spinnaker || 'S'
+        });
+      }
     }
     savedJson = currentJson();
 

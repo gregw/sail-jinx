@@ -9,11 +9,9 @@ import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.model.Adjustment;
-import org.mortbay.sailing.jinx.model.Boat;
 import org.mortbay.sailing.jinx.model.FinishStatus;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.Result;
-import org.mortbay.sailing.jinx.model.Spinnaker;
 import org.mortbay.sailing.jinx.model.StartTime;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -35,10 +33,10 @@ class PursuitHandicapEngineTest
 
     private final PursuitHandicapEngine engine = new PursuitHandicapEngine(DEFAULT_ALG);
 
-    /** Register boat with only the fields the engine looks at: id and TCF. */
-    private static Boat boat(String id, String name, String sailNumber, double tcf)
+    /** The pair the engine works on: an id to key the answer by, and the TCF in force. */
+    private static Competitor boat(String id, String name, String sailNumber, double tcf)
     {
-        return new Boat(id, sailNumber, name, "Div", null, Spinnaker.S, tcf, false, true, null);
+        return new Competitor(id, tcf);
     }
 
     /** Race carrying the one input the engine needs: the target elapsed time. */
@@ -55,7 +53,7 @@ class PursuitHandicapEngineTest
     @Test
     void slowestBoatStartsFirstAtEarliestStart()
     {
-        List<Boat> boats = List.of(
+        List<Competitor> boats = List.of(
             boat("slow", "Slow Turtle",   "AUS1", 0.8821),
             boat("mid",  "Meridian",      "MYC12", 0.9340),
             boat("fast", "Flashpoint",    "AUS5", 1.0450));
@@ -79,7 +77,7 @@ class PursuitHandicapEngineTest
     @Test
     void netAdjustmentsSumToZero()
     {
-        List<Boat> boats = workedExampleFleet();
+        List<Competitor> boats = workedExampleFleet();
         Race race = race(90);
         Map<String, Result> results = workedExampleResults();
 
@@ -107,7 +105,7 @@ class PursuitHandicapEngineTest
     @Test
     void winnerRewardScalesWithOwnElapsed()
     {
-        List<Boat> boats = workedExampleFleet();
+        List<Competitor> boats = workedExampleFleet();
         Race race = race(90);
         Map<String, Result> results = workedExampleResults();
 
@@ -126,7 +124,7 @@ class PursuitHandicapEngineTest
     @Test
     void dsqBoatTcfIsFrozen()
     {
-        List<Boat> boats = List.of(
+        List<Competitor> boats = List.of(
             boat("a", "A", "1", 1.0),
             boat("b", "B", "2", 1.0));
         Race race = race(60);
@@ -148,7 +146,7 @@ class PursuitHandicapEngineTest
     @Test
     void dnfBoatsShareEqualReward()
     {
-        List<Boat> boats = List.of(
+        List<Competitor> boats = List.of(
             boat("p1", "Pos1", "1", 1.0),
             boat("p2", "Pos2", "2", 1.0),
             boat("dnfA", "DnfA", "3", 1.0),
@@ -179,7 +177,7 @@ class PursuitHandicapEngineTest
     @Test
     void positivePenaltyRaisesTcfAndRewardLowersIt()
     {
-        List<Boat> boats = workedExampleFleet();
+        List<Competitor> boats = workedExampleFleet();
         Race race = race(90);
         Map<String, Result> results = workedExampleResults();
 
@@ -211,7 +209,7 @@ class PursuitHandicapEngineTest
     @Test
     void newTcfUsesConfiguredVZero()
     {
-        List<Boat> boats = workedExampleFleet();
+        List<Competitor> boats = workedExampleFleet();
         Race race = race(90);
         Map<String, Result> results = workedExampleResults();
 
@@ -229,7 +227,7 @@ class PursuitHandicapEngineTest
     @Test
     void vZeroModeKeepsDsqFrozenAndPreservesDirection()
     {
-        List<Boat> boats = List.of(
+        List<Competitor> boats = List.of(
             boat("a", "A", "1", 1.0),
             boat("b", "B", "2", 1.0),
             boat("c", "C", "3", 1.0));
@@ -259,7 +257,7 @@ class PursuitHandicapEngineTest
     @Test
     void penaltiesFollowFinishPositionNotElapsedSort()
     {
-        List<Boat> boats = List.of(
+        List<Competitor> boats = List.of(
             boat("first",  "First",  "1", 1.0),
             boat("ocs",    "OcsBoat", "2", 1.0),
             boat("third",  "Third",  "3", 1.0));
@@ -285,7 +283,7 @@ class PursuitHandicapEngineTest
     // --- Worked example fixture (§6.5) — 7 finishers + 1 DNF, all with TCF = 1.0
     // so τᵢ is uniform and elapsed times alone drive the rankings. ---
 
-    private static List<Boat> workedExampleFleet()
+    private static List<Competitor> workedExampleFleet()
     {
         return List.of(
             boat("p1", "Pos1", "1", 1.0),

@@ -92,14 +92,17 @@ public class BoatRegistry
         }
     }
 
-    /** Details of a boat as typed, before any normalisation. */
+    /**
+     * A boat's identity as typed, before any normalisation.
+     *
+     * <p>Only what belongs to the hull. TCF, division and spinnaker are terms of a
+     * series entry, not facts about a boat, so they are not here — a caller importing a
+     * fleet list applies those to the roster itself. See {@link Boat}.
+     */
     public record RawBoat(
         String sailNumber,
         String name,
         String design,
-        String division,
-        Spinnaker spinnaker,
-        Double tcf,
         String notes,
         boolean casual)
     {
@@ -310,14 +313,20 @@ public class BoatRegistry
         throws IOException
     {
         String id = IdGenerator.generateBoatId(normSail, displayName, designId);
-        Spinnaker spinnaker = raw.spinnaker();
-        if (spinnaker == null)
-            spinnaker = catalogue.isNoSpinnaker(designId) ? Spinnaker.NS : Spinnaker.S;
-        Boat boat = new Boat(id, normSail, displayName, raw.division(), designId, spinnaker,
-            raw.tcf() == null ? 1.0 : raw.tcf(), raw.casual(), true, raw.notes());
+        Boat boat = new Boat(id, normSail, displayName, designId, raw.casual(), true, raw.notes());
         store.putBoat(boat);
         LOG.info("Registered boat {}", id);
         return boat;
+    }
+
+    /**
+     * The spinnaker a boat should default to when entering a series: none when its design
+     * physically cannot fly one, otherwise a kite. Only a default — the entry may say
+     * otherwise, because a boat that can fly one may still enter without it.
+     */
+    public Spinnaker defaultSpinnaker(String designId)
+    {
+        return catalogue.isNoSpinnaker(designId) ? Spinnaker.NS : Spinnaker.S;
     }
 
     /**
@@ -327,9 +336,8 @@ public class BoatRegistry
     private Boat rename(Boat boat, String name) throws IOException
     {
         String newId = IdGenerator.generateBoatId(boat.sailNumber(), name, boat.designId());
-        Boat renamed = new Boat(newId, boat.sailNumber(), name, boat.division(),
-            boat.designId(), boat.spinnaker(), boat.currentTcf(), boat.casual(),
-            boat.active(), boat.notes());
+        Boat renamed = new Boat(newId, boat.sailNumber(), name, boat.designId(),
+            boat.casual(), boat.active(), boat.notes());
         store.putBoat(renamed);
         store.rewriteBoatId(boat.id(), newId);
         LOG.info("Renamed boat {} -> {} ({})", boat.id(), newId, name);
@@ -343,9 +351,8 @@ public class BoatRegistry
     private Boat upgradeDesign(Boat boat, String designId) throws IOException
     {
         String newId = IdGenerator.generateBoatId(boat.sailNumber(), boat.name(), designId);
-        Boat upgraded = new Boat(newId, boat.sailNumber(), boat.name(), boat.division(),
-            designId, boat.spinnaker(), boat.currentTcf(), boat.casual(), boat.active(),
-            boat.notes());
+        Boat upgraded = new Boat(newId, boat.sailNumber(), boat.name(), designId,
+            boat.casual(), boat.active(), boat.notes());
         store.putBoat(upgraded);
         store.rewriteBoatId(boat.id(), newId);
         LOG.info("Upgraded boat {} to {} on learning design {}", boat.id(), newId, designId);
