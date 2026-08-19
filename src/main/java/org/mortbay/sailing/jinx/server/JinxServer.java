@@ -10,6 +10,9 @@ import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.mortbay.sailing.jinx.config.JinxConfig;
+import org.mortbay.sailing.jinx.identity.Aliases;
+import org.mortbay.sailing.jinx.identity.BoatRegistry;
+import org.mortbay.sailing.jinx.identity.DesignCatalogue;
 import org.mortbay.sailing.jinx.pursuit.HandicapEngine;
 import org.mortbay.sailing.jinx.pursuit.PursuitHandicapEngine;
 import org.mortbay.sailing.jinx.store.JsonStore;
@@ -70,6 +73,11 @@ public class JinxServer
         store.start();
 
         HandicapEngine engine = new PursuitHandicapEngine(config.algorithm());
+        // Identity config lives beside config.yaml and is seeded from sailing-pf, so the
+        // two systems agree on what a boat is called.
+        Path configDir = dataRoot.resolve("config");
+        BoatRegistry registry = new BoatRegistry(store,
+            Aliases.load(configDir), DesignCatalogue.load(configDir));
         String version = version();
 
         Server server = new Server();
@@ -78,7 +86,7 @@ public class JinxServer
         server.addConnector(connector);
 
         ServletContextHandler context = new ServletContextHandler("/");
-        context.addServlet(new ServletHolder(new ApiServlet(config, store, engine, version)), "/api/*");
+        context.addServlet(new ServletHolder(new ApiServlet(config, store, engine, registry, version)), "/api/*");
         context.addServlet(new ServletHolder(new StaticResourceServlet()), "/*");
         server.setHandler(context);
         server.start();

@@ -1,6 +1,7 @@
 package org.mortbay.sailing.jinx.server;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -11,7 +12,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -24,9 +24,13 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.mortbay.sailing.jinx.config.JinxConfig;
+import org.mortbay.sailing.jinx.identity.BoatCsv;
+import org.mortbay.sailing.jinx.identity.BoatRegistry;
+import org.mortbay.sailing.jinx.identity.IdGenerator;
 import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.AuditEntry;
 import org.mortbay.sailing.jinx.model.Boat;
+import org.mortbay.sailing.jinx.model.Design;
 import org.mortbay.sailing.jinx.model.Entrant;
 import org.mortbay.sailing.jinx.model.FinishStatus;
 import org.mortbay.sailing.jinx.model.Race;
@@ -53,7 +57,9 @@ import org.slf4j.LoggerFactory;
  * <pre>
  *   GET    /api/config                        server + algorithm defaults, store health
  *   GET    /api/boats                         the fleet register
+ *   GET    /api/designs                       hull types, learned from boat entry
  *   POST   /api/boats                         create or update a boat
+ *   POST   /api/boats/import                  bulk-load the fleet from CSV
  *   GET    /api/series                        all series
  *   POST   /api/series                        create or update a series
  *   GET    /api/series/{id}/config            per-series algorithm settings
@@ -86,9 +92,12 @@ public class ApiServlet extends HttpServlet
 {
     private static final Logger LOG = LoggerFactory.getLogger(ApiServlet.class);
 
-    private static final Pattern SERIES_CONFIG = Pattern.compile("/series/([^/]+)/config");
-    private static final Pattern SERIES_ROSTER = Pattern.compile("/series/([^/]+)/roster");
-    private static final Pattern SERIES_RACES = Pattern.compile("/series/([^/]+)/races");
+    // Series ids are club-scoped and contain a slash (myc.org.au/2026-winter-twilight),
+    // so the id group has to span one. Each pattern is anchored by a fixed suffix and
+    // matched whole, so there is no ambiguity about where the id ends.
+    private static final Pattern SERIES_CONFIG = Pattern.compile("/series/(.+)/config");
+    private static final Pattern SERIES_ROSTER = Pattern.compile("/series/(.+)/roster");
+    private static final Pattern SERIES_RACES = Pattern.compile("/series/(.+)/races");
     private static final Pattern RACE = Pattern.compile("/races/([^/]+)");
     private static final Pattern RACE_ENTRANTS = Pattern.compile("/races/([^/]+)/entrants");
     private static final Pattern RACE_ENTRANTS_SEED = Pattern.compile("/races/([^/]+)/entrants/seed");
@@ -107,13 +116,16 @@ public class ApiServlet extends HttpServlet
     private final JinxConfig config;
     private final JsonStore store;
     private final HandicapEngine engine;
+    private final BoatRegistry registry;
     private final String version;
 
-    public ApiServlet(JinxConfig config, JsonStore store, HandicapEngine engine, String version)
+    public ApiServlet(JinxConfig config, JsonStore store, HandicapEngine engine,
+                      BoatRegistry registry, String version)
     {
         this.config = config;
         this.store = store;
         this.engine = engine;
+        this.registry = registry;
         this.version = version;
     }
 
@@ -150,6 +162,7 @@ public class ApiServlet extends HttpServlet
             {
                 case "/config" -> writeJson(resp, publicConfig());
                 case "/boats" -> writeJson(resp, sortedBoats());
+                case "/designs" -> writeJson(resp, sortedDesigns());
                 case "/series" -> writeJson(resp, sortedSeries());
                 case "/races" -> writeJson(resp, allRaces());
                 case "/audit" -> writeJson(resp, store.audit());
@@ -189,6 +202,7 @@ public class ApiServlet extends HttpServlet
             switch (path)
             {
                 case "/boats" -> handleSaveBoat(req, resp);
+                case "/boats/import" -> handleImportBoats(req, resp);
                 case "/series" -> handleSaveSeries(req, resp);
                 case "/races" -> handleSaveRace(req, resp);
                 default -> doPostPath(path, req, resp);
@@ -252,7 +266,11 @@ public class ApiServlet extends HttpServlet
     {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("version", version);
-        out.put("club", mapOf("name", config.club().name(), "timezone", config.club().timezone()));
+        out.put("club", mapOf(
+            "domain", config.club().domain(),
+            "shortName", config.club().shortName(),
+            "longName", config.club().longName(),
+            "timezone", config.club().timezone()));
         out.put("algorithm", algorithmMap(config.algorithm()));
         // Surfaced so a corrupt store file is visible in the UI instead of
         // quietly presenting as missing data.
@@ -270,9 +288,15 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
-     * Create or update a register boat. A body without an {@code id} mints one;
-     * with an {@code id} it overwrites. There is no delete — retiring a boat is
-     * {@code active: false}, because races it already sailed still name it.
+     * Create or update a register boat.
+     *
+     * <p>A body with an {@code id} is an edit of that exact record. A body without one is
+     * an <em>entry</em>, and goes through {@link BoatRegistry} so it lands on the boat it
+     * means: the same hull typed twice, with a sponsor prefix, or with the design filled
+     * in the second time, must not become two records.
+     *
+     * <p>There is no delete — retiring a boat is {@code active: false}, because races it
+     * has already sailed still name it.
      */
     private void handleSaveBoat(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
@@ -285,23 +309,129 @@ public class ApiServlet extends HttpServlet
             badRequest(resp, "a boat needs at least a sail number or a name");
             return;
         }
+
         String id = text(body, "id");
         if (isBlank(id))
-            id = mintId("b");
+        {
+            BoatRegistry.Resolution r = registry.findOrCreate(rawBoatOf(body), null);
+            if (!r.resolved())
+            {
+                resp.setStatus(409);
+                writeJson(resp, mapOf("error", r.note(), "outcome", r.outcome()));
+                return;
+            }
+            writeJson(resp, mapOf("ok", true, "outcome", r.outcome(),
+                "note", r.note(), "boat", r.boat()));
+            return;
+        }
 
+        // Editing an existing record: the caller owns the id, so keep it. Renaming a boat
+        // through this path deliberately does not move the id — an id that changed under
+        // an edit would break every reference the user could not see.
+        Boat existing = store.boats().get(id);
         Boat boat = new Boat(
             id,
             sailNumber == null ? "" : sailNumber.trim(),
             name == null ? "" : name.trim(),
             text(body, "division"),
-            text(body, "designId"),
+            existing == null ? text(body, "designId") : existing.designId(),
             spinnakerOf(body.path("spinnaker")),
             body.path("currentTcf").asDouble(1.0),
             body.path("casual").asBoolean(false),
             !body.has("active") || body.path("active").asBoolean(true),
             text(body, "notes"));
         store.putBoat(boat);
-        writeJson(resp, mapOf("ok", true, "boat", boat));
+        writeJson(resp, mapOf("ok", true, "outcome", "EDITED", "boat", boat));
+    }
+
+    /** Read a raw boat entry from a JSON body, exactly as typed. */
+    private static BoatRegistry.RawBoat rawBoatOf(JsonNode body)
+    {
+        return new BoatRegistry.RawBoat(
+            text(body, "sailNumber"),
+            text(body, "name"),
+            text(body, "design"),
+            text(body, "division"),
+            body.hasNonNull("spinnaker") ? spinnakerOf(body.path("spinnaker")) : null,
+            body.hasNonNull("currentTcf") ? body.path("currentTcf").asDouble() : null,
+            text(body, "notes"),
+            body.path("casual").asBoolean(false));
+    }
+
+    /** Learned designs, for labelling the register. */
+    private List<Design> sortedDesigns()
+    {
+        return store.designs().values().stream()
+            .sorted(Comparator.comparing(Design::displayName, String.CASE_INSENSITIVE_ORDER))
+            .toList();
+    }
+
+    /**
+     * Bulk-load the fleet from CSV. Body is the file's text, either as {@code text/csv} or
+     * as {@code {"csv": "..."}}.
+     *
+     * <p>Every row goes through {@link BoatRegistry}, so importing the same list twice
+     * matches rather than duplicating, and a list that gained a design column upgrades the
+     * boats already registered without it.
+     *
+     * <p>Returns a per-row report rather than a count. A bulk import of a hand-maintained
+     * spreadsheet always has surprises in it, and the useful answer is which rows they
+     * were — the ones that conflicted, the ones matched under another name, and the
+     * columns that were not understood.
+     */
+    private void handleImportBoats(HttpServletRequest req, HttpServletResponse resp)
+        throws Exception
+    {
+        requireAdmin(resp);
+        String body = new String(req.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        String csv = body;
+        if (body.stripLeading().startsWith("{"))
+        {
+            JsonNode json = MAPPER.readTree(body);
+            csv = json.path("csv").asText("");
+        }
+
+        BoatCsv.Parsed parsed = BoatCsv.parse(csv);
+        boolean dryRun = "true".equalsIgnoreCase(req.getParameter("dryRun"));
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        Map<String, Integer> tally = new LinkedHashMap<>();
+        for (BoatCsv.Row row : parsed.rows())
+        {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("line", row.line());
+            out.put("sailNumber", row.boat().sailNumber());
+            out.put("name", row.boat().name());
+            if (dryRun)
+            {
+                // Let the RO look before committing forty rows to the only copy there is.
+                out.put("outcome", "PREVIEW");
+            }
+            else
+            {
+                BoatRegistry.Resolution r = registry.findOrCreate(row.boat(), null);
+                out.put("outcome", r.outcome().name());
+                if (r.note() != null)
+                    out.put("note", r.note());
+                if (r.resolved())
+                {
+                    out.put("boatId", r.boat().id());
+                    out.put("designId", r.boat().designId());
+                }
+                tally.merge(r.outcome().name(), 1, Integer::sum);
+            }
+            results.add(out);
+        }
+
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("ok", parsed.problems().isEmpty());
+        report.put("dryRun", dryRun);
+        report.put("rows", results);
+        report.put("tally", tally);
+        report.put("recognisedColumns", parsed.recognisedColumns());
+        report.put("ignoredColumns", parsed.ignoredColumns());
+        report.put("problems", parsed.problems());
+        writeJson(resp, report);
     }
 
     // --- Series --------------------------------------------------------------
@@ -323,9 +453,11 @@ public class ApiServlet extends HttpServlet
             badRequest(resp, "name is required");
             return;
         }
+        // Club-scoped, readable, and stable: myc.org.au/2026-winter-twilight. An edit
+        // keeps the id it was given, so renaming a series never orphans its races.
         String id = text(body, "id");
         if (isBlank(id))
-            id = mintId("s");
+            id = IdGenerator.generateSeriesId(config.club().domain(), name);
 
         Series s = new Series(id, name.trim(), body.path("archived").asBoolean(false));
         store.putSeries(s);
@@ -443,17 +575,28 @@ public class ApiServlet extends HttpServlet
             badRequest(resp, "a known seriesId is required");
             return;
         }
+        JinxConfig.Algorithm alg = algorithmFor(seriesId);
+        LocalDate date = parseDate(text(body, "date"));
+        int number = body.path("number").asInt(nextRaceNumber(seriesId));
+
+        // myc.org.au-2026-06-05-0001. A race's identity comes from the club and the day,
+        // not its series: a race can belong to more than one series, but it happens once.
         String id = text(body, "id");
         if (isBlank(id))
-            id = mintId("r");
-
-        JinxConfig.Algorithm alg = algorithmFor(seriesId);
+        {
+            if (date == null)
+            {
+                badRequest(resp, "a race needs a date");
+                return;
+            }
+            id = IdGenerator.generateRaceId(config.club().domain(), date, number);
+        }
         Race race = new Race(
             id,
             seriesId,
-            body.path("number").asInt(nextRaceNumber(seriesId)),
+            number,
             text(body, "name"),
-            parseDate(text(body, "date")),
+            date,
             parseTime(text(body, "earliestStart"), LocalTime.parse(alg.earliestStart())),
             body.hasNonNull("targetElapsedMinutes")
                 ? body.path("targetElapsedMinutes").asInt() : alg.idealRaceDuration(),
@@ -1103,12 +1246,6 @@ public class ApiServlet extends HttpServlet
             resp.setStatus(403);
             writeJson(resp, mapOf("error", "admin required"));
         }
-    }
-
-    /** Short, opaque, stable id. Prefixed so a store filename says what it is. */
-    private static String mintId(String prefix)
-    {
-        return prefix + "-" + UUID.randomUUID().toString().substring(0, 8);
     }
 
     private static String path(HttpServletRequest req)

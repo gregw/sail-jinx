@@ -6,7 +6,12 @@
 # printed reports and typing them in.
 
 club:
-  name: "Manly Yacht Club"
+  # The domain is the club's identity: series and race ids are scoped by it, and
+  # sailing-pf keys the same club the same way. Set once at installation —
+  # changing it later orphans every existing series and race id.
+  domain: "myc.org.au"
+  shortName: "MYC"
+  longName: "Manly Yacht Club"
   timezone: "Australia/Sydney"     # used to compute local sunset
 
 algorithm:

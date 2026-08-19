@@ -23,7 +23,9 @@ class JinxConfigTest
         Path file = tmp.resolve("config.yaml");
         Files.writeString(file, """
             club:
-              name: "Manly Yacht Club"
+              domain: "myc.org.au"
+              shortName: "MYC"
+              longName: "Manly Yacht Club"
               timezone: "Australia/Sydney"
             algorithm:
               penaltyList: [6, 4, 2]
@@ -40,7 +42,9 @@ class JinxConfigTest
 
         JinxConfig config = JinxConfig.load(file);
 
-        assertThat(config.club().name(), equalTo("Manly Yacht Club"));
+        assertThat(config.club().domain(), equalTo("myc.org.au"));
+        assertThat(config.club().shortName(), equalTo("MYC"));
+        assertThat(config.club().longName(), equalTo("Manly Yacht Club"));
         assertThat(config.club().timezone(), equalTo("Australia/Sydney"));
         assertThat(config.algorithm().penaltyList(), contains(6.0, 4.0, 2.0));
         assertThat(config.algorithm().idealRaceDuration(), equalTo(75));
@@ -107,9 +111,30 @@ class JinxConfigTest
 
         JinxConfig config = JinxConfig.load(file);
 
-        assertThat(config.club().name(), equalTo("Sailing Club"));
+        assertThat(config.club().longName(), equalTo("Sailing Club"));
+        // shortName falls back to the long one rather than being blank.
+        assertThat(config.club().shortName(), equalTo("Sailing Club"));
         assertThat(config.algorithm().idealRaceDuration(), equalTo(90));
         assertThat(config.server().port(), equalTo(8080));
+    }
+
+    @Test
+    void aClubWithOnlyANameStillLoads(@TempDir Path tmp) throws IOException
+    {
+        // "name" was the field before series and race ids became club-scoped. It still
+        // maps to longName, so an older config.yaml does not lose the club's identity —
+        // but the domain falls back to a placeholder, which is deliberately obvious.
+        Path file = tmp.resolve("config.yaml");
+        Files.writeString(file, """
+            club:
+              name: "Manly Yacht Club"
+            algorithm: {}
+            server: {}
+            """);
+
+        JinxConfig config = JinxConfig.load(file);
+        assertThat(config.club().longName(), equalTo("Manly Yacht Club"));
+        assertThat(config.club().domain(), equalTo("club.invalid"));
     }
 
     @Test

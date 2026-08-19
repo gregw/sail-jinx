@@ -36,7 +36,7 @@ public record JinxConfig(
     public JinxConfig
     {
         if (club == null)
-            club = new Club(null, null);
+            club = new Club(null, null, null, null);
         if (algorithm == null)
             algorithm = new Algorithm(null, 0, 0, null, null, null, false, null);
         if (server == null)
@@ -52,19 +52,35 @@ public record JinxConfig(
     }
 
     /**
-     * Who this installation belongs to. {@code timezone} is the one field with
-     * teeth: {@link org.mortbay.sailing.jinx.pursuit.SolarTimes} uses it to turn
-     * a computed sunset into local wall-clock, which keeps the summer-DST
-     * evening races honest.
+     * Who this installation belongs to.
+     *
+     * <p>{@code domain} is the club's identity, not decoration: series and race ids are
+     * scoped by it ({@code myc.org.au/2026-winter-twilight}). A domain name is globally
+     * unique, readable, and independent of any source system — which matters because club
+     * names are not unique nationally. sailing-pf keys clubs the same way, so records
+     * about the same club line up across both.
+     *
+     * <p>Changing it after data exists would orphan every series and race id, so it is
+     * set once at installation.
+     *
+     * <p>{@code timezone} is the other field with teeth:
+     * {@link org.mortbay.sailing.jinx.pursuit.SolarTimes} uses it to turn a computed
+     * sunset into local wall-clock, which keeps the summer-DST evening races honest.
      */
     public record Club(
-        @JsonProperty("name") String name,
+        @JsonProperty("domain") String domain,
+        @JsonProperty("shortName") String shortName,
+        @JsonProperty("longName") @JsonAlias("name") String longName,
         @JsonProperty("timezone") String timezone)
     {
         public Club
         {
-            if (name == null || name.isBlank())
-                name = "Sailing Club";
+            if (domain == null || domain.isBlank())
+                domain = "club.invalid";
+            if (longName == null || longName.isBlank())
+                longName = "Sailing Club";
+            if (shortName == null || shortName.isBlank())
+                shortName = longName;
             if (timezone == null || timezone.isBlank())
                 timezone = "Australia/Sydney";
         }
