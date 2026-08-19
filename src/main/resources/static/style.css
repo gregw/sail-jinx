@@ -365,3 +365,7 @@ table.report-table tr:hover td { background: none; }
 #import-report { margin-top: 1rem; }
 #import-report table { margin-top: 0.5rem; }
 tr.conflict-row td { background: var(--warn-bg); }
+
+/* The boat id is worth showing — it is how boats are talked about — but it is
+   reference data, not something to read first. */
+td.id-cell { color: var(--muted); font-size: 0.82em; }

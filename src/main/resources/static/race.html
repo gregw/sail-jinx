@@ -62,13 +62,18 @@
     </table>
 
     <div class="toolbar" id="add-entrant-bar">
-      <label for="add-boat">Add a boat</label>
-      <input id="add-boat" list="boat-matches" placeholder="sail number or name"
-             autocomplete="off">
-      <datalist id="boat-matches"></datalist>
-      <button id="add-existing-btn" type="button">Add from register</button>
-      <button id="add-new-btn" type="button">Add &amp; register</button>
-      <button id="add-oneoff-btn" type="button">One-off only</button>
+      <label>Add a boat</label>
+      <input id="add-sail" list="sail-matches" placeholder="sail #" autocomplete="off"
+             size="10">
+      <datalist id="sail-matches"></datalist>
+      <input id="add-name" list="name-matches" placeholder="boat name" autocomplete="off">
+      <datalist id="name-matches"></datalist>
+      <input id="add-design" list="design-matches" placeholder="design" autocomplete="off">
+      <datalist id="design-matches"></datalist>
+      <button id="add-existing-btn" type="button" disabled>Add from register</button>
+      <button id="add-new-btn" type="button" disabled>Add &amp; register</button>
+      <button id="add-oneoff-btn" type="button" disabled>One-off only</button>
+      <button id="add-clear-btn" type="button">Clear</button>
       <span id="add-msg" class="hint"></span>
     </div>
   </section>
@@ -113,7 +118,8 @@
   let adjustments = new Map();       // boatId -> Adjustment (from Process)
   let adjustmentsSaved = false;
   let locked = false;
-  let register = [];                 // the fleet register, for the add-boat box
+  let register = [];                 // the fleet register, for the add-boat fields
+  let designNames = new Map();       // designId -> display name
   let scorer = null;
   let placeMap = new Map();
   let baseline = '';                 // serialised saved state, for dirty detection
@@ -556,55 +562,135 @@
 
   // --- adding boats on the night ---------------------------------------------
 
-  // Matching uses the same rules as the register itself (scoring.js, which mirrors
-  // identity/IdGenerator.java) rather than an approximation of them — otherwise the RO
-  // can pick a boat here and have the server resolve a different one.
-  function findRegisterMatches(text) {
-    const typed = String(text || '').trim();
-    if (!typed) return [];
-    const asSail = stripSailPrefix(typed);
-    const asName = normName(typed);
+  // Three linked fields rather than one. A single box had to guess whether "MYC32"
+  // was a sail number or a name, and the completion it offered ("MYC32 — Esprit")
+  // then matched neither when it was typed back in. Each field now searches its own
+  // column, and picking a completion in any of them fills the other two.
 
-    // An exact sail-number hit is the answer, whatever else also contains those digits.
-    const exact = register.filter(b => asSail && sameSailNumber(b.sailNumber, typed));
-    if (exact.length) return exact;
+  const addFields = () => ({
+    sail: document.getElementById('add-sail'),
+    name: document.getElementById('add-name'),
+    design: document.getElementById('add-design')
+  });
 
-    return register.filter(b =>
-      (asSail && stripSailPrefix(b.sailNumber).includes(asSail))
-      || (asName && normName(b.name).includes(asName)));
+  /** The register boat the fields currently name, or null. */
+  let addResolved = null;
+
+  function designNameOf(id) {
+    return id ? (designNames.get(id) || id) : '';
   }
 
-  function refreshBoatMatches() {
-    const text = document.getElementById('add-boat').value;
-    const already = new Set(entrants.map(e => String(e.boatId)));
-    const matches = findRegisterMatches(text).filter(b => !already.has(b.id));
-    document.getElementById('boat-matches').innerHTML = matches
-      .map(b => '<option value="' + esc(b.sailNumber + ' — ' + b.name) + '">')
-      .join('');
+  function alreadyEntered(boatId) {
+    return entrants.some(e => String(e.boatId) === String(boatId));
+  }
+
+  /**
+   * Boats matching every field that has something in it. Substring on each column, so
+   * partial typing narrows rather than finding nothing.
+   */
+  function addCandidates() {
+    const f = addFields();
+    const sail = stripSailPrefix(f.sail.value.trim());
+    const name = normName(f.name.value.trim());
+    const design = normName(f.design.value.trim());
+    return register.filter(b => {
+      if (sail && !stripSailPrefix(b.sailNumber).includes(sail)) return false;
+      if (name && !normName(b.name).includes(name)) return false;
+      if (design && !normName(designNameOf(b.designId)).includes(design)) return false;
+      return true;
+    });
+  }
+
+  /**
+   * The one boat the fields identify, or null. Identification needs an *exact* sail
+   * number or name — a partial one narrows the suggestions but does not pick a boat,
+   * because acting on a half-typed name is how the wrong boat gets entered.
+   */
+  function resolveAddBoat() {
+    const f = addFields();
+    const sail = f.sail.value.trim();
+    const name = f.name.value.trim();
+    if (!sail && !name) return null;
+    let cands = register;
+    if (sail) cands = cands.filter(b => sameSailNumber(b.sailNumber, sail));
+    if (name) cands = cands.filter(b => normName(b.name) === normName(name));
+    return cands.length === 1 ? cands[0] : null;
+  }
+
+  function refreshAddSuggestions() {
+    const cands = addCandidates();
+    const options = (values) => [...new Set(values.filter(Boolean))].sort()
+      .map(v => '<option value="' + esc(v) + '">').join('');
+    document.getElementById('sail-matches').innerHTML =
+      options(cands.map(b => b.sailNumber));
+    document.getElementById('name-matches').innerHTML =
+      options(cands.map(b => b.name));
+    document.getElementById('design-matches').innerHTML =
+      options(cands.map(b => designNameOf(b.designId)));
+  }
+
+  /** Fill the fields from a boat. Setting .value fires no input event, so no loop. */
+  function fillAddFields(b) {
+    const f = addFields();
+    f.sail.value = b.sailNumber || '';
+    f.name.value = b.name || '';
+    f.design.value = designNameOf(b.designId);
+  }
+
+  function onAddFieldInput() {
+    const found = resolveAddBoat();
+    if (found && found !== addResolved)
+      fillAddFields(found);
+    addResolved = found;
+    refreshAddSuggestions();
+    updateAddButtons();
+  }
+
+  /**
+   * A resolved boat can only be added from the register; a boat that is not in it can
+   * only be registered or entered as a one-off. Offering both at once is how the same
+   * hull ends up in the register twice.
+   */
+  function updateAddButtons() {
+    const f = addFields();
+    const typed = !!(f.sail.value.trim() || f.name.value.trim());
+    const entered = addResolved && alreadyEntered(addResolved.id);
+
+    document.getElementById('add-existing-btn').disabled = !addResolved || entered;
+    document.getElementById('add-new-btn').disabled = !typed || !!addResolved;
+    document.getElementById('add-oneoff-btn').disabled = !typed || !!addResolved;
+
+    if (entered)
+      setMsg('add-msg', addResolved.sailNumber + ' is already in this race.');
+    else if (addResolved)
+      setMsg('add-msg', 'Registered boat — ' + addResolved.id);
+    else if (typed)
+      setMsg('add-msg', 'Not in the register.');
+    else
+      setMsg('add-msg', '');
+  }
+
+  function clearAddFields() {
+    const f = addFields();
+    f.sail.value = '';
+    f.name.value = '';
+    f.design.value = '';
+    addResolved = null;
+    refreshAddSuggestions();
+    updateAddButtons();
   }
 
   function addEntrant(entrant) {
     entrants.push(entrant);
     if (boatOrder.length) boatOrder.push(String(entrant.boatId));
-    document.getElementById('add-boat').value = '';
+    clearAddFields();
     touched();
     renderDutyOptions();
   }
 
   async function onAddExisting() {
-    const text = document.getElementById('add-boat').value;
-    const already = new Set(entrants.map(e => String(e.boatId)));
-    const matches = findRegisterMatches(text).filter(b => !already.has(b.id));
-    if (!matches.length) {
-      setMsg('add-msg', 'No boat in the register matches "' + text + '".');
-      return;
-    }
-    if (matches.length > 1) {
-      setMsg('add-msg', matches.length + ' boats match — be more specific: '
-        + matches.slice(0, 4).map(b => b.sailNumber).join(', '));
-      return;
-    }
-    const b = matches[0];
+    if (!addResolved) return;
+    const b = addResolved;
     // A boat has no handicap of its own — it has one per entry — so a boat joining
     // mid-race has to be given one.
     const tcf = askTcf(b.name || b.sailNumber);
@@ -612,25 +698,38 @@
     addEntrant({ boatId: b.id, sailNumber: b.sailNumber, name: b.name,
       designId: b.designId, division: null, spinnaker: null, tcf,
       entryType: b.casual ? 'CASUAL' : 'ROSTER' });
-    setMsg('add-msg', 'Added ' + b.sailNumber + '. Save to keep it.');
+    setMsg('add-msg', 'Added ' + b.sailNumber + ' (' + b.id + '). Save to keep it.');
   }
 
   async function onAddNew() {
-    const text = document.getElementById('add-boat').value.trim();
-    if (!text) { setMsg('add-msg', 'Type a sail number or name first.'); return; }
-    const { sail, name } = splitSailAndName(text);
+    const f = addFields();
+    const sail = f.sail.value.trim();
+    const name = f.name.value.trim();
+    const design = f.design.value.trim();
+    if (!sail && !name) { setMsg('add-msg', 'Type a sail number or a name first.'); return; }
     const tcf = askTcf(name || sail);
     if (tcf == null) { setMsg('add-msg', 'Cancelled — no TCF given.'); return; }
 
-    // The register takes the boat's identity; the handicap belongs to this entry.
+    // The register takes the boat's identity — including the design, if one was given;
+    // the handicap belongs to this entry.
     const r = await postJson('/api/boats',
-      { sailNumber: sail, name: name || sail, casual: true });
+      { sailNumber: sail, name: name || sail, design: design || null, casual: true });
     if (!r.ok) { setMsg('add-msg', 'Could not register: ' + errorOf(r)); return; }
+
     const b = r.body.boat;
-    register.push(b);
+    // The server may have recognised it as a boat we already had, under another
+    // spelling — in which case it is not new and must not be entered twice.
+    const known = register.find(x => x.id === b.id);
+    if (!known) register.push(b);
+    if (alreadyEntered(b.id)) {
+      setMsg('add-msg', b.sailNumber + ' is already in this race (matched ' + b.id + ').');
+      clearAddFields();
+      return;
+    }
     addEntrant({ boatId: b.id, sailNumber: b.sailNumber, name: b.name,
       designId: b.designId, division: null, spinnaker: null, tcf, entryType: 'CASUAL' });
-    setMsg('add-msg', 'Registered and added ' + b.sailNumber + '.');
+    setMsg('add-msg', (known ? 'Matched existing ' : 'Registered and added ')
+      + b.sailNumber + ' (' + b.id + ').');
   }
 
   /** Ask for the handicap this boat enters on. Null when cancelled or nonsense. */
@@ -640,25 +739,15 @@
   }
 
   function onAddOneOff() {
-    const text = document.getElementById('add-boat').value.trim();
-    if (!text) { setMsg('add-msg', 'Type a sail number or name first.'); return; }
-    const { sail, name } = splitSailAndName(text);
+    const f = addFields();
+    const sail = f.sail.value.trim();
+    const name = f.name.value.trim();
+    if (!sail && !name) { setMsg('add-msg', 'Type a sail number or a name first.'); return; }
     const tcf = askTcf(name || sail);
     if (tcf == null) { setMsg('add-msg', 'Cancelled — no TCF given.'); return; }
     addEntrant({ boatId: null, sailNumber: sail, name: name || sail,
       designId: null, division: null, spinnaker: null, tcf, entryType: 'ONE_OFF' });
     setMsg('add-msg', 'Added as a one-off — it carries no handicap forward.');
-  }
-
-  // "AUS123 — Wet Dream" (from the datalist) or free text. A leading token with
-  // a digit in it is taken as the sail number.
-  function splitSailAndName(text) {
-    const dash = text.split(/\s+[—-]\s+/);
-    if (dash.length > 1) return { sail: dash[0].trim(), name: dash.slice(1).join(' - ').trim() };
-    const parts = text.trim().split(/\s+/);
-    if (parts.length > 1 && /\d/.test(parts[0]))
-      return { sail: parts[0], name: parts.slice(1).join(' ') };
-    return /\d/.test(text) ? { sail: text.trim(), name: '' } : { sail: '', name: text.trim() };
   }
 
   // --- save ------------------------------------------------------------------
@@ -940,8 +1029,13 @@
     }
     rememberRaceId(raceId);
 
-    const regR = await fetchJson('/api/boats');
+    const [regR, designR] = await Promise.all([
+      fetchJson('/api/boats'),
+      fetchJson('/api/designs')
+    ]);
     register = regR.ok ? (regR.body || []) : [];
+    designNames = new Map((designR.ok ? designR.body || [] : [])
+      .map(d => [d.id, d.canonicalName || d.id]));
 
     document.getElementById('save-btn').onclick = doSave;
     document.getElementById('reset-btn').onclick = () => { sessionClear(); load(); };
@@ -962,16 +1056,20 @@
       }
       touched();
     };
-    document.getElementById('add-boat').oninput = refreshBoatMatches;
+    for (const id of ['add-sail', 'add-name', 'add-design'])
+      document.getElementById(id).oninput = onAddFieldInput;
     document.getElementById('add-existing-btn').onclick = onAddExisting;
     document.getElementById('add-new-btn').onclick = onAddNew;
     document.getElementById('add-oneoff-btn').onclick = onAddOneOff;
+    document.getElementById('add-clear-btn').onclick = clearAddFields;
 
     window.addEventListener('beforeunload', (ev) => {
       if (isDirty()) { ev.preventDefault(); ev.returnValue = ''; }
     });
 
     await load();
+    refreshAddSuggestions();
+    updateAddButtons();
   })();
 </script>
 </body>

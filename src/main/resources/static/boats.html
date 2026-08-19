@@ -74,7 +74,7 @@
   <table id="boats-table" style="display:none;">
     <thead>
       <tr>
-        <th>Sail #</th><th>Name</th><th>Design</th><th>Notes</th><th></th>
+        <th>Sail #</th><th>Name</th><th>Design</th><th>ID</th><th>Notes</th><th></th>
       </tr>
     </thead>
     <tbody id="boats-tbody"></tbody>
@@ -129,6 +129,7 @@
       + '<td>' + (b.designId
           ? esc(designName(b.designId))
           : '<span class="hint" title="Not known yet — a later import can fill it in">—</span>') + '</td>'
+      + '<td class="mono id-cell" title="Built from sail number, name and design, so it changes if the design is later filled in">' + esc(b.id) + '</td>'
       + '<td class="notes-cell">' + esc(b.notes) + '</td>'
       + '<td><button type="button" class="link-btn edit-btn" data-id="' + esc(b.id) + '">Edit</button></td>'
       + '</tr>';
@@ -145,6 +146,7 @@
       + '<td>' + (b
           ? esc(designName(v.designId)) || '<span class="hint">—</span>'
           : '<input class="f-design" placeholder="J/24">') + '</td>'
+      + '<td class="mono id-cell">' + esc(v.id) + '</td>'
       + '<td><input class="f-notes" value="' + esc(v.notes || '') + '" placeholder="optional"></td>'
       + 
       + '<td class="actions-cell">'
