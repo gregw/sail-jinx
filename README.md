@@ -75,15 +75,23 @@ pinned by tests so neither gets "fixed" to match the other.
 ```bash
 mvn exec:java                       # serves http://localhost:8080/ from ./data
 mvn exec:java -Djinx-data=/path/to/data
-mvn test                            # 89 tests, no network required
+mvn test                            # 169 tests, no network required
 ```
 
-Configuration lives in `data/config/config.yaml` — the club name and timezone,
-the handicap algorithm defaults, and the port. Everything else is entered
-through the UI.
+Configuration lives in `data/config/config.yaml` — the club domain and name, the
+timezone, the handicap algorithm defaults, and the port. Everything else is
+entered through the UI.
 
 Open <http://localhost:8080/> and work through: **Boats** → **Series** →
 roster → **Races**.
+
+The fleet can be entered a boat at a time or bulk-loaded from a CSV on the Boats
+page. The first row must be the headings; the order does not matter and
+unrecognised columns are ignored, so a spreadsheet with
+`Sail No, Boat Name, Class, TCF` and one with `Handicap; Yacht; Sail #` both
+work. Every column is optional — including the design, which a later import can
+fill in without creating a second boat. **Preview** shows what an import would do
+before it does it.
 
 ### There is no login
 
@@ -91,6 +99,30 @@ Every connection is treated as an administrator. The machine it runs on is the
 security boundary, which is fine on a club office PC and **not** fine anywhere
 with a network around it. See `currentRole()` in `ApiServlet` — adding
 authentication is one method, and it must happen before this is hosted.
+
+---
+
+## Knowing which boat is which
+
+Boats are identified the same way as in
+[sailing-pf](https://github.com/gregw/sailing-pf), which analyses this fleet's
+performance across clubs — the same hull entered in both systems gets the same
+id, and the two share a hand-maintained list of equivalences.
+
+In practice this means the register recognises a boat however it was written
+down. `AUS1234`, `AUS01234` and `1234` are one boat. `Foobar - GM` is `Foobar`.
+`Sticky`, `Sticky 2` and `Sticky II` are the same boat under the same sail
+number. Sponsor names and old sail numbers are recorded in
+`data/config/aliases.yaml` as they are discovered, and written back immediately.
+
+Designs are learned rather than managed: one appears because somebody typed it
+while entering a boat. Labels that are not really designs — `yacht`, `sloop`,
+`custom` — are listed in `data/config/design.yaml` and discarded, and that file
+also records the odd boat whose design the data gets wrong.
+
+Two things the app will not decide for you: a sail number and name claimed by
+two different designs, and whether an unfamiliar spelling is a new boat. Both
+are reported so a person can settle them.
 
 ---
 

@@ -92,7 +92,7 @@ async function refreshBuildWidget() {
     return;
   }
   const errors = cfg.storeErrors || [];
-  let html = esc(cfg.club && cfg.club.name) + ' <span class="build-version">v'
+  let html = esc(cfg.club && (cfg.club.shortName || cfg.club.longName)) + ' <span class="build-version">v'
     + esc(cfg.version) + '</span>';
   if (errors.length) {
     html += ' <a class="build-err" href="/audit.html" title="'

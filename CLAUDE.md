@@ -71,10 +71,13 @@ No database. No framework. No HTTP client — the absence is deliberate and
 ```txt
 sail-jinx/
   data/config/config.yaml       # club, algorithm defaults, port
+  data/config/aliases.yaml      # boat + design equivalences, seeded from sailing-pf
+  data/config/design.yaml       # ignored/excluded designs, per-boat design overrides
   data/store/                   # THE ONLY COPY of everything (gitignored)
   data/archive/                 # pre-v2 SailSys-era store, kept for a future importer
   wiki/                         # git submodule -> the GitHub wiki
   src/main/java/org/mortbay/sailing/jinx/
+    identity/                   # IdGenerator, Aliases, DesignCatalogue, BoatRegistry, BoatCsv
     model/                      # records: Boat, Series, Race, Entrant, RaceEntrants, ...
     store/JsonStore.java        # atomic writes, journal, defensive load
     server/                     # JinxServer, ApiServlet, StaticResourceServlet
@@ -98,6 +101,10 @@ unsaved edits and flag overrides.
 `static/scoring-test.html` is the executable specification for that module — 42
 assertions. Open the page to run them. Change `scoring.js`, run that page.
 
+`scoring.js` also carries the sail-number normalisation the register uses, so the
+race page's add-a-boat type-ahead finds the boat the server would resolve to
+rather than approximating it.
+
 ### The corrected/scored distinction
 
 Two numbers with similar names and different jobs:
@@ -111,11 +118,60 @@ Both are tested. Do not "fix" one to match the other.
 
 ---
 
+## Identity
+
+**IDs and boat matching follow sailing-pf.** That project analyses cross-club
+performance over the same fleet; a boat entered in one is the same physical hull
+as in the other, so both normalise names the same way and share `aliases.yaml`.
+
+| Entity | ID |
+|---|---|
+| Boat | `9-quicksilver-j24` — `{normSail}-{normName}-{designId}`, design omitted when unknown |
+| Series | `myc.org.au/2026-winter-twilight` |
+| Race | `myc.org.au-2026-06-05-0001` |
+
+The club domain in `config.yaml` scopes the last two. Set once at installation —
+changing it orphans every existing id.
+
+Things that catch people out:
+
+- **`AUS1234`, `AUS01234` and `1234` are one boat**, and the bare form wins. The
+  country prefix and leading zeros are normalisation, not identity.
+- **A design is part of the boat's ID.** A boat imported without one is
+  `A123-slowpoke`; when a later import supplies the design it is *upgraded* to
+  `A123-slowpoke-sydney38` and `JsonStore.rewriteBoatId` moves every reference —
+  entrants, captured times, start sheets, adjustments, rosters. Miss one and a
+  race is orphaned.
+- **`- GM` / `- U18` suffixes are stripped**, so `Foobar - GM` and `Foobar` are
+  one boat. `Sticky`, `Sticky 2` and `Sticky II` collapse too, under the same
+  sail number.
+- **Two different designs on one sail+name is a CONFLICT, never a guess.**
+  Merging fuses two hulls; creating splits one. A person adds an override.
+- **Designs are learned, never entered.** There is no design screen: a design
+  exists because someone typed one while adding a boat. Generic labels
+  (`yacht`, `sloop`, `custom`) are on `design.yaml`'s ignored list and discarded,
+  because a boat that is half design-less and half `…-yacht` has its history in
+  two places.
+
+`BoatRegistry.findOrCreate` is the **only** correct way to create a boat.
+Calling `JsonStore.putBoat` directly skips alias resolution and design learning.
+
+Learned aliases are written back to `aliases.yaml` immediately, not held in
+memory — the failure being defended against is the process dying without a clean
+stop. An unreadable `aliases.yaml` is never overwritten.
+
+`SailingPfCompatibilityTest` runs sailing-pf's own `IdGeneratorTest` assertions
+against this port. A failure there is a compatibility break between the two
+projects, not just a local regression.
+
+---
+
 ## Data model
 
 | File | Holds |
 |---|---|
 | `boats.json` | the fleet register; `currentTcf` is a **seed**, not authoritative |
+| `designs.json` | hull types, learned from boat entry |
 | `series.json`, `races.json` | seasons and race dates |
 | `roster/{seriesId}.json` | who is in for the season, and their starting TCF |
 | `entrants/{raceId}.json` | who is in this race **and the TCF it was sailed on** |
@@ -147,6 +203,7 @@ for the full list. The shape worth knowing:
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/races/{id}` | **everything the race page needs, in one call** |
+| POST | `/api/boats/import` | bulk-load the fleet from CSV (`?dryRun=true` previews) |
 | POST | `/api/races/{id}/entrants/seed` | seed from the roster or the previous race |
 | POST | `/api/races/{id}/start-times` | compute and publish the stagger |
 | POST | `/api/races/{id}/process-handicaps` | run the engine (computes, saves nothing) |
@@ -158,7 +215,7 @@ for the full list. The shape worth knowing:
 ## Testing
 
 ```bash
-mvn test        # 89 tests, offline
+mvn test        # 169 tests, offline
 ```
 
 - `JsonStoreTest` — round-trips, atomicity, journalling, corrupt-file recovery.
@@ -167,6 +224,9 @@ mvn test        # 89 tests, offline
   workflow.
 - `PursuitHandicapEngineTest` — executable spec for the algorithm, mapped to
   wiki sections.
+- `BoatRegistryTest`, `AliasesTest`, `DesignCatalogueTest` — identity and
+  matching, including the design upgrade and its reference rewriting.
+- `SailingPfCompatibilityTest` — the cross-project contract described above.
 - `static/scoring-test.html` — the browser half. Not run by Maven; open it.
 
 Write the failing test first.

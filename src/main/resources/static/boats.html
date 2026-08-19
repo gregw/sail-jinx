@@ -21,12 +21,42 @@
   <div class="toolbar">
     <label><input type="checkbox" id="show-retired"> Show retired</label>
     <button id="add-btn" class="primary" type="button">Add boat</button>
+    <button id="import-btn" type="button">Import from CSV</button>
   </div>
+
+  <section id="import-panel" style="display:none;">
+    <h2>Import a fleet list</h2>
+    <p class="lead">
+      Paste a CSV or choose a file. <strong>The first row must be the headings</strong> —
+      the column order does not matter and unrecognised columns are ignored.
+      Recognised: <code>sail</code>, <code>name</code>, <code>design</code>,
+      <code>tcf</code>, <code>division</code>, <code>spinnaker</code>, <code>notes</code>
+      (and the usual variants: <code>sail no</code>, <code>boat</code>,
+      <code>class</code>, <code>handicap</code>…).
+    </p>
+    <p class="lead">
+      Every column is optional. Boats already registered are matched, not duplicated —
+      including when a later list fills in a design they were imported without.
+    </p>
+
+    <div class="toolbar">
+      <input type="file" id="csv-file" accept=".csv,text/csv,text/plain">
+    </div>
+    <textarea id="csv-text" rows="8" spellcheck="false"
+      placeholder="sail,name,design,tcf&#10;AUS9,Quick Silver,J/24,1.0450"></textarea>
+    <div class="toolbar">
+      <button id="preview-btn" type="button">Preview</button>
+      <button id="apply-btn" class="primary" type="button">Import</button>
+      <button id="import-close" type="button">Close</button>
+      <span id="import-msg" class="hint"></span>
+    </div>
+    <div id="import-report"></div>
+  </section>
 
   <table id="boats-table" style="display:none;">
     <thead>
       <tr>
-        <th>Sail #</th><th>Name</th><th>Division</th><th>Spin</th>
+        <th>Sail #</th><th>Name</th><th>Design</th><th>Division</th><th>Spin</th>
         <th class="num-cell">TCF</th><th>Notes</th><th></th>
       </tr>
     </thead>
@@ -38,8 +68,14 @@
 <script src="/scoring.js"></script>
 <script>
   let boats = [];
+  let designs = new Map();   // designId -> display name
   let showRetired = false;
-  let editingId = null;   // boat id being edited, or '' for the new-boat row
+  let editingId = null;      // boat id being edited, or '' for the new-boat row
+
+  function designName(id) {
+    if (!id) return '';
+    return designs.get(id) || id;
+  }
 
   function visibleBoats() {
     return boats.filter(b => showRetired || b.active);
@@ -53,10 +89,11 @@
 
     table.style.display = '';
     if (!rows.length && editingId === null) {
+      state.style.display = '';
       state.className = 'banner banner-info';
       state.textContent = boats.length
         ? 'No active boats. Tick "Show retired" to see the rest.'
-        : 'No boats yet. Add the fleet with the button above.';
+        : 'No boats yet. Add them one at a time, or import a fleet list.';
     } else {
       state.style.display = 'none';
     }
@@ -69,23 +106,32 @@
 
   function viewRow(b) {
     return '<tr class="' + (b.active ? '' : 'retired') + '">'
-      + '<td>' + esc(b.sailNumber) + '</td>'
-      + '<td>' + esc(b.name) + (b.casual ? ' <span class="tag" title="Added on a race night">casual</span>' : '') + '</td>'
+      + '<td class="mono">' + esc(b.sailNumber) + '</td>'
+      + '<td>' + esc(b.name)
+        + (b.casual ? ' <span class="tag" title="Added on a race night">casual</span>' : '') + '</td>'
+      + '<td>' + (b.designId
+          ? esc(designName(b.designId))
+          : '<span class="hint" title="Not known yet — a later import can fill it in">—</span>') + '</td>'
       + '<td>' + esc(b.division) + '</td>'
       + '<td>' + esc(b.spinnaker) + '</td>'
-      + '<td class="num-cell">' + esc(fmtTcf(b.currentTcf)) + '</td>'
+      + '<td class="num-cell mono">' + esc(fmtTcf(b.currentTcf)) + '</td>'
       + '<td class="notes-cell">' + esc(b.notes) + '</td>'
       + '<td><button type="button" class="link-btn edit-btn" data-id="' + esc(b.id) + '">Edit</button></td>'
       + '</tr>';
   }
 
   function editRow(b) {
-    const v = b || { id: '', sailNumber: '', name: '', division: '', spinnaker: 'S',
-                     currentTcf: 1.0, active: true, notes: '' };
+    const v = b || { id: '', sailNumber: '', name: '', division: '', designId: null,
+                     spinnaker: 'S', currentTcf: 1.0, active: true, notes: '' };
     const sel = (k) => v.spinnaker === k ? ' selected' : '';
     return '<tr class="editing">'
       + '<td><input class="f-sail" value="' + esc(v.sailNumber) + '" placeholder="AUS123"></td>'
       + '<td><input class="f-name" value="' + esc(v.name) + '" placeholder="Boat name"></td>'
+      // The design is only editable while creating: once a boat has one, changing it
+      // would move the boat's id, and that is a merge decision rather than a text edit.
+      + '<td>' + (b
+          ? esc(designName(v.designId)) || '<span class="hint">—</span>'
+          : '<input class="f-design" placeholder="J/24">') + '</td>'
       + '<td><input class="f-division" value="' + esc(v.division || '') + '" placeholder="Div 1"></td>'
       + '<td><select class="f-spin"><option value="S"' + sel('S') + '>S</option>'
       + '<option value="NS"' + sel('NS') + '>NS</option></select></td>'
@@ -118,6 +164,7 @@
     const row = document.querySelector('tr.editing');
     if (!row) return;
     const activeBox = row.querySelector('.f-active');
+    const designField = row.querySelector('.f-design');
     const payload = {
       sailNumber: row.querySelector('.f-sail').value.trim(),
       name: row.querySelector('.f-name').value.trim(),
@@ -128,15 +175,23 @@
       active: activeBox ? activeBox.checked : true
     };
     if (id) payload.id = id;
+    if (designField && designField.value.trim()) payload.design = designField.value.trim();
     if (!payload.sailNumber && !payload.name) {
       showError('A boat needs at least a sail number or a name.');
       return;
     }
 
     const r = await postJson('/api/boats', payload);
-    if (!r.ok) { showError('Could not save: ' + errorOf(r)); return; }
+    if (!r.ok) {
+      // A design conflict comes back as 409 with an explanation worth reading.
+      showError('Could not save: ' + errorOf(r));
+      return;
+    }
     editingId = null;
     await load();
+    if (r.body.outcome && r.body.outcome !== 'CREATED' && r.body.outcome !== 'EDITED') {
+      showInfo('Matched an existing boat: ' + (r.body.note || r.body.outcome.toLowerCase()));
+    }
   }
 
   function showError(msg) {
@@ -146,10 +201,115 @@
     state.textContent = msg;
   }
 
+  function showInfo(msg) {
+    const state = document.getElementById('boats-state');
+    state.style.display = '';
+    state.className = 'banner banner-info';
+    state.textContent = msg;
+  }
+
+  // --- CSV import ----------------------------------------------------------
+
+  document.getElementById('import-btn').onclick = () => {
+    const panel = document.getElementById('import-panel');
+    panel.style.display = panel.style.display === 'none' ? '' : 'none';
+    if (panel.style.display === '') panel.scrollIntoView({ behavior: 'smooth' });
+  };
+  document.getElementById('import-close').onclick = () => {
+    document.getElementById('import-panel').style.display = 'none';
+  };
+  document.getElementById('csv-file').onchange = async (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    document.getElementById('csv-text').value = await file.text();
+    setImportMsg(file.name + ' loaded — preview it before importing.');
+  };
+  document.getElementById('preview-btn').onclick = () => runImport(true);
+  document.getElementById('apply-btn').onclick = () => runImport(false);
+
+  function setImportMsg(text) {
+    document.getElementById('import-msg').textContent = text;
+  }
+
+  async function runImport(dryRun) {
+    const csv = document.getElementById('csv-text').value;
+    if (!csv.trim()) { setImportMsg('Nothing to import.'); return; }
+    setImportMsg(dryRun ? 'Checking…' : 'Importing…');
+
+    const r = await fetchJson('/api/boats/import' + (dryRun ? '?dryRun=true' : ''), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/csv' },
+      body: csv
+    });
+    if (!r.ok) { setImportMsg('Import failed: ' + errorOf(r)); return; }
+
+    renderReport(r.body, dryRun);
+    setImportMsg(dryRun ? 'Preview only — nothing saved.' : 'Done.');
+    if (!dryRun) await load();
+  }
+
+  function renderReport(report, dryRun) {
+    const el = document.getElementById('import-report');
+    const parts = [];
+
+    if ((report.problems || []).length) {
+      parts.push('<div class="banner banner-warn"><strong>Problems</strong><ul>'
+        + report.problems.map(p => '<li>' + esc(p) + '</li>').join('') + '</ul></div>');
+    }
+    if ((report.recognisedColumns || []).length) {
+      parts.push('<p class="hint">Columns read: ' + esc(report.recognisedColumns.join(', ')) + '</p>');
+    }
+    if ((report.ignoredColumns || []).length) {
+      parts.push('<p class="hint">Columns ignored: ' + esc(report.ignoredColumns.join(', ')) + '</p>');
+    }
+
+    const tally = report.tally || {};
+    const counts = Object.keys(tally).map(k => tally[k] + ' ' + k.toLowerCase());
+    if (counts.length) {
+      parts.push('<div class="banner ' + (tally.CONFLICT ? 'banner-warn' : 'banner-ok') + '">'
+        + esc(counts.join(', ')) + '</div>');
+    }
+
+    const rows = report.rows || [];
+    if (rows.length) {
+      parts.push('<table><thead><tr><th class="num-cell">Line</th><th>Sail #</th>'
+        + '<th>Name</th><th>Result</th><th>Detail</th></tr></thead><tbody>'
+        + rows.map(row =>
+            '<tr' + (row.outcome === 'CONFLICT' ? ' class="conflict-row"' : '') + '>'
+            + '<td class="num-cell">' + esc(row.line) + '</td>'
+            + '<td class="mono">' + esc(row.sailNumber) + '</td>'
+            + '<td>' + esc(row.name) + '</td>'
+            + '<td>' + esc(outcomeLabel(row.outcome, dryRun)) + '</td>'
+            + '<td class="hint">' + esc(row.note || row.boatId || '') + '</td>'
+            + '</tr>').join('')
+        + '</tbody></table>');
+    }
+    el.innerHTML = parts.join('');
+  }
+
+  function outcomeLabel(outcome, dryRun) {
+    if (dryRun) return 'will be imported';
+    switch (outcome) {
+      case 'CREATED':  return 'added';
+      case 'MATCHED':  return 'already registered';
+      case 'UPGRADED': return 'design added';
+      case 'ALIASED':  return 'matched under another name';
+      case 'CONFLICT': return 'needs a decision';
+      default:         return outcome;
+    }
+  }
+
+  // --- load ----------------------------------------------------------------
+
   async function load() {
-    const r = await fetchJson('/api/boats');
-    if (!r.ok) { showError('Could not load boats: ' + errorOf(r)); return; }
-    boats = r.body || [];
+    const [boatsR, designsR] = await Promise.all([
+      fetchJson('/api/boats'),
+      fetchJson('/api/designs')
+    ]);
+    if (!boatsR.ok) { showError('Could not load boats: ' + errorOf(boatsR)); return; }
+    boats = boatsR.body || [];
+    designs = new Map((designsR.ok ? designsR.body || [] : [])
+      .map(d => [d.id, d.canonicalName || d.id]));
     render();
   }
 

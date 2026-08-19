@@ -398,3 +398,41 @@ function createScorer(state) {
     handicapEngineInput
   };
 }
+
+// --- boat identity ---------------------------------------------------------
+//
+// The same normalisation the server applies (identity/IdGenerator.java,
+// identity/Aliases.java). Kept in step deliberately: the race page's type-ahead has to
+// find the boat the server would resolve to, or the RO picks one boat and gets another.
+
+/** Uppercase, strip everything that is not a letter or digit. */
+function normSail(raw) {
+  return String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+/** Lowercase, strip everything that is not a letter or digit. */
+function normName(raw) {
+  return String(raw || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Drop an Australian country or fleet prefix and any leading zeros, so AUS01234,
+ * AUS1234 and 1234 are one boat. Only strips the prefix when a digit follows, or
+ * "AUSTRALIA" would become "TRALIA".
+ */
+function stripSailPrefix(sail) {
+  let s = normSail(sail);
+  for (const prefix of ['JAUS', 'EAUS', 'VAUS', 'SAUS', 'AUS']) {
+    if (s.startsWith(prefix) && s.length > prefix.length && /[0-9]/.test(s[prefix.length])) {
+      s = s.slice(prefix.length);
+      break;
+    }
+  }
+  while (s.length > 1 && s[0] === '0' && /[0-9]/.test(s[1])) s = s.slice(1);
+  return s;
+}
+
+/** True when two sail numbers are the same boat's, prefixes and zeros aside. */
+function sameSailNumber(a, b) {
+  return stripSailPrefix(a) === stripSailPrefix(b) && stripSailPrefix(a) !== '';
+}

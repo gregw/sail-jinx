@@ -556,17 +556,22 @@
 
   // --- adding boats on the night ---------------------------------------------
 
-  // Normalised match key: case, spacing, punctuation and leading zeros all
-  // vary in how a visiting boat gets written down.
-  function matchKey(s) {
-    return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/^0+/, '');
-  }
-
+  // Matching uses the same rules as the register itself (scoring.js, which mirrors
+  // identity/IdGenerator.java) rather than an approximation of them — otherwise the RO
+  // can pick a boat here and have the server resolve a different one.
   function findRegisterMatches(text) {
-    const k = matchKey(text);
-    if (!k) return [];
+    const typed = String(text || '').trim();
+    if (!typed) return [];
+    const asSail = stripSailPrefix(typed);
+    const asName = normName(typed);
+
+    // An exact sail-number hit is the answer, whatever else also contains those digits.
+    const exact = register.filter(b => asSail && sameSailNumber(b.sailNumber, typed));
+    if (exact.length) return exact;
+
     return register.filter(b =>
-      matchKey(b.sailNumber).includes(k) || matchKey(b.name).includes(k));
+      (asSail && stripSailPrefix(b.sailNumber).includes(asSail))
+      || (asName && normName(b.name).includes(asName)));
   }
 
   function refreshBoatMatches() {
