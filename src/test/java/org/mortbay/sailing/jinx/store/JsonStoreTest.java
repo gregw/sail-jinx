@@ -39,7 +39,7 @@ class JsonStoreTest
 {
     private static Boat boat(String id, String sail, String name, double tcf)
     {
-        return new Boat(id, sail, name, "Div 1", Spinnaker.S, tcf, false, true, null);
+        return new Boat(id, sail, name, "Div 1", null, Spinnaker.S, tcf, false, true, null);
     }
 
     @Test
@@ -60,7 +60,7 @@ class JsonStoreTest
     {
         JsonStore first = new JsonStore(tmp);
         first.start();
-        first.putBoat(new Boat("b-1", "AUS5678", "Flashpoint", "Div 1",
+        first.putBoat(new Boat("b-1", "AUS5678", "Flashpoint", "Div 1", "j24",
             Spinnaker.NS, 1.0450, false, true, "spare main"));
 
         JsonStore reopened = new JsonStore(tmp);
@@ -84,7 +84,7 @@ class JsonStoreTest
         JsonStore store = new JsonStore(tmp);
         store.start();
         store.putBoat(boat("b-1", "AUS1", "Gone Fishing", 0.98));
-        store.putBoat(new Boat("b-1", "AUS1", "Gone Fishing", "Div 1",
+        store.putBoat(new Boat("b-1", "AUS1", "Gone Fishing", "Div 1", null,
             Spinnaker.S, 0.98, false, false, null));
 
         assertThat(store.boats(), aMapWithSize(1));

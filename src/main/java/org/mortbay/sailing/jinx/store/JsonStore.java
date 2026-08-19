@@ -24,15 +24,19 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.mortbay.sailing.jinx.config.JinxConfig;
+import org.mortbay.sailing.jinx.identity.IdGenerator;
 import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.AuditEntry;
 import org.mortbay.sailing.jinx.model.Boat;
+import org.mortbay.sailing.jinx.model.Design;
+import org.mortbay.sailing.jinx.model.Entrant;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceEntrants;
 import org.mortbay.sailing.jinx.model.RaceTimes;
 import org.mortbay.sailing.jinx.model.Roster;
 import org.mortbay.sailing.jinx.model.Series;
 import org.mortbay.sailing.jinx.model.StartSheet;
+import org.mortbay.sailing.jinx.model.StartTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,6 +47,7 @@ import org.slf4j.LoggerFactory;
  * <p>Layout under {@code <root>/store/}:
  * <pre>
  *   boats.json                    — Map&lt;boatId, Boat&gt;: the fleet register
+ *   designs.json                  — Map&lt;designId, Design&gt;: hull types, learned from boat entry
  *   series.json                   — Map&lt;seriesId, Series&gt;
  *   races.json                    — Map&lt;raceId, Race&gt;
  *   roster/{seriesId}.json        — boats entered for a series + starting TCFs
@@ -97,6 +102,7 @@ public class JsonStore
 
     private final Path storeDir;
     private final Path boatsFile;
+    private final Path designsFile;
     private final Path seriesFile;
     private final Path racesFile;
     private final Path rosterDir;
@@ -109,6 +115,7 @@ public class JsonStore
     private final Path journalDir;
 
     private Map<String, Boat> boats;
+    private Map<String, Design> designs;
     private Map<String, Series> series;
     private Map<String, Race> races;
     private List<AuditEntry> audit;
@@ -118,6 +125,7 @@ public class JsonStore
     {
         this.storeDir = dataRoot.resolve("store");
         this.boatsFile = storeDir.resolve("boats.json");
+        this.designsFile = storeDir.resolve("designs.json");
         this.seriesFile = storeDir.resolve("series.json");
         this.racesFile = storeDir.resolve("races.json");
         this.rosterDir = storeDir.resolve("roster");
@@ -140,6 +148,7 @@ public class JsonStore
         }
 
         boats = readMap(boatsFile, new TypeReference<>() { });
+        designs = readMap(designsFile, new TypeReference<>() { });
         series = readMap(seriesFile, new TypeReference<>() { });
         races = readMap(racesFile, new TypeReference<>() { });
         audit = readList(auditFile, new TypeReference<>() { });
@@ -173,6 +182,190 @@ public class JsonStore
         boats.put(boat.id(), boat);
         write(boatsFile, boats);
         journal("boats", boat.id(), boat);
+    }
+
+    // --- Designs -------------------------------------------------------------
+
+    public synchronized Map<String, Design> designs()
+    {
+        return Collections.unmodifiableMap(designs);
+    }
+
+    public synchronized void putDesign(Design design) throws IOException
+    {
+        designs.put(design.id(), design);
+        write(designsFile, designs);
+        journal("designs", design.id(), design);
+    }
+
+    // --- Boat identity changes -----------------------------------------------
+
+    /**
+     * Move a boat to a new id, rewriting every reference to it.
+     *
+     * <p>This happens when a boat's identity is corrected — most often when a design-less
+     * boat's design becomes known, since the design is part of the id. The alternative
+     * would be a second record, splitting the boat's handicap history in half.
+     *
+     * <p>Every place a boat id appears has to move with it, and missing one silently
+     * orphans a race:
+     * <ul>
+     *   <li>the register itself;</li>
+     *   <li>each race's entrant list;</li>
+     *   <li>each race's captured times — the per-boat map keys, the working order, and
+     *       the duty boat;</li>
+     *   <li>each race's published start sheet;</li>
+     *   <li>saved handicap adjustments;</li>
+     *   <li>every series roster.</li>
+     * </ul>
+     *
+     * <p>If a boat already occupies the target id the two are the same hull found twice,
+     * so the moving record is dropped and its references repointed at the survivor.
+     *
+     * @return the number of files rewritten
+     */
+    public synchronized int rewriteBoatId(String oldId, String newId) throws IOException
+    {
+        if (oldId == null || newId == null || oldId.equals(newId))
+            return 0;
+
+        int touched = 0;
+        Boat moving = boats.remove(oldId);
+        if (moving != null)
+        {
+            // Keep the incumbent when the target is taken: it may already carry edits.
+            if (!boats.containsKey(newId))
+                boats.put(newId, withId(moving, newId));
+            write(boatsFile, boats);
+            journal("boats", newId, boats.get(newId));
+            touched++;
+        }
+
+        for (String raceId : idsIn(entrantsDir))
+        {
+            RaceEntrants entrants = entrants(raceId);
+            if (entrants == null)
+                continue;
+            boolean changed = false;
+            List<Entrant> updated = new ArrayList<>(entrants.entrants().size());
+            for (Entrant e : entrants.entrants())
+            {
+                if (oldId.equals(e.boatId()))
+                {
+                    updated.add(new Entrant(newId, e.sailNumber(), e.name(), e.division(),
+                        e.designId(), e.spinnaker(), e.tcf(), e.entryType()));
+                    changed = true;
+                }
+                else
+                {
+                    updated.add(e);
+                }
+            }
+            if (changed)
+            {
+                putEntrants(new RaceEntrants(entrants.raceId(), entrants.savedAt(),
+                    entrants.tcfSource(), entrants.sourceRaceId(), entrants.sourceRaceNumber(),
+                    updated));
+                touched++;
+            }
+        }
+
+        for (String raceId : idsIn(raceTimesDir))
+        {
+            RaceTimes times = raceTimes(raceId);
+            if (times == null || !referencesBoat(times, oldId))
+                continue;
+            Map<String, RaceTimes.BoatTimes> perBoat = new LinkedHashMap<>();
+            for (Map.Entry<String, RaceTimes.BoatTimes> e : times.times().entrySet())
+                perBoat.put(oldId.equals(e.getKey()) ? newId : e.getKey(), e.getValue());
+            List<String> order = times.boatOrder().stream()
+                .map(id -> oldId.equals(id) ? newId : id).toList();
+            String duty = oldId.equals(times.dutyBoatId()) ? newId : times.dutyBoatId();
+            putRaceTimes(raceId, new RaceTimes(raceId, order, duty, perBoat));
+            touched++;
+        }
+
+        for (String raceId : idsIn(startSheetDir))
+        {
+            StartSheet sheet = startSheet(raceId);
+            if (sheet == null)
+                continue;
+            boolean changed = sheet.starts().stream().anyMatch(st -> oldId.equals(st.boatId()));
+            if (!changed)
+                continue;
+            List<StartTime> starts = sheet.starts().stream()
+                .map(st -> oldId.equals(st.boatId())
+                    ? new StartTime(newId, st.tcf(), st.expectedElapsedMinutes(), st.startTime())
+                    : st)
+                .toList();
+            putStartSheet(new StartSheet(raceId, sheet.computedAt(), sheet.targetElapsedMinutes(),
+                sheet.earliestStart(), starts));
+            touched++;
+        }
+
+        for (String raceId : idsIn(adjustmentsDir))
+        {
+            List<Adjustment> saved = adjustments(raceId);
+            if (saved.stream().noneMatch(a -> oldId.equals(a.boatId())))
+                continue;
+            List<Adjustment> updated = saved.stream()
+                .map(a -> oldId.equals(a.boatId())
+                    ? new Adjustment(newId, a.finishPosition(), a.penaltyMinutes(),
+                        a.rewardMinutes(), a.netAdjustmentMinutes(), a.oldTcf(), a.newTcf())
+                    : a)
+                .toList();
+            putAdjustments(raceId, updated);
+            touched++;
+        }
+
+        for (String seriesId : idsIn(rosterDir))
+        {
+            Roster roster = roster(unsanitize(seriesId));
+            if (roster == null || roster.entries().stream().noneMatch(e -> oldId.equals(e.boatId())))
+                continue;
+            List<Roster.Entry> updated = roster.entries().stream()
+                .map(e -> oldId.equals(e.boatId()) ? new Roster.Entry(newId, e.startingTcf()) : e)
+                .toList();
+            putRoster(new Roster(roster.seriesId(), updated));
+            touched++;
+        }
+
+        LOG.info("Rewrote boat id {} -> {} across {} file(s)", oldId, newId, touched);
+        return touched;
+    }
+
+    private static Boat withId(Boat b, String id)
+    {
+        return new Boat(id, b.sailNumber(), b.name(), b.division(), b.designId(),
+            b.spinnaker(), b.currentTcf(), b.casual(), b.active(), b.notes());
+    }
+
+    private static boolean referencesBoat(RaceTimes times, String boatId)
+    {
+        return times.times().containsKey(boatId)
+            || times.boatOrder().contains(boatId)
+            || boatId.equals(times.dutyBoatId());
+    }
+
+    /** The keys of the per-entity files in a directory, i.e. the filenames without .json. */
+    private List<String> idsIn(Path dir)
+    {
+        if (!Files.isDirectory(dir))
+            return List.of();
+        try (var files = Files.list(dir))
+        {
+            return files
+                .map(p -> p.getFileName().toString())
+                .filter(n -> n.endsWith(".json"))
+                .map(n -> n.substring(0, n.length() - 5))
+                .sorted()
+                .toList();
+        }
+        catch (IOException e)
+        {
+            LOG.warn("Could not list {}: {}", dir, e.toString());
+            return List.of();
+        }
     }
 
     // --- Series --------------------------------------------------------------
@@ -233,12 +426,12 @@ public class JsonStore
     /** The series roster, or {@code null} when the series has none yet. */
     public synchronized Roster roster(String seriesId)
     {
-        return read(rosterDir.resolve(seriesId + ".json"), Roster.class);
+        return read(rosterDir.resolve(fileKey(seriesId) + ".json"), Roster.class);
     }
 
     public synchronized void putRoster(Roster roster) throws IOException
     {
-        write(rosterDir.resolve(roster.seriesId() + ".json"), roster);
+        write(rosterDir.resolve(fileKey(roster.seriesId()) + ".json"), roster);
         journal("roster", roster.seriesId(), roster);
     }
 
@@ -293,14 +486,29 @@ public class JsonStore
      */
     public synchronized JinxConfig.Algorithm seriesConfig(String seriesId)
     {
-        return read(seriesConfigDir.resolve(seriesId + ".json"), JinxConfig.Algorithm.class);
+        return read(seriesConfigDir.resolve(fileKey(seriesId) + ".json"), JinxConfig.Algorithm.class);
     }
 
     public synchronized void putSeriesConfig(String seriesId, JinxConfig.Algorithm cfg)
         throws IOException
     {
-        write(seriesConfigDir.resolve(seriesId + ".json"), cfg);
+        write(seriesConfigDir.resolve(fileKey(seriesId) + ".json"), cfg);
         journal("series-config", seriesId, cfg);
+    }
+
+    /**
+     * Filename for an entity key. Series ids are club-scoped and carry a {@code /}
+     * ({@code myc.org.au/twilight}), which would otherwise be read as a directory.
+     */
+    private static String fileKey(String id)
+    {
+        return IdGenerator.sanitizeIdForFilesystem(id);
+    }
+
+    /** Inverse of {@link #fileKey} — recovers the series id from a filename. */
+    private static String unsanitize(String fileKey)
+    {
+        return fileKey == null ? "" : fileKey.replace("--", "/");
     }
 
     // --- Handicap adjustments ------------------------------------------------

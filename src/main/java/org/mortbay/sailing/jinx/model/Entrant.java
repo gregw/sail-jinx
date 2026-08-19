@@ -25,6 +25,7 @@ public record Entrant(
     String sailNumber,
     String name,
     String division,
+    String designId,
     Spinnaker spinnaker,
     double tcf,
     EntryType entryType)
@@ -61,7 +62,7 @@ public record Entrant(
     public static Entrant fromBoat(Boat boat, double tcf, EntryType entryType)
     {
         return new Entrant(boat.id(), boat.sailNumber(), boat.name(),
-            boat.division(), boat.spinnaker(), tcf, entryType);
+            boat.division(), boat.designId(), boat.spinnaker(), tcf, entryType);
     }
 
     /**
@@ -71,7 +72,7 @@ public record Entrant(
      */
     public static Entrant oneOff(String name, String sailNumber, double tcf)
     {
-        return new Entrant(null, sailNumber, name, null, null, tcf, EntryType.ONE_OFF);
+        return new Entrant(null, sailNumber, name, null, null, null, tcf, EntryType.ONE_OFF);
     }
 
     /**

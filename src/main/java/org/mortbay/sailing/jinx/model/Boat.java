@@ -19,6 +19,12 @@ package org.mortbay.sailing.jinx.model;
  * every boat is staggered individually, so there is nothing for a division to
  * do.
  *
+ * <p>{@code designId} is the hull type, learned from whatever was typed when the boat was
+ * entered and resolved through the alias seed — see {@link org.mortbay.sailing.jinx.identity.DesignCatalogue}.
+ * It is null when unknown, which is normal and not a problem: the Jinx handicap scores on
+ * TCF alone. A design-less boat is <em>upgraded</em> in place the day its design becomes
+ * known, rather than becoming a second record.
+ *
  * <p>{@code casual} marks a boat added on a race night rather than registered
  * before the season. It changes nothing functionally — it just lets the Boats
  * page show who arrived the informal way, so the register can be tidied later.
@@ -28,6 +34,7 @@ public record Boat(
     String sailNumber,
     String name,
     String division,
+    String designId,
     Spinnaker spinnaker,
     double currentTcf,
     boolean casual,

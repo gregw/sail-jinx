@@ -294,6 +294,7 @@ public class ApiServlet extends HttpServlet
             sailNumber == null ? "" : sailNumber.trim(),
             name == null ? "" : name.trim(),
             text(body, "division"),
+            text(body, "designId"),
             spinnakerOf(body.path("spinnaker")),
             body.path("currentTcf").asDouble(1.0),
             body.path("casual").asBoolean(false),
@@ -693,7 +694,7 @@ public class ApiServlet extends HttpServlet
         {
             Entrant e = entrants.entrants().get(i);
             forEngine.add(new Boat(entrantKey(e, i), e.sailNumber(), e.name(),
-                e.division(), e.spinnaker(), e.tcf(), false, true, null));
+                e.division(), e.designId(), e.spinnaker(), e.tcf(), false, true, null));
         }
         Race forEngineRace = new Race(race.id(), race.seriesId(), race.number(), race.name(),
             race.date(), earliest, target, race.courseLengthNm(), race.abandoned());
@@ -898,7 +899,7 @@ public class ApiServlet extends HttpServlet
             if (isBlank(boatId))
                 continue;
             double tcf = b.path("currentTcf").asDouble(1.0);
-            boats.add(new Boat(boatId, "", "", null, null, tcf, false, true, null));
+            boats.add(new Boat(boatId, "", "", null, null, null, tcf, false, true, null));
 
             FinishStatus status;
             try
@@ -1006,7 +1007,7 @@ public class ApiServlet extends HttpServlet
                     continue;
                 Double tcf = newTcfs.get(e.boatId());
                 carried.add(new Entrant(e.boatId(), e.sailNumber(), e.name(), e.division(),
-                    e.spinnaker(), tcf != null ? tcf : e.tcf(), e.entryType()));
+                    e.designId(), e.spinnaker(), tcf != null ? tcf : e.tcf(), e.entryType()));
             }
         }
         return new RaceEntrants(next.id(), Instant.now(),

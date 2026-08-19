@@ -38,7 +38,7 @@ class PursuitHandicapEngineTest
     /** Register boat with only the fields the engine looks at: id and TCF. */
     private static Boat boat(String id, String name, String sailNumber, double tcf)
     {
-        return new Boat(id, sailNumber, name, "Div", Spinnaker.S, tcf, false, true, null);
+        return new Boat(id, sailNumber, name, "Div", null, Spinnaker.S, tcf, false, true, null);
     }
 
     /** Race carrying the one input the engine needs: the target elapsed time. */

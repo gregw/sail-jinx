@@ -64,7 +64,7 @@ public record RaceEntrants(
             .map(e -> {
                 Double v = (e.boatId() == null) ? null : newTcfs.get(e.boatId());
                 return (v == null) ? e : new Entrant(e.boatId(), e.sailNumber(), e.name(),
-                    e.division(), e.spinnaker(), v, e.entryType());
+                    e.division(), e.designId(), e.spinnaker(), v, e.entryType());
             })
             .toList();
         return new RaceEntrants(raceId, now, TcfSource.MANUAL_EDIT,

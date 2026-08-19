@@ -192,7 +192,7 @@ public class Aliases
         // Implicit prefix equivalence — no YAML entry needed.
         String stripped = stripPrefix(normSail);
         if (!stripped.equals(normSail))
-            return Optional.of(new BoatMatch(stripped, normName, null));
+            return Optional.of(new BoatMatch(stripped, normName, null, false));
 
         return Optional.empty();
     }
@@ -451,8 +451,15 @@ public class Aliases
 
     // --- types ---------------------------------------------------------------
 
-    /** A canonical identity resolved from an alias. */
-    public record BoatMatch(String normSailNumber, String normName, String canonicalDisplayName)
+    /**
+     * A canonical identity resolved from an alias.
+     *
+     * <p>{@code fromSeed} distinguishes a recorded equivalence — someone wrote down that
+     * these are the same boat — from the implicit country-prefix rule, which is just
+     * normalisation. Callers report the first to the user and the second not at all.
+     */
+    public record BoatMatch(String normSailNumber, String normName, String canonicalDisplayName,
+                            boolean fromSeed)
     {
     }
 
@@ -483,7 +490,7 @@ public class Aliases
     {
         BoatMatch asMatch()
         {
-            return new BoatMatch(canonSail, canonName, entry.canonicalName());
+            return new BoatMatch(canonSail, canonName, entry.canonicalName(), true);
         }
     }
 }
