@@ -238,6 +238,15 @@ and the earliest start, both of which can change until then. When sunset falls a
 or before the earliest start the computation is **refused**, not capped to zero: a
 nought-minute target would emit a start sheet with every boat on the same gun.
 
+### The race page's working copy
+
+`race.html` keeps `bundle` as the last thing the server said and `entrants` /
+`timesMap` as the working copy, and `entrantsChanged()` compares one against the
+other. **The working copy must be a deep copy** — `load()` uses
+`structuredClone`. Sharing the objects has bitten twice: an edit mutates both
+sides, the comparison finds no difference, and the change is silently never
+saved. If an edit on that page appears to "not stick", check that first.
+
 ### Casual entrants
 
 `Entrant.EntryType` drives two different questions, and they have different

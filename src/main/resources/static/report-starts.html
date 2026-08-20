@@ -48,8 +48,10 @@
   ];
 
   let rows = [];
-  // Start order is the default because that is the order the guns fire in.
-  let sortKey = null;
+  // Name order by default: the sheet is mostly used to look a boat up, and the start
+  // column is already in order down the page whichever way the rows are sorted. Clicking
+  // through a column returns to start order, which is what the sequence itself needs.
+  let sortKey = 'name';
   let sortDir = 1;
 
   function sorted() {
@@ -97,7 +99,7 @@
 
   function updateOrderNote() {
     const note = document.getElementById('order-note');
-    if (!sortKey) { note.textContent = 'in start order'; return; }
+    if (!sortKey) { note.textContent = 'in start order — click a heading to sort'; return; }
     const col = COLUMNS.find(c => c.key === sortKey);
     note.textContent = 'sorted by ' + col.label.toLowerCase()
       + (sortDir > 0 ? '' : ', reversed') + ' — click the header again to return to start order';

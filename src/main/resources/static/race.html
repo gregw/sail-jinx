@@ -46,6 +46,7 @@
       <div class="filters">
         <label><input type="checkbox" id="hide-dnc"> Hide non-starters</label>
         <label><input type="checkbox" id="hide-finished"> Hide finished</label>
+        <label><input type="checkbox" id="hide-design"> Hide design</label>
         <label>Duty boat
           <select id="duty-boat"><option value="">— none —</option></select>
         </label>
@@ -239,6 +240,11 @@
       render: e => esc(e.name || '')
         + (e.entryType === 'ONE_OFF' ? ' <span class="tag" title="Not in the register">one-off</span>' : '')
         + (e.entryType === 'CASUAL' ? ' <span class="tag">casual</span>' : '') },
+    { key: 'design', label: 'Design',
+      get: e => designNameOf(e.designId),
+      render: e => e.designId
+        ? esc(designNameOf(e.designId))
+        : '<span class="hint" title="Not known yet">—</span>' },
     { key: 'casual', label: 'Casual', sortable: false,
       // A casual sailed tonight and has its handicap adjusted like anyone else, but it
       // is not seeded into the next race — a boat nobody expects appearing on a printed
@@ -261,8 +267,10 @@
           + '" data-id="' + esc(e.boatId) + '" value="' + esc(fmtTcf(tcfOf(e))) + '">';
       } },
     { key: 'allocated', label: 'Allocated<br>Start', cls: 'num-cell',
+      // Guns are set to the minute (wiki §4 rounds the stagger), so the seconds are
+      // always :00 and only make the column harder to scan.
       get: e => scorer.allocatedStartSeconds(e) ?? NaN,
-      render: e => esc(fmtTimeOfDay(scorer.allocatedStartSeconds(e))) },
+      render: e => esc(fmtTimeOfDay(scorer.allocatedStartSeconds(e)).slice(0, 5)) },
     { key: 'came', label: 'Came', sortable: false,
       get: e => timesFor(e.boatId).came ? 1 : 0,
       render: e => {
@@ -328,6 +336,7 @@
     return COLS.filter(c => {
       if (locked && (c.key === 'drag' || c.nowField)) return false;
       if (c.key === 'adjustment' && adjustments.size === 0) return false;
+      if (c.key === 'design' && document.getElementById('hide-design').checked) return false;
       return true;
     });
   }
@@ -1092,8 +1101,11 @@
     }
     bundle = r.body;
     locked = !!bundle.locked;
-    entrants = (bundle.entrants && bundle.entrants.entrants) || [];
-    timesMap = (bundle.times && bundle.times.times) ? { ...bundle.times.times } : {};
+    // Deep copies. These are the working copy, and `bundle` is the baseline that
+    // entrantsChanged() compares against — sharing the objects meant editing one edited
+    // both, so a change could never be detected and was silently never saved.
+    entrants = structuredClone((bundle.entrants && bundle.entrants.entrants) || []);
+    timesMap = structuredClone((bundle.times && bundle.times.times) || {});
     dutyBoatId = (bundle.times && bundle.times.dutyBoatId) || null;
     boatOrder = (bundle.times && bundle.times.boatOrder) || [];
     dirtyTcf = new Map();
@@ -1173,6 +1185,10 @@
     document.getElementById('unlock-btn').onclick = unlockRace;
     document.getElementById('hide-dnc').onchange = renderEntrants;
     document.getElementById('hide-finished').onchange = renderEntrants;
+    document.getElementById('hide-design').onchange = () => {
+      renderEntrantsHead();
+      renderEntrants();
+    };
     document.getElementById('duty-boat').onchange = (ev) => {
       dutyBoatId = ev.target.value || null;
       // The duty boat is scored on average points; it has no times of its own.
