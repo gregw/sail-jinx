@@ -53,7 +53,7 @@
       <tr>
         <th class="num-cell">#</th><th>Date</th><th>Name</th>
         <th id="series-col">Series</th>
-        <th class="num-cell">Target</th><th class="num-cell">Course</th>
+        <th class="num-cell">Target</th>
         <th>State</th>
       </tr>
     </thead>
@@ -113,7 +113,6 @@
         + '<td><a href="' + href + '">' + esc(r.name || ('Race ' + r.number)) + '</a></td>'
         + (seriesId ? '' : '<td>' + esc(r.seriesName) + '</td>')
         + '<td class="num-cell">' + (r.targetElapsedMinutes == null ? '' : esc(r.targetElapsedMinutes) + ' min') + '</td>'
-        + '<td class="num-cell">' + (r.courseLengthNm == null ? '' : esc(r.courseLengthNm) + ' nm') + '</td>'
         + '<td><span class="' + st.cls + '">' + st.label + '</span></td>'
         + '</tr>';
     }).join('');

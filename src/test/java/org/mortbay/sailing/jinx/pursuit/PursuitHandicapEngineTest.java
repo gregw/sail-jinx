@@ -43,7 +43,7 @@ class PursuitHandicapEngineTest
     private static Race race(int targetElapsedMinutes)
     {
         return new Race("r1", "s1", 1, "R1", LocalDate.of(2026, 5, 1),
-            LocalTime.of(18, 0), targetElapsedMinutes, null, false);
+            LocalTime.of(18, 0), targetElapsedMinutes, false);
     }
 
     /**

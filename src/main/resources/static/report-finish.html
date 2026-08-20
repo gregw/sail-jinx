@@ -70,7 +70,6 @@
       (b.seriesName ? b.seriesName + ' — ' : '') + 'Race ' + b.race.number + ' — results';
     document.getElementById('report-sub').textContent = [
       b.race.date ? fmtDate(b.race.date) : null,
-      b.race.courseLengthNm ? 'course ' + b.race.courseLengthNm + ' nm' : null,
       b.race.abandoned ? 'ABANDONED' : null
     ].filter(Boolean).join('   ·   ');
 

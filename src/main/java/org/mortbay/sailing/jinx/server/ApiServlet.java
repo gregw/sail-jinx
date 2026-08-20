@@ -76,7 +76,6 @@ import org.slf4j.LoggerFactory;
  *   POST   /api/races/{id}/start-times        compute and publish the pursuit start sheet
  *   GET    /api/races/{id}/times              RO-captured came / start / finish
  *   POST   /api/races/{id}/times              save them
- *   POST   /api/races/{id}/course-plan        target duration to course length
  *   POST   /api/races/{id}/process-handicaps  run the Jinx algorithm (computes, saves nothing)
  *   POST   /api/races/{id}/save-handicaps     save adjustments, carry TCFs to the next race
  *   DELETE /api/races/{id}/adjustments        unlock the race for reprocessing
@@ -106,7 +105,6 @@ public class ApiServlet extends HttpServlet
     private static final Pattern RACE_ENTRANTS_IMPORT = Pattern.compile("/races/([^/]+)/entrants/import");
     private static final Pattern RACE_START_TIMES = Pattern.compile("/races/([^/]+)/start-times");
     private static final Pattern RACE_TIMES = Pattern.compile("/races/([^/]+)/times");
-    private static final Pattern RACE_COURSE_PLAN = Pattern.compile("/races/([^/]+)/course-plan");
     private static final Pattern RACE_PROCESS_HANDICAPS = Pattern.compile("/races/([^/]+)/process-handicaps");
     private static final Pattern RACE_SAVE_HANDICAPS = Pattern.compile("/races/([^/]+)/save-handicaps");
     private static final Pattern RACE_ADJUSTMENTS = Pattern.compile("/races/([^/]+)/adjustments");
@@ -235,8 +233,6 @@ public class ApiServlet extends HttpServlet
             handleComputeStartTimes(req, resp, m.group(1));
         else if ((m = RACE_TIMES.matcher(path)).matches())
             handleSaveRaceTimes(req, resp, m.group(1));
-        else if ((m = RACE_COURSE_PLAN.matcher(path)).matches())
-            handleCoursePlan(req, resp, m.group(1));
         else if ((m = RACE_PROCESS_HANDICAPS.matcher(path)).matches())
             handleProcessHandicaps(req, resp, m.group(1));
         else if ((m = RACE_SAVE_HANDICAPS.matcher(path)).matches())
@@ -806,8 +802,6 @@ public class ApiServlet extends HttpServlet
             LocalTime.parse(alg.earliestStart()));
         Integer target = body.hasNonNull("targetElapsedMinutes")
             ? body.path("targetElapsedMinutes").asInt() : alg.idealRaceDuration();
-        Double course = body.hasNonNull("courseLengthNm")
-            ? body.path("courseLengthNm").asDouble() : null;
 
         // An edit keeps the id it was given, so renaming a race never orphans its
         // entrants or times. Only a new race can be a repeating run.
@@ -815,7 +809,7 @@ public class ApiServlet extends HttpServlet
         if (!isBlank(id))
         {
             Race race = new Race(id, seriesId, body.path("number").asInt(nextRaceNumber(seriesId)),
-                name, date, earliest, target, course, body.path("abandoned").asBoolean(false));
+                name, date, earliest, target, body.path("abandoned").asBoolean(false));
             store.putRace(race);
             writeJson(resp, mapOf("ok", true, "created", 1, "race", raceMap(race)));
             return;
@@ -845,7 +839,7 @@ public class ApiServlet extends HttpServlet
             // date — so the race number is what separates them.
             String raceId = IdGenerator.generateRaceId(config.club().domain(), raceDate, number + i);
             Race race = new Race(raceId, seriesId, number + i, name, raceDate,
-                earliest, target, course, false);
+                earliest, target, false);
             store.putRace(race);
             created.add(raceMap(race));
         }
@@ -884,7 +878,11 @@ public class ApiServlet extends HttpServlet
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("race", raceMap(race));
         out.put("seriesName", series == null ? null : series.name());
-        out.put("algorithm", algorithmMap(algorithmFor(race.seriesId())));
+        JinxConfig.Algorithm alg = algorithmFor(race.seriesId());
+        out.put("algorithm", algorithmMap(alg));
+        LocalTime sunset = alg.limitBySunset() ? sunsetFor(alg, race) : null;
+        out.put("sunsetLocal", sunset == null ? null
+            : String.format("%02d:%02d", sunset.getHour(), sunset.getMinute()));
         out.put("entrants", entrants);
         out.put("startSheet", store.startSheet(raceId));
         out.put("times", store.raceTimes(raceId));
@@ -1032,9 +1030,10 @@ public class ApiServlet extends HttpServlet
         if (prev == null || prev.entrants().isEmpty())
             return Optional.empty();
         Race prevRace = store.races().get(prevId);
-        // One-offs don't carry forward: they had no register boat to carry.
+        // Only roster boats carry forward. One-offs have no register boat, and a casual
+        // turned up once — seeding it would put a boat nobody expects on the start sheet.
         List<Entrant> carried = prev.entrants().stream()
-            .filter(Entrant::scoresHandicap)
+            .filter(Entrant::seedsNextRace)
             .toList();
         return Optional.of(new RaceEntrants(race.id(), Instant.now(),
             RaceEntrants.TcfSource.CARRIED_FORWARD, prevId,
@@ -1098,6 +1097,26 @@ public class ApiServlet extends HttpServlet
             race.earliestStart() != null
                 ? race.earliestStart() : LocalTime.parse(alg.earliestStart()));
 
+        // Cap the duration so the fleet is expected home by sundown. Done here rather
+        // than when the target is typed, because it depends on the race date and the
+        // earliest start, and both can still change up to this point.
+        int requested = target;
+        LocalTime sunset = alg.limitBySunset() ? sunsetFor(alg, race) : null;
+        target = capBySunset(target, earliest, sunset);
+        if (target <= 0)
+        {
+            // Sunset is at or before the earliest start: there is no daylight to cap
+            // into. Emitting a nought-minute target would produce a start sheet with
+            // every boat on the same gun, which is worse than refusing — the race as
+            // described cannot be sailed, and the RO needs to move the start or the date.
+            badRequest(resp, "sunset on " + race.date() + " is at "
+                + String.format("%02d:%02d", sunset.getHour(), sunset.getMinute())
+                + ", before the earliest start of " + earliest.toString().substring(0, 5)
+                + " — there is no daylight to race in. Move the start earlier, "
+                + "or turn off the sunset limit for this series.");
+            return;
+        }
+
         // The engine wants an id to key its answer by and the TCF in force. Entrants are
         // not register boats — a one-off has no register entry at all — and the TCF
         // belongs to the entry rather than the hull, so a Competitor is exactly the pair
@@ -1109,7 +1128,7 @@ public class ApiServlet extends HttpServlet
             forEngine.add(new Competitor(entrantKey(e, i), e.tcf()));
         }
         Race forEngineRace = new Race(race.id(), race.seriesId(), race.number(), race.name(),
-            race.date(), earliest, target, race.courseLengthNm(), race.abandoned());
+            race.date(), earliest, target, race.abandoned());
 
         List<StartTime> starts = new ArrayList<>(engine.computeStartTimes(forEngine, forEngineRace));
         // Slowest boat first: the order they start in, and the order the
@@ -1122,9 +1141,14 @@ public class ApiServlet extends HttpServlet
         // Persist the inputs on the race too, so reopening it shows what the
         // published sheet was actually computed from.
         store.putRace(new Race(race.id(), race.seriesId(), race.number(), race.name(),
-            race.date(), earliest, target, race.courseLengthNm(), race.abandoned()));
+            race.date(), earliest, target, race.abandoned()));
 
-        writeJson(resp, mapOf("ok", true, "raceId", raceId, "startSheet", sheet));
+        Map<String, Object> out = mapOf("ok", true, "raceId", raceId, "startSheet", sheet);
+        out.put("requestedTargetMinutes", requested);
+        out.put("limitedBySunset", target != requested);
+        out.put("sunsetLocal", sunset == null ? null
+            : String.format("%02d:%02d", sunset.getHour(), sunset.getMinute()));
+        writeJson(resp, out);
     }
 
     /**
@@ -1163,55 +1187,22 @@ public class ApiServlet extends HttpServlet
      * {@code limitBySunset}, the duration is capped so the slowest boat is
      * expected to finish by sunset on the race date.
      */
-    private void handleCoursePlan(HttpServletRequest req, HttpServletResponse resp, String raceId)
-        throws Exception
+    /**
+     * The target elapsed time actually used, capped so the slowest boat is expected to be
+     * home by sunset.
+     *
+     * <p>The cap belongs on the duration, not on a course length: what the RO controls on
+     * the night is how long the race is meant to take, and sailing past sundown is the
+     * thing being prevented. If sunset falls at or before the earliest start — an
+     * out-of-season date where it is already dark — the cap still engages, clamped to
+     * zero and flagged, rather than silently doing nothing.
+     */
+    static int capBySunset(int requested, LocalTime earliestStart, LocalTime sunset)
     {
-        Race race = store.races().get(raceId);
-        if (race == null)
-        {
-            resp.setStatus(404);
-            writeJson(resp, mapOf("error", "no such race: " + raceId));
-            return;
-        }
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        JinxConfig.Algorithm alg = algorithmFor(race.seriesId());
-
-        int duration = body.hasNonNull("targetElapsedMinutes")
-            ? body.path("targetElapsedMinutes").asInt()
-            : (race.targetElapsedMinutes() != null
-                ? race.targetElapsedMinutes() : alg.idealRaceDuration());
-        if (duration <= 0)
-            duration = alg.idealRaceDuration();
-
-        double slowestTcf = body.hasNonNull("slowestTcf")
-            ? body.path("slowestTcf").asDouble()
-            : slowestEntrantTcf(raceId);
-
-        LocalTime earliest = race.earliestStart() != null
-            ? race.earliestStart() : LocalTime.parse(alg.earliestStart());
-        LocalTime sunset = sunsetFor(alg, race);
-
-        CoursePlan plan = computeCoursePlan(alg.v0knots(), duration,
-            alg.limitBySunset(), earliest, sunset, slowestTcf);
-
-        writeJson(resp, mapOf(
-            "raceId", raceId,
-            "requestedDurationMinutes", duration,
-            "effectiveDurationMinutes", plan.effectiveDurationMinutes(),
-            "limitedBySunset", plan.limitedBySunset(),
-            "sunsetLocal", sunset == null ? null
-                : String.format("%02d:%02d", sunset.getHour(), sunset.getMinute()),
-            "v0knots", alg.v0knots(),
-            "slowestTcf", slowestTcf,
-            "courseLengthNm", plan.courseLengthNm()));
-    }
-
-    private double slowestEntrantTcf(String raceId)
-    {
-        RaceEntrants e = store.entrants(raceId);
-        if (e == null)
-            return 1.0;
-        return e.entrants().stream().mapToDouble(Entrant::tcf).min().orElse(1.0);
+        if (sunset == null || earliestStart == null)
+            return requested;
+        long available = java.time.Duration.between(earliestStart, sunset).toMinutes();
+        return requested > available ? (int)Math.max(0, available) : requested;
     }
 
     private LocalTime sunsetFor(JinxConfig.Algorithm alg, Race race)
@@ -1231,10 +1222,6 @@ public class ApiServlet extends HttpServlet
     }
 
     /** The (possibly sunset-capped) duration and the course length it implies. */
-    record CoursePlan(int effectiveDurationMinutes, boolean limitedBySunset, double courseLengthNm)
-    {
-    }
-
     /**
      * Pure course-length calculation. A boat's predicted speed is
      * {@code TCF × v0Knots}, so over {@code t} hours it sails
@@ -1247,25 +1234,6 @@ public class ApiServlet extends HttpServlet
      * where it is already dark at the start — the cap still engages, clamped to
      * zero and flagged, rather than silently doing nothing.
      */
-    static CoursePlan computeCoursePlan(double v0Knots, int requestedDurationMinutes,
-                                        boolean limitBySunset, LocalTime earliestStart,
-                                        LocalTime sunset, double slowestTcf)
-    {
-        int effective = requestedDurationMinutes;
-        boolean limited = false;
-        if (limitBySunset && sunset != null && earliestStart != null)
-        {
-            long maxMinutes = java.time.Duration.between(earliestStart, sunset).toMinutes();
-            if (effective > maxMinutes)
-            {
-                effective = (int)Math.max(0, maxMinutes);
-                limited = true;
-            }
-        }
-        double nm = slowestTcf * v0Knots * (effective / 60.0);
-        return new CoursePlan(effective, limited, Math.round(nm * 10.0) / 10.0);
-    }
-
     // --- Handicaps -----------------------------------------------------------
 
     /**
@@ -1336,7 +1304,7 @@ public class ApiServlet extends HttpServlet
         }
 
         Race forEngine = new Race(raceId, race == null ? null : race.seriesId(), 0, "",
-            null, null, tTarget, null, false);
+            null, null, tTarget, false);
         List<Adjustment> adjustments =
             new PursuitHandicapEngine(alg).processResults(boats, forEngine, results);
 
@@ -1415,7 +1383,7 @@ public class ApiServlet extends HttpServlet
         {
             for (Entrant e : current.entrants())
             {
-                if (!e.scoresHandicap())
+                if (!e.seedsNextRace())
                     continue;
                 Double tcf = newTcfs.get(e.boatId());
                 carried.add(new Entrant(e.boatId(), e.sailNumber(), e.name(), e.division(),
@@ -1483,7 +1451,6 @@ public class ApiServlet extends HttpServlet
         m.put("date", r.date() == null ? null : r.date().toString());
         m.put("earliestStart", r.earliestStart() == null ? null : r.earliestStart().toString());
         m.put("targetElapsedMinutes", r.targetElapsedMinutes());
-        m.put("courseLengthNm", r.courseLengthNm());
         m.put("abandoned", r.abandoned());
         return m;
     }

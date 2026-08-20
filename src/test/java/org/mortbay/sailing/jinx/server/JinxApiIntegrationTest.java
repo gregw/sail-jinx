@@ -23,6 +23,7 @@ import static org.hamcrest.Matchers.closeTo;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 
@@ -268,25 +269,6 @@ class JinxApiIntegrationTest
     }
 
     @Test
-    void coursePlanSizesTheCourseFromTheSlowestEntrant() throws Exception
-    {
-        String seriesId = createSeries("S");
-        String fast = createBoat("AUS9", "Quick Silver");
-        String slow = createBoat("A123", "Slow Poke");
-        putRoster(seriesId, fast, 1.0450, slow, 0.8000);
-        String raceId = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
-
-        JsonNode plan = post("/api/races/" + raceId + "/course-plan",
-            "{\"targetElapsedMinutes\":90}");
-
-        assertThat(plan.path("slowestTcf").asDouble(), closeTo(0.8000, 1e-9));
-        // 0.8 × 5.5 × 1.5 h = 6.6 nm
-        assertThat(plan.path("courseLengthNm").asDouble(), closeTo(6.6, 1e-9));
-        assertThat(plan.path("limitedBySunset").asBoolean(), is(false));
-    }
-
-    @Test
     void capturedTimesRoundTrip() throws Exception
     {
         String seriesId = createSeries("S");
@@ -503,9 +485,8 @@ class JinxApiIntegrationTest
         putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
-        JsonNode plan = post("/api/races/" + raceId + "/course-plan", "{}");
-        assertThat(plan.path("v0knots").asDouble(), closeTo(6.5, 1e-9));
-        assertThat(plan.path("requestedDurationMinutes").asInt(), equalTo(60));
+        JsonNode sheet = post("/api/races/" + raceId + "/start-times", "{}").path("startSheet");
+        assertThat(sheet.path("targetElapsedMinutes").asInt(), equalTo(60));
     }
 
     @Test
@@ -566,6 +547,108 @@ class JinxApiIntegrationTest
         assertThat(bundle.path("startSheet").path("starts").size(), equalTo(1));
         assertThat(bundle.path("times").path("times").path(boatId).path("finish").asText(),
             equalTo("19:30:00"));
+    }
+
+    @Test
+    void aCasualIsNotSeededIntoTheNextRace() throws Exception
+    {
+        // It sailed tonight and its handicap moves like anyone else's, but it turned up
+        // once — seeding it would put a boat nobody expects on next week's start sheet.
+        String seriesId = createSeries("Twilight");
+        String rostered = createBoat("AUS9", "Quick Silver");
+        putRoster(seriesId, rostered, 1.0);
+        String race1 = createRace(seriesId, "2026-06-05");
+        String race2 = createRace(seriesId, "2026-06-12");
+        post("/api/races/" + race1 + "/entrants/seed", "{}");
+
+        String visitor = createBoat("MYC99", "Passing Through");
+        post("/api/races/" + race1 + "/entrants", """
+            {"entrants":[{"boatId":"%s","tcf":1.0,"entryType":"ROSTER"},
+                         {"boatId":"%s","tcf":0.95,"entryType":"CASUAL"}]}"""
+            .formatted(rostered, visitor));
+        assertThat(get("/api/races/" + race1).path("entrants").path("entrants").size(),
+            equalTo(2));
+
+        // Both are scored; only the roster boat is carried.
+        post("/api/races/" + race1 + "/save-handicaps", """
+            {"adjustments":[
+              {"boatId":"%s","finishPosition":1,"penaltyMinutes":6.0,"rewardMinutes":3.0,
+               "netAdjustmentMinutes":3.0,"oldTcf":1.0,"newTcf":1.03},
+              {"boatId":"%s","finishPosition":2,"penaltyMinutes":4.0,"rewardMinutes":7.0,
+               "netAdjustmentMinutes":-3.0,"oldTcf":0.95,"newTcf":0.92}]}"""
+            .formatted(rostered, visitor));
+
+        JsonNode next = get("/api/races/" + race2).path("entrants").path("entrants");
+        assertThat(next.size(), equalTo(1));
+        assertThat(next.get(0).path("boatId").asText(), equalTo(rostered));
+    }
+
+    @Test
+    void aCasualIsNotCarriedBySeedingFromThePreviousRaceEither() throws Exception
+    {
+        String seriesId = createSeries("Twilight");
+        String rostered = createBoat("AUS9", "Quick Silver");
+        String visitor = createBoat("MYC99", "Passing Through");
+        putRoster(seriesId, rostered, 1.0);
+        String race1 = createRace(seriesId, "2026-06-05");
+        String race2 = createRace(seriesId, "2026-06-12");
+        post("/api/races/" + race1 + "/entrants/seed", "{}");
+        post("/api/races/" + race1 + "/entrants", """
+            {"entrants":[{"boatId":"%s","tcf":1.0,"entryType":"ROSTER"},
+                         {"boatId":"%s","tcf":0.95,"entryType":"CASUAL"}]}"""
+            .formatted(rostered, visitor));
+
+        JsonNode seeded = post("/api/races/" + race2 + "/entrants/seed", "{}").path("entrants");
+        assertThat(seeded.path("entrants").size(), equalTo(1));
+        assertThat(seeded.path("entrants").get(0).path("boatId").asText(), equalTo(rostered));
+    }
+
+    @Test
+    void startTimesReportWhetherSunsetCappedTheTarget() throws Exception
+    {
+        String seriesId = createSeries("Twilight");
+        String boatId = createBoat("AUS9", "Quick Silver");
+        putRoster(seriesId, boatId, 1.0);
+        // A summer date, so there is daylight after 18:00 to be capped into. A winter
+        // one has none at all and is refused instead — see the test below.
+        String raceId = createRace(seriesId, "2026-01-15");
+        post("/api/races/" + raceId + "/entrants/seed", "{}");
+
+        // Off by default: an unasked-for cap would silently shorten races.
+        JsonNode uncapped = post("/api/races/" + raceId + "/start-times",
+            "{\"targetElapsedMinutes\":300,\"earliestStart\":\"18:00\"}");
+        assertThat(uncapped.path("limitedBySunset").asBoolean(), is(false));
+        assertThat(uncapped.path("startSheet").path("targetElapsedMinutes").asInt(), equalTo(300));
+
+        post("/api/series/" + seriesPath(seriesId) + "/config",
+            "{\"limitBySunset\":true,\"latitude\":-33.8,\"longitude\":151.2833}");
+
+        // Five hours from 18:00 is well past a Sydney June sunset, so it is cut back.
+        JsonNode capped = post("/api/races/" + raceId + "/start-times",
+            "{\"targetElapsedMinutes\":300,\"earliestStart\":\"18:00\"}");
+        assertThat(capped.path("limitedBySunset").asBoolean(), is(true));
+        assertThat(capped.path("sunsetLocal").asText().isEmpty(), is(false));
+        assertThat(capped.path("startSheet").path("targetElapsedMinutes").asInt(),
+            lessThan(300));
+    }
+
+    @Test
+    void aDateWithNoDaylightAfterTheStartIsRefused() throws Exception
+    {
+        // Capping to nought minutes would produce a start sheet with every boat on the
+        // same gun. The race as described cannot be sailed, so say so.
+        String seriesId = createSeries("Twilight");
+        String boatId = createBoat("AUS9", "Quick Silver");
+        putRoster(seriesId, boatId, 1.0);
+        post("/api/series/" + seriesPath(seriesId) + "/config",
+            "{\"limitBySunset\":true,\"latitude\":-33.8,\"longitude\":151.2833}");
+        String raceId = createRace(seriesId, "2026-06-21");
+        post("/api/races/" + raceId + "/entrants/seed", "{}");
+
+        HttpResponse<String> r = postRaw("/api/races/" + raceId + "/start-times",
+            "{\"targetElapsedMinutes\":90,\"earliestStart\":\"18:00\"}");
+        assertThat(r.statusCode(), equalTo(400));
+        assertThat(r.body(), containsString("no daylight"));
     }
 
     // --- fleet import (sailing-pf export) ------------------------------------
@@ -778,6 +861,14 @@ class JinxApiIntegrationTest
         }
         sb.append("]}");
         post("/api/series/" + seriesId + "/roster", sb.toString());
+    }
+
+    /** Series ids carry a slash; encode each segment and keep the separator. */
+    private static String seriesPath(String id)
+    {
+        return java.util.Arrays.stream(id.split("/"))
+            .map(x -> java.net.URLEncoder.encode(x, java.nio.charset.StandardCharsets.UTF_8))
+            .reduce((a, b) -> a + "/" + b).orElse("");
     }
 
     private JsonNode importFleet(String json) throws Exception

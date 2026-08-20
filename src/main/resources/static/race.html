@@ -27,13 +27,9 @@
       <input id="f-earliest" placeholder="18:00">
 
       <label for="f-target">Target elapsed (min)</label>
-      <input id="f-target" type="number" min="1">
-
-      <label for="f-course">Course length (nm)</label>
       <span>
-        <input id="f-course" type="number" step="0.1" min="0">
-        <button id="calc-course-btn" type="button">Calculate</button>
-        <span id="course-note" class="hint"></span>
+        <input id="f-target" type="number" min="1">
+        <span id="target-note" class="hint"></span>
       </span>
     </div>
     <div class="toolbar">
@@ -243,6 +239,19 @@
       render: e => esc(e.name || '')
         + (e.entryType === 'ONE_OFF' ? ' <span class="tag" title="Not in the register">one-off</span>' : '')
         + (e.entryType === 'CASUAL' ? ' <span class="tag">casual</span>' : '') },
+    { key: 'casual', label: 'Casual', sortable: false,
+      // A casual sailed tonight and has its handicap adjusted like anyone else, but it
+      // is not seeded into the next race — a boat nobody expects appearing on a printed
+      // start sheet is worse than two clicks to add it again.
+      get: e => e.entryType === 'ROSTER' ? 0 : 1,
+      render: e => {
+        if (e.entryType === 'ONE_OFF')
+          return '<span class="tag" title="Not in the register — never seeded">one-off</span>';
+        if (locked) return e.entryType === 'CASUAL' ? '✓' : '';
+        return '<input type="checkbox" class="casual-input" data-id="' + esc(e.boatId) + '"'
+          + (e.entryType === 'CASUAL' ? ' checked' : '')
+          + ' title="Casual — will not be seeded into the next race">';
+      } },
     { key: 'tcf', label: 'TCF', cls: 'num-cell',
       get: e => tcfOf(e),
       render: e => {
@@ -463,6 +472,14 @@
         const e = entrants.find(x => String(x.boatId) === input.dataset.id);
         input.value = input.dataset.field === 'finish' ? finishPrefix(e) : startPrefix(e);
         input.setSelectionRange(input.value.length, input.value.length);
+      };
+    });
+    document.querySelectorAll('.casual-input').forEach(cb => {
+      cb.onchange = () => {
+        const e = entrants.find(x => String(x.boatId) === cb.dataset.id);
+        if (!e) return;
+        e.entryType = cb.checked ? 'CASUAL' : 'ROSTER';
+        touched();
       };
     });
     document.querySelectorAll('.tcf-input').forEach(input => {
@@ -904,27 +921,13 @@
       name: bundle.race.name,
       date: bundle.race.date,
       earliestStart: document.getElementById('f-earliest').value.trim(),
-      targetElapsedMinutes: Number(document.getElementById('f-target').value) || null,
-      courseLengthNm: Number(document.getElementById('f-course').value) || null
+      targetElapsedMinutes: Number(document.getElementById('f-target').value) || null
     });
     if (!r.ok) { setMsg('setup-msg', 'Could not save: ' + errorOf(r)); return; }
     await load();
     setMsg('setup-msg', 'Setup saved.');
   }
 
-  async function calcCourse() {
-    const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/course-plan', {
-      targetElapsedMinutes: Number(document.getElementById('f-target').value) || null
-    });
-    if (!r.ok) { setMsg('course-note', 'Could not calculate: ' + errorOf(r)); return; }
-    document.getElementById('f-course').value = r.body.courseLengthNm;
-    let note = 'slowest TCF ' + fmtTcf(r.body.slowestTcf) + ' at V₀ ' + r.body.v0knots + ' kn';
-    if (r.body.limitedBySunset) {
-      note += ' — capped to ' + r.body.effectiveDurationMinutes
-        + ' min by sunset at ' + r.body.sunsetLocal;
-    }
-    setMsg('course-note', note);
-  }
 
   async function computeStartTimes() {
     if (bundle.startSheet && !confirm(
@@ -935,7 +938,10 @@
     });
     if (!r.ok) { setMsg('setup-msg', 'Could not compute: ' + errorOf(r)); return; }
     await load();
-    setMsg('setup-msg', 'Start times computed — print the start sheet.');
+    setMsg('setup-msg', r.body.limitedBySunset
+      ? 'Start times computed — target capped to '
+        + r.body.startSheet.targetElapsedMinutes + ' min by sunset at ' + r.body.sunsetLocal + '.'
+      : 'Start times computed — print the start sheet.');
   }
 
   // --- handicaps -------------------------------------------------------------
@@ -1022,8 +1028,7 @@
 
     document.getElementById('f-earliest').value = (r.earliestStart || '').slice(0, 5);
     document.getElementById('f-target').value = r.targetElapsedMinutes ?? '';
-    document.getElementById('f-course').value = r.courseLengthNm ?? '';
-    ['f-earliest', 'f-target', 'f-course'].forEach(id => {
+    ['f-earliest', 'f-target'].forEach(id => {
       document.getElementById(id).disabled = locked;
     });
     document.getElementById('save-setup-btn').disabled = locked;
@@ -1040,6 +1045,23 @@
       location.search = '?raceId=' + encodeURIComponent(bundle.previousRaceId);
     document.getElementById('next-btn').onclick = () =>
       location.search = '?raceId=' + encodeURIComponent(bundle.nextRaceId);
+
+    // The sunset cap is only meaningful if the series asks for it, and it is worth
+    // seeing before the start times are computed rather than after.
+    const note = document.getElementById('target-note');
+    if (bundle.sunsetLocal) {
+      const target = Number(document.getElementById('f-target').value) || 0;
+      const earliest = parseTime((r.earliestStart || '').slice(0, 5) + ':00');
+      const sunset = parseTime(bundle.sunsetLocal + ':00');
+      const available = (earliest != null && sunset != null)
+        ? Math.round((sunset - earliest) / 60) : null;
+      note.textContent = 'sunset ' + bundle.sunsetLocal
+        + (available == null ? ''
+           : ' — ' + available + ' min of daylight'
+             + (target > available ? ', so this will be capped' : ''));
+    } else {
+      note.textContent = '';
+    }
 
     document.getElementById('unlock-btn').style.display = locked ? '' : 'none';
     document.getElementById('process-btn').disabled = locked;
@@ -1145,7 +1167,6 @@
     document.getElementById('save-btn').onclick = doSave;
     document.getElementById('reset-btn').onclick = () => { sessionClear(); load(); };
     document.getElementById('save-setup-btn').onclick = saveSetup;
-    document.getElementById('calc-course-btn').onclick = calcCourse;
     document.getElementById('start-times-btn').onclick = computeStartTimes;
     document.getElementById('process-btn').onclick = processHandicaps;
     document.getElementById('save-handicaps-btn').onclick = saveHandicaps;

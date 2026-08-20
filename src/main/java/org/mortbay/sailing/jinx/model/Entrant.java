@@ -86,11 +86,27 @@ public record Entrant(
     }
 
     /**
-     * True when this entrant's TCF should be carried into the next race by the
-     * handicap engine. False for one-offs: there is nothing to carry it to.
+     * True when this entrant's handicap should be adjusted by the race it just sailed.
+     * False only for one-offs: they have no register boat for a new TCF to belong to.
+     *
+     * <p>A casual <em>does</em> score — it sailed the race like everybody else. What it
+     * does not do is come back automatically; see {@link #seedsNextRace()}.
      */
     public boolean scoresHandicap()
     {
         return boatId != null && entryType != EntryType.ONE_OFF;
+    }
+
+    /**
+     * True when this entrant should be carried into the next race automatically.
+     *
+     * <p>Only boats on the series roster. A casual turned up this week and may not next
+     * week, so seeding it would put a boat on the start sheet that nobody expects — and
+     * the RO would have to notice and remove it every time. Adding it again takes two
+     * clicks; explaining a phantom entry on a printed start sheet does not.
+     */
+    public boolean seedsNextRace()
+    {
+        return boatId != null && entryType == EntryType.ROSTER;
     }
 }

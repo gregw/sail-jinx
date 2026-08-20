@@ -225,6 +225,30 @@ Two more things that are easy to get wrong:
    saved adjustments; unlocking is deleting them. There is no status field, and
    there should not be one — the v1 field was sticky and lied.
 
+### What the race actually needs
+
+`targetElapsedMinutes` and `earliestStart` are the only per-race inputs. There is
+**no course length**: what the RO lays on the water is a judgement from the
+breeze, and recording a figure the app cannot verify would be a second, quietly
+wrong answer to "how long is this race meant to take".
+
+The **sunset cap** (`limitBySunset`, per series) therefore applies to the target
+duration, at the moment start times are computed — it depends on the race date
+and the earliest start, both of which can change until then. When sunset falls at
+or before the earliest start the computation is **refused**, not capped to zero: a
+nought-minute target would emit a start sheet with every boat on the same gun.
+
+### Casual entrants
+
+`Entrant.EntryType` drives two different questions, and they have different
+answers:
+
+- `scoresHandicap()` — does this race adjust its TCF? True for ROSTER and CASUAL;
+  they both sailed. False for ONE_OFF, which has no register boat.
+- `seedsNextRace()` — is it carried into the next race automatically? **Only
+  ROSTER.** A casual turned up once, and a boat nobody expects appearing on a
+  printed start sheet costs more than the two clicks to add it again.
+
 TCFs are held to four decimal places (`model/Tcf.java`), rounded half-up, at
 every point one is recorded. They get read aloud and retyped; a value that
 renders differently each time cannot survive that.
@@ -242,7 +266,7 @@ for the full list. The shape worth knowing:
 | POST | `/api/boats/import` | load the fleet from a sailing-pf export (`?dryRun=true` previews) |
 | POST | `/api/races/{id}/entrants/import` | add entrants from the same export, with TCFs |
 | POST | `/api/races/{id}/entrants/seed` | seed from the roster or the previous race |
-| POST | `/api/races/{id}/start-times` | compute and publish the stagger |
+| POST | `/api/races/{id}/start-times` | compute and publish the stagger (applies the sunset cap) |
 | POST | `/api/races/{id}/process-handicaps` | run the engine (computes, saves nothing) |
 | POST | `/api/races/{id}/save-handicaps` | save, and carry TCFs to the next race |
 | DELETE | `/api/races/{id}/adjustments` | unlock for reprocessing |

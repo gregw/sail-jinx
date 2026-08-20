@@ -379,3 +379,7 @@ td.id-cell { color: var(--muted); font-size: 0.82em; }
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
 }
 #import-panel h3 { margin-top: 1rem; }
+
+/* The printed sheets sort on screen; the header affordance is not worth ink. */
+@media print { table.report-table th.sortable { cursor: auto; } }
+table.report-table th.sortable:hover { background: var(--surface-alt); color: var(--brand); }

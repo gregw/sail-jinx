@@ -111,7 +111,7 @@ class JsonStoreTest
         JsonStore first = new JsonStore(tmp);
         first.start();
         first.putRace(new Race("r-1", "s-1", 6, "Twilight R06",
-            LocalDate.of(2026, 6, 5), LocalTime.of(18, 0), 60, 5.4, false));
+            LocalDate.of(2026, 6, 5), LocalTime.of(18, 0), 60, false));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
@@ -121,7 +121,6 @@ class JsonStoreTest
         assertThat(read.date(), equalTo(LocalDate.of(2026, 6, 5)));
         assertThat(read.earliestStart(), equalTo(LocalTime.of(18, 0)));
         assertThat(read.targetElapsedMinutes(), equalTo(60));
-        assertThat(read.courseLengthNm(), equalTo(5.4));
         assertThat(read.abandoned(), is(false));
     }
 
@@ -131,13 +130,13 @@ class JsonStoreTest
         JsonStore store = new JsonStore(tmp);
         store.start();
         store.putRace(new Race("r-3", "s-1", 3, "R3", LocalDate.of(2026, 6, 19),
-            LocalTime.of(18, 0), 60, null, false));
+            LocalTime.of(18, 0), 60, false));
         store.putRace(new Race("r-1", "s-1", 1, "R1", LocalDate.of(2026, 6, 5),
-            LocalTime.of(18, 0), 60, null, false));
+            LocalTime.of(18, 0), 60, false));
         store.putRace(new Race("r-2", "s-1", 2, "R2", LocalDate.of(2026, 6, 12),
-            LocalTime.of(18, 0), 60, null, false));
+            LocalTime.of(18, 0), 60, false));
         store.putRace(new Race("x-1", "s-2", 1, "Other series", LocalDate.of(2026, 6, 6),
-            LocalTime.of(14, 0), 90, null, false));
+            LocalTime.of(14, 0), 90, false));
 
         assertThat(store.racesInSeries("s-1").stream().map(Race::id).toList(),
             contains("r-1", "r-2", "r-3"));
@@ -155,9 +154,9 @@ class JsonStoreTest
         JsonStore store = new JsonStore(tmp);
         store.start();
         store.putRace(new Race("r-1", "s-1", 1, "R1", LocalDate.of(2026, 6, 5),
-            LocalTime.of(18, 0), 60, null, false));
+            LocalTime.of(18, 0), 60, false));
         store.putRace(new Race("r-2", "s-1", 2, "R2", LocalDate.of(2026, 6, 12),
-            LocalTime.of(18, 0), 60, null, false));
+            LocalTime.of(18, 0), 60, false));
 
         assertThat(store.nextRaceInSeries("r-1").map(Race::id).orElse(null), equalTo("r-2"));
         assertThat(store.nextRaceInSeries("r-2").isPresent(), is(false));
@@ -485,7 +484,7 @@ class JsonStoreTest
         store.start();
         store.putBoat(boat("b-1", "AUS1", "Flashpoint", 1.0));
         store.putRace(new Race("r-1", "s-1", 1, "R1", LocalDate.of(2026, 6, 5),
-            LocalTime.of(18, 0), 60, null, false));
+            LocalTime.of(18, 0), 60, false));
         store.putRaceTimes("r-1", new RaceTimes("r-1", List.of(), null, Map.of()));
 
         try (var walk = Files.walk(tmp))
