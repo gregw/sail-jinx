@@ -74,7 +74,35 @@
       <button id="add-new-btn" type="button" disabled>Add &amp; register</button>
       <button id="add-oneoff-btn" type="button" disabled>One-off only</button>
       <button id="add-clear-btn" type="button">Clear</button>
+      <button id="import-btn" type="button">Add entrants from JSON</button>
       <span id="add-msg" class="hint"></span>
+    </div>
+
+    <div id="import-panel" style="display:none;">
+      <h3>Add entrants from a sailing-pf export</h3>
+      <p class="lead">
+        Takes a <code>handicaps-YYYY-MM-DD.json</code> file. Each boat's
+        <strong>handicap becomes its TCF for this race</strong> and its variant sets
+        spinnaker — this is the import that carries the numbers.
+      </p>
+      <p class="hint" style="max-width:60rem;">
+        Boats are matched by id first, then through the alias file; anything unknown is
+        added to the register. Boats already entered have their TCF updated and keep their
+        place, and boats missing from the file are left alone — a handicap export does not
+        say who is racing tonight.
+      </p>
+      <div class="toolbar">
+        <input type="file" id="import-file" accept=".json,application/json">
+      </div>
+      <textarea id="import-text" rows="6" spellcheck="false"
+        placeholder='[{"boatId":"5656-mondo-sydney38","sailno":"5656","name":"MONDO","handicap":1.0809,"variant":"spin"}]'></textarea>
+      <div class="toolbar">
+        <button id="import-preview" type="button">Preview</button>
+        <button id="import-apply" class="primary" type="button">Add entrants</button>
+        <button id="import-close" type="button">Close</button>
+        <span id="import-msg" class="hint"></span>
+      </div>
+      <div id="import-report"></div>
     </div>
   </section>
 
@@ -752,6 +780,73 @@
       + ' — it carries no handicap forward.');
   }
 
+  // --- entrants from a sailing-pf export -------------------------------------
+
+  function setImportMsg(text) {
+    document.getElementById('import-msg').textContent = text;
+  }
+
+  async function runEntrantImport(dryRun) {
+    const json = document.getElementById('import-text').value;
+    if (!json.trim()) { setImportMsg('Nothing to import.'); return; }
+    // The import writes entrants server-side, so anything unsaved here would be
+    // overwritten by the reload that follows.
+    if (!dryRun && isDirty()
+        && !confirm('There are unsaved changes on this page. Import anyway? '
+          + 'Your unsaved edits will be discarded.')) return;
+
+    setImportMsg(dryRun ? 'Checking…' : 'Importing…');
+    const r = await fetchJson(
+      '/api/races/' + encodeURIComponent(raceId) + '/entrants/import'
+        + (dryRun ? '?dryRun=true' : ''),
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json });
+    if (!r.ok) { setImportMsg('Import failed: ' + errorOf(r)); return; }
+
+    renderImportReport(r.body, dryRun);
+    setImportMsg(dryRun ? 'Preview only — nothing saved.'
+      : 'Done — ' + r.body.entrants + ' entrants in this race.');
+    if (!dryRun) { sessionClear(); await load(); renderImportReport(r.body, false); }
+  }
+
+  function renderImportReport(report, dryRun) {
+    const parts = [];
+    if ((report.problems || []).length) {
+      parts.push('<div class="banner banner-warn"><strong>Problems</strong><ul>'
+        + report.problems.map(p => '<li>' + esc(p) + '</li>').join('') + '</ul></div>');
+    }
+    const tally = report.tally || {};
+    const counts = Object.keys(tally).map(k => tally[k] + ' ' + k.toLowerCase());
+    if (counts.length) {
+      parts.push('<div class="banner ' + (tally.CONFLICT ? 'banner-warn' : 'banner-ok') + '">'
+        + esc(counts.join(', ')) + '</div>');
+    }
+    const rows = report.rows || [];
+    if (rows.length) {
+      parts.push('<table><thead><tr><th class="num-cell">#</th><th>Sail #</th><th>Name</th>'
+        + '<th class="num-cell">TCF</th><th>Result</th></tr></thead><tbody>'
+        + rows.map(row =>
+            '<tr' + (row.outcome === 'CONFLICT' ? ' class="conflict-row"' : '') + '>'
+            + '<td class="num-cell">' + esc(row.index) + '</td>'
+            + '<td class="mono">' + esc(row.sailNumber) + '</td>'
+            + '<td>' + esc(row.name) + '</td>'
+            + '<td class="num-cell mono">' + esc(fmtTcf(row.tcf)) + '</td>'
+            + '<td>' + esc(importLabel(row, dryRun))
+              + (row.note ? ' <span class="hint">' + esc(row.note) + '</span>' : '')
+            + '</td></tr>').join('')
+        + '</tbody></table>');
+    }
+    document.getElementById('import-report').innerHTML = parts.join('');
+  }
+
+  function importLabel(row, dryRun) {
+    if (dryRun || row.outcome === 'PREVIEW') return 'will be entered';
+    if (row.outcome === 'CONFLICT') return 'needs a decision';
+    const boat = { CREATED: 'new boat', UPGRADED: 'design added',
+                   ALIASED: 'matched under another name' }[row.outcome];
+    const entered = row.entered === 'updated' ? 'TCF updated' : 'entered';
+    return boat ? entered + ', ' + boat : entered;
+  }
+
   // --- save ------------------------------------------------------------------
 
   function updateSaveBar() {
@@ -995,6 +1090,7 @@
     document.getElementById('race-entrants').style.display = '';
     document.getElementById('handicap-panel').style.display = '';
     document.getElementById('add-entrant-bar').style.display = locked ? 'none' : '';
+    if (locked) document.getElementById('import-panel').style.display = 'none';
 
     if (!entrants.length) {
       setCtrlMsg('banner-warn', 'This race has no entrants yet.');
@@ -1071,6 +1167,21 @@
     document.getElementById('add-new-btn').onclick = onAddNew;
     document.getElementById('add-oneoff-btn').onclick = onAddOneOff;
     document.getElementById('add-clear-btn').onclick = clearAddFields;
+    document.getElementById('import-btn').onclick = () => {
+      const panel = document.getElementById('import-panel');
+      panel.style.display = panel.style.display === 'none' ? '' : 'none';
+    };
+    document.getElementById('import-close').onclick = () => {
+      document.getElementById('import-panel').style.display = 'none';
+    };
+    document.getElementById('import-file').onchange = async (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      document.getElementById('import-text').value = await file.text();
+      setImportMsg(file.name + ' loaded — preview it before importing.');
+    };
+    document.getElementById('import-preview').onclick = () => runEntrantImport(true);
+    document.getElementById('import-apply').onclick = () => runEntrantImport(false);
 
     window.addEventListener('beforeunload', (ev) => {
       if (isDirty()) { ev.preventDefault(); ev.returnValue = ''; }

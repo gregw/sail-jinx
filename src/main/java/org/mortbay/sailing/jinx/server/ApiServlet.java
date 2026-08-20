@@ -24,8 +24,8 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.mortbay.sailing.jinx.config.JinxConfig;
-import org.mortbay.sailing.jinx.identity.BoatCsv;
 import org.mortbay.sailing.jinx.identity.BoatRegistry;
+import org.mortbay.sailing.jinx.identity.FleetJson;
 import org.mortbay.sailing.jinx.identity.IdGenerator;
 import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.AuditEntry;
@@ -60,8 +60,7 @@ import org.slf4j.LoggerFactory;
  *   GET    /api/boats                         the fleet register
  *   GET    /api/designs                       hull types, learned from boat entry
  *   POST   /api/boats                         create or update a boat
- *   POST   /api/boats/import                  bulk-load the fleet from CSV
- *                                             (?seriesId= also builds that roster)
+ *   POST   /api/boats/import                  load the fleet from a sailing-pf export
  *   GET    /api/series                        all series
  *   POST   /api/series                        create or update a series
  *   GET    /api/series/{id}/config            per-series algorithm settings
@@ -73,6 +72,7 @@ import org.slf4j.LoggerFactory;
  *   GET    /api/races/{id}                    everything the race page needs, in one call
  *   POST   /api/races/{id}/entrants           replace the entrant list
  *   POST   /api/races/{id}/entrants/seed      seed entrants from the roster or the previous race
+ *   POST   /api/races/{id}/entrants/import    add entrants from a sailing-pf export
  *   POST   /api/races/{id}/start-times        compute and publish the pursuit start sheet
  *   GET    /api/races/{id}/times              RO-captured came / start / finish
  *   POST   /api/races/{id}/times              save them
@@ -103,6 +103,7 @@ public class ApiServlet extends HttpServlet
     private static final Pattern RACE = Pattern.compile("/races/([^/]+)");
     private static final Pattern RACE_ENTRANTS = Pattern.compile("/races/([^/]+)/entrants");
     private static final Pattern RACE_ENTRANTS_SEED = Pattern.compile("/races/([^/]+)/entrants/seed");
+    private static final Pattern RACE_ENTRANTS_IMPORT = Pattern.compile("/races/([^/]+)/entrants/import");
     private static final Pattern RACE_START_TIMES = Pattern.compile("/races/([^/]+)/start-times");
     private static final Pattern RACE_TIMES = Pattern.compile("/races/([^/]+)/times");
     private static final Pattern RACE_COURSE_PLAN = Pattern.compile("/races/([^/]+)/course-plan");
@@ -226,6 +227,8 @@ public class ApiServlet extends HttpServlet
         // Longest patterns first: /entrants/seed would otherwise be shadowed.
         if ((m = RACE_ENTRANTS_SEED.matcher(path)).matches())
             handleSeedEntrants(resp, m.group(1));
+        else if ((m = RACE_ENTRANTS_IMPORT.matcher(path)).matches())
+            handleImportEntrants(req, resp, m.group(1));
         else if ((m = RACE_ENTRANTS.matcher(path)).matches())
             handleSaveEntrants(req, resp, m.group(1));
         else if ((m = RACE_START_TIMES.matcher(path)).matches())
@@ -384,118 +387,228 @@ public class ApiServlet extends HttpServlet
      * were — the ones that conflicted, the ones matched under another name, and the
      * columns that were not understood.
      */
+    /**
+     * Load the fleet from a sailing-pf export (see {@link FleetJson}). Body is the file's
+     * text, either as {@code application/json} or wrapped as {@code {"json": "..."}}.
+     *
+     * <p><b>Handicap and variant are ignored here.</b> Neither is a property of a boat —
+     * a handicap belongs to a series entry, and so does a spinnaker choice — so this
+     * endpoint takes identity only. The race-entrants import is where those land.
+     *
+     * <p>Every row goes through {@link BoatRegistry}, so importing the same file twice
+     * matches rather than duplicating, a boat held without a design is upgraded from the
+     * design carried in the export's id, and a sail number or name that has since changed
+     * resolves through {@code aliases.yaml}.
+     *
+     * <p>Returns a per-row report rather than a count: a fleet export always has a
+     * surprise in it, and the useful answer is which rows they were.
+     */
     private void handleImportBoats(HttpServletRequest req, HttpServletResponse resp)
         throws Exception
     {
         requireAdmin(resp);
-        String body = new String(req.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        String csv = body;
-        if (body.stripLeading().startsWith("{"))
-            csv = MAPPER.readTree(body).path("csv").asText("");
-
-        BoatCsv.Parsed parsed = BoatCsv.parse(csv);
+        FleetJson.Parsed parsed = FleetJson.parse(importBody(req));
         boolean dryRun = "true".equalsIgnoreCase(req.getParameter("dryRun"));
-        String seriesId = req.getParameter("seriesId");
-        if (seriesId != null && !store.series().containsKey(seriesId))
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        Map<String, Integer> tally = new LinkedHashMap<>();
+        for (FleetJson.Row row : parsed.rows())
         {
-            badRequest(resp, "unknown series: " + seriesId);
-            return;
+            Map<String, Object> out = rowHeader(row);
+            if (dryRun)
+            {
+                Boat known = resolveExisting(row);
+                out.put("outcome", "PREVIEW");
+                out.put("boatId", known == null ? null : known.id());
+            }
+            else
+            {
+                applyRow(row, out, tally);
+            }
+            results.add(out);
         }
 
-        // Roster entries are collected and written once at the end, so a failure part way
-        // through the list cannot leave a half-built roster.
-        Map<String, Roster.Entry> roster = new LinkedHashMap<>();
-        if (seriesId != null)
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("ok", parsed.problems().isEmpty());
+        report.put("dryRun", dryRun);
+        report.put("rows", results);
+        report.put("tally", tally);
+        report.put("problems", parsed.problems());
+        writeJson(resp, report);
+    }
+
+    /**
+     * Add entrants to a race from the same sailing-pf export, taking each boat's handicap
+     * as its TCF for this race and its variant as its spinnaker.
+     *
+     * <p>This is the import that carries the numbers. The export is a snapshot of what the
+     * fleet is rated at, which is exactly what a race entry needs; boats not yet in the
+     * register are added to it as a side effect, through the same matching.
+     *
+     * <p>Merges rather than replaces. A boat already entered has its TCF and spinnaker
+     * updated and keeps its place; boats absent from the file are left alone, because a
+     * handicap export is not a statement about who is racing tonight.
+     */
+    private void handleImportEntrants(HttpServletRequest req, HttpServletResponse resp,
+                                      String raceId) throws Exception
+    {
+        requireAdmin(resp);
+        Race race = store.races().get(raceId);
+        if (race == null)
         {
-            Roster existing = store.roster(seriesId);
-            if (existing != null)
+            resp.setStatus(404);
+            writeJson(resp, mapOf("error", "no such race: " + raceId));
+            return;
+        }
+        if (rejectIfLocked(resp, raceId))
+            return;
+
+        FleetJson.Parsed parsed = FleetJson.parse(importBody(req));
+        boolean dryRun = "true".equalsIgnoreCase(req.getParameter("dryRun"));
+
+        RaceEntrants existing = store.entrants(raceId);
+        Map<String, Entrant> byBoat = new LinkedHashMap<>();
+        List<Entrant> oneOffs = new ArrayList<>();
+        if (existing != null)
+        {
+            for (Entrant e : existing.entrants())
             {
-                for (Roster.Entry e : existing.entries())
-                    roster.put(e.boatId(), e);
+                if (e.boatId() == null)
+                    oneOffs.add(e);
+                else
+                    byBoat.put(e.boatId(), e);
             }
         }
 
         List<Map<String, Object>> results = new ArrayList<>();
         Map<String, Integer> tally = new LinkedHashMap<>();
-        boolean termsSeen = false;
-
-        for (BoatCsv.Row row : parsed.rows())
+        for (FleetJson.Row row : parsed.rows())
         {
-            if (!row.terms().isEmpty())
-                termsSeen = true;
-
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("line", row.line());
-            out.put("sailNumber", row.boat().sailNumber());
-            out.put("name", row.boat().name());
-
+            Map<String, Object> out = rowHeader(row);
+            out.put("tcf", row.handicap());
             if (dryRun)
             {
-                // Let the RO look before committing forty rows to the only copy there is.
                 out.put("outcome", "PREVIEW");
                 results.add(out);
                 continue;
             }
 
-            BoatRegistry.Resolution r = registry.findOrCreate(row.boat(), null);
-            out.put("outcome", r.outcome().name());
-            if (r.note() != null)
-                out.put("note", r.note());
-            tally.merge(r.outcome().name(), 1, Integer::sum);
-            if (r.resolved())
+            Boat boat = applyRow(row, out, tally);
+            if (boat == null)
             {
-                Boat boat = r.boat();
-                out.put("boatId", boat.id());
-                out.put("designId", boat.designId());
-                if (seriesId != null)
-                    roster.put(boat.id(),
-                        rosterEntryFor(seriesId, boat, row.terms(), roster.get(boat.id())));
+                results.add(out);
+                continue;
             }
+
+            Entrant already = byBoat.get(boat.id());
+            double tcf = row.handicap() != null ? row.handicap()
+                : (already != null ? already.tcf() : 1.0);
+            Spinnaker spinnaker = row.spinnaker() != null ? row.spinnaker()
+                : (already != null ? already.spinnaker()
+                    : defaultSpinnakerFor(race.seriesId(), boat));
+
+            byBoat.put(boat.id(), Entrant.fromBoat(boat, tcf,
+                already == null ? null : already.division(), spinnaker,
+                already != null ? already.entryType()
+                    : (boat.casual() ? Entrant.EntryType.CASUAL : Entrant.EntryType.ROSTER)));
+            out.put("entered", already == null ? "added" : "updated");
             results.add(out);
         }
 
-        if (seriesId != null && !dryRun)
-            store.putRoster(new Roster(seriesId, new ArrayList<>(roster.values())));
+        if (!dryRun)
+        {
+            List<Entrant> merged = new ArrayList<>(byBoat.values());
+            merged.addAll(oneOffs);
+            store.putEntrants(new RaceEntrants(raceId, Instant.now(),
+                RaceEntrants.TcfSource.MANUAL_EDIT,
+                existing == null ? null : existing.sourceRaceId(),
+                existing == null ? null : existing.sourceRaceNumber(),
+                merged));
+        }
 
         Map<String, Object> report = new LinkedHashMap<>();
         report.put("ok", parsed.problems().isEmpty());
         report.put("dryRun", dryRun);
-        report.put("seriesId", seriesId);
+        report.put("raceId", raceId);
         report.put("rows", results);
         report.put("tally", tally);
-        report.put("recognisedColumns", parsed.recognisedColumns());
-        report.put("ignoredColumns", parsed.ignoredColumns());
-        report.put("rosterEntries", seriesId == null ? 0 : roster.size());
-
-        List<String> problems = new ArrayList<>(parsed.problems());
-        if (termsSeen && seriesId == null)
-        {
-            problems.add("TCF / division / spinnaker columns were read but not applied: "
-                + "they are terms of a series entry, not properties of a boat. "
-                + "Re-run the import against a series to set them.");
-        }
-        report.put("problems", problems);
+        report.put("entrants", byBoat.size() + oneOffs.size());
+        report.put("problems", parsed.problems());
         writeJson(resp, report);
     }
+
+    /** The request body, whether posted raw or wrapped as a JSON object with a json field. */
+    private static String importBody(HttpServletRequest req) throws IOException
+    {
+        String body = new String(req.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        if (body.stripLeading().startsWith("{"))
+        {
+            JsonNode node = MAPPER.readTree(body);
+            if (node.hasNonNull("json"))
+                return node.path("json").asText();
+        }
+        return body;
+    }
+
+    private static Map<String, Object> rowHeader(FleetJson.Row row)
+    {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("index", row.index());
+        out.put("sourceBoatId", row.sourceBoatId());
+        out.put("sailNumber", row.boat().sailNumber());
+        out.put("name", row.boat().name());
+        return out;
+    }
+
+    /**
+     * The register boat this row already names, matched on the source id alone.
+     *
+     * <p>sailing-pf mints ids with the same rules, so an exact hit is the strongest
+     * evidence available — stronger than sail number and name, both of which change over
+     * a boat's life. Used only to recognise; creating and upgrading go through the
+     * registry.
+     */
+    private Boat resolveExisting(FleetJson.Row row)
+    {
+        return row.sourceBoatId() == null ? null : store.boats().get(row.sourceBoatId());
+    }
+
+    /**
+     * Resolve one imported row to a register boat, recording what happened. Null only
+     * when the row could not be resolved at all — a design conflict.
+     */
+    private Boat applyRow(FleetJson.Row row, Map<String, Object> out, Map<String, Integer> tally)
+        throws IOException
+    {
+        Boat known = resolveExisting(row);
+        if (known != null)
+        {
+            out.put("outcome", "MATCHED");
+            out.put("note", "matched on id");
+            out.put("boatId", known.id());
+            tally.merge("MATCHED", 1, Integer::sum);
+            return known;
+        }
+
+        BoatRegistry.Resolution r = registry.findOrCreate(row.boat(), null);
+        out.put("outcome", r.outcome().name());
+        if (r.note() != null)
+            out.put("note", r.note());
+        tally.merge(r.outcome().name(), 1, Integer::sum);
+        if (r.resolved())
+        {
+            out.put("boatId", r.boat().id());
+            out.put("designId", r.boat().designId());
+        }
+        return r.boat();
+    }
+
 
     /**
      * Build the roster entry for an imported boat, keeping anything the list did not
      * supply. A fleet list with no spinnaker column should not quietly reset a boat that
      * was already entered as non-spinnaker.
      */
-    private Roster.Entry rosterEntryFor(String seriesId, Boat boat, BoatCsv.EntryTerms terms,
-                                        Roster.Entry existing)
-    {
-        double tcf = terms.tcf() != null ? terms.tcf()
-            : (existing != null ? existing.startingTcf() : 1.0);
-        String division = terms.division() != null ? terms.division()
-            : (existing != null ? existing.division() : null);
-        Spinnaker spinnaker = terms.spinnaker() != null ? terms.spinnaker()
-            : (existing != null ? existing.spinnaker() : defaultSpinnakerFor(seriesId, boat));
-        return new Roster.Entry(boat.id(), tcf, division, spinnaker);
-    }
-
-
     // --- Series --------------------------------------------------------------
 
     private List<Series> sortedSeries()

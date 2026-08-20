@@ -568,214 +568,180 @@ class JinxApiIntegrationTest
             equalTo("19:30:00"));
     }
 
-    // --- bulk import ---------------------------------------------------------
+    // --- fleet import (sailing-pf export) ------------------------------------
+
+    /** The shape sailing-pf's handicaps-YYYY-MM-DD.json files come in. */
+    private static String export(String... rows)
+    {
+        return "[" + String.join(",", rows) + "]";
+    }
+
+    private static String boatRow(String id, String sail, String name, Double handicap, String variant)
+    {
+        StringBuilder sb = new StringBuilder("{\"boatId\":\"" + id + "\",\"sailno\":\"" + sail
+            + "\",\"name\":\"" + name + "\"");
+        if (handicap != null) sb.append(",\"handicap\":").append(handicap);
+        if (variant != null) sb.append(",\"variant\":\"").append(variant).append("\"");
+        return sb.append("}").toString();
+    }
 
     @Test
-    void aFleetIsImportedFromCsv() throws Exception
+    void theFleetIsImportedFromASailingPfExport() throws Exception
     {
-        JsonNode report = importCsv("""
-            Sail No,Boat Name,Class,TCF
-            AUS9,Quick Silver,J/24,1.0450
-            5678,Mid Fleet,Farr 40,0.9450
-            A123,Slow Poke,,0.8821
-            """);
+        JsonNode report = importFleet(export(
+            boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.0809, "spin"),
+            boatRow("MYC10-joss-jboatsj122", "MYC10", "Joss", 1.0635, "spin")));
 
         assertThat(report.path("ok").asBoolean(), is(true));
-        assertThat(report.path("tally").path("CREATED").asInt(), equalTo(3));
-        assertThat(get("/api/boats").size(), equalTo(3));
+        assertThat(report.path("tally").path("CREATED").asInt(), equalTo(2));
 
-        // The design column was understood despite being called "Class", and the boat
-        // without one is registered design-less rather than rejected.
-        JsonNode rows = report.path("rows");
-        assertThat(rows.get(0).path("boatId").asText(), equalTo("9-quicksilver-j24"));
-        assertThat(rows.get(2).path("boatId").asText(), equalTo("A123-slowpoke"));
-        assertThat(rows.get(2).path("designId").isNull(), is(true));
+        JsonNode boats = get("/api/boats");
+        assertThat(boats.size(), equalTo(2));
+        // The design comes out of the export's id, so the ids round-trip exactly.
+        assertThat(report.path("rows").get(0).path("boatId").asText(),
+            equalTo("5656-mondo-sydney38"));
+        assertThat(report.path("rows").get(1).path("designId").asText(), equalTo("jboatsj122"));
     }
 
     @Test
-    void columnOrderAndSpellingDoNotMatter() throws Exception
+    void theFleetImportIgnoresHandicapAndVariant() throws Exception
     {
-        // Same fleet, different spreadsheet.
-        String seriesId = createSeries("Summer");
-        JsonNode report = importCsv("""
-            Handicap;Yacht;Sail #;Spin
-            1.0450;Quick Silver;AUS9;S
-            0.8821;Slow Poke;A123;NS
-            """, seriesId);
+        // Neither belongs to a boat, so neither may reach the register.
+        importFleet(export(boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.0809, "nonspin")));
 
-        assertThat(report.path("ok").asBoolean(), is(true));
-        assertThat(get("/api/boats").size(), equalTo(2));
-
-        JsonNode entries = get("/api/series/" + seriesId + "/roster").path("entries");
-        assertThat(entries.size(), equalTo(2));
-        assertThat(entries.get(0).path("name").asText(), equalTo("Quick Silver"));
-        assertThat(entries.get(0).path("startingTcf").asDouble(), closeTo(1.0450, 1e-9));
-        assertThat(entries.get(1).path("spinnaker").asText(), equalTo("NS"));
+        JsonNode boat = get("/api/boats").get(0);
+        assertThat(boat.has("currentTcf"), is(false));
+        assertThat(boat.has("spinnaker"), is(false));
     }
 
     @Test
-    void entryColumnsWithoutASeriesAreReadButNotApplied() throws Exception
+    void reimportingTheSameExportChangesNothing() throws Exception
     {
-        // TCF, division and spinnaker have nowhere to go without a series. The boats are
-        // still registered; the terms are reported rather than written onto the register.
-        JsonNode report = importCsv("""
-            sail,name,tcf,division
-            AUS9,Quick Silver,1.0450,Div 1
-            """);
+        String json = export(boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.0809, "spin"));
+        importFleet(json);
+        JsonNode second = importFleet(json);
 
-        assertThat(get("/api/boats").size(), equalTo(1));
-        assertThat(report.path("rosterEntries").asInt(), equalTo(0));
-        assertThat(report.path("problems").get(0).asText(),
-            containsString("terms of a series entry"));
-    }
-
-    @Test
-    void importingAgainstASeriesBuildsItsRoster() throws Exception
-    {
-        String seriesId = createSeries("Summer");
-        JsonNode report = importCsv("""
-            sail,name,design,tcf,division
-            AUS9,Quick Silver,J/24,1.0450,Div 1
-            A123,Slow Poke,,0.8821,Div 2
-            """, seriesId);
-
-        assertThat(report.path("problems").size(), equalTo(0));
-        assertThat(report.path("rosterEntries").asInt(), equalTo(2));
-
-        JsonNode entries = get("/api/series/" + seriesId + "/roster").path("entries");
-        assertThat(entries.get(0).path("division").asText(), equalTo("Div 1"));
-        assertThat(entries.get(1).path("startingTcf").asDouble(), closeTo(0.8821, 1e-9));
-    }
-
-    @Test
-    void aReimportDoesNotResetTermsTheListDoesNotCarry() throws Exception
-    {
-        // The second list has no spinnaker column. A boat already entered as
-        // non-spinnaker must stay that way rather than being quietly reset.
-        String seriesId = createSeries("Summer");
-        importCsv("sail,name,tcf,spin\nAUS9,Quick Silver,1.0450,NS\n", seriesId);
-        importCsv("sail,name,tcf\nAUS9,Quick Silver,1.0600\n", seriesId);
-
-        JsonNode entry = get("/api/series/" + seriesId + "/roster").path("entries").get(0);
-        assertThat(entry.path("spinnaker").asText(), equalTo("NS"));
-        assertThat(entry.path("startingTcf").asDouble(), closeTo(1.0600, 1e-9));
-    }
-
-    @Test
-    void reimportingTheSameListChangesNothing() throws Exception
-    {
-        String csv = """
-            sail,name,design
-            AUS9,Quick Silver,J/24
-            A123,Slow Poke,
-            """;
-        importCsv(csv);
-        JsonNode second = importCsv(csv);
-
-        assertThat(second.path("tally").path("MATCHED").asInt(), equalTo(2));
+        assertThat(second.path("tally").path("MATCHED").asInt(), equalTo(1));
         assertThat(second.path("tally").has("CREATED"), is(false));
-        assertThat(get("/api/boats").size(), equalTo(2));
+        assertThat(get("/api/boats").size(), equalTo(1));
+        // The id is the strongest evidence there is, and it matched on that alone.
+        assertThat(second.path("rows").get(0).path("note").asText(), equalTo("matched on id"));
     }
 
     @Test
-    void aLaterImportThatFillsInTheDesignUpgradesTheBoat() throws Exception
+    void anExportUpgradesABoatWeHoldWithoutADesign() throws Exception
     {
-        // The case that motivates all of this: the first list had no design column.
-        importCsv("""
-            sail,name
-            A123,Slow Poke
-            """);
-        assertThat(get("/api/boats").get(0).path("id").asText(), equalTo("A123-slowpoke"));
+        post("/api/boats", """
+            {"sailNumber":"MYC99","name":"Newcomer"}""");
+        assertThat(get("/api/boats").get(0).path("id").asText(), equalTo("MYC99-newcomer"));
 
-        JsonNode report = importCsv("""
-            sail,name,design
-            A123,Slow Poke,Sydney 38
-            """);
+        JsonNode report = importFleet(export(
+            boatRow("MYC99-newcomer-farr40", "MYC99", "Newcomer", null, null)));
 
         assertThat(report.path("tally").path("UPGRADED").asInt(), equalTo(1));
-        JsonNode boats = get("/api/boats");
-        assertThat(boats.size(), equalTo(1));
-        assertThat(boats.get(0).path("id").asText(), equalTo("A123-slowpoke-sydney38"));
-        assertThat(boats.get(0).path("designId").asText(), equalTo("sydney38"));
+        assertThat(get("/api/boats").size(), equalTo(1));
+        assertThat(get("/api/boats").get(0).path("id").asText(), equalTo("MYC99-newcomer-farr40"));
     }
 
     @Test
-    void designsAreLearnedFromTheImportAndListed() throws Exception
+    void anIdThatDisagreesWithItsRowYieldsNoDesign() throws Exception
     {
-        importCsv("""
-            sail,name,design
-            AUS9,Quick Silver,J/24
-            5678,Mid Fleet,J 24
-            """);
+        // Better to register the boat without a design than to invent one from an id we
+        // cannot read against the sail number and name beside it.
+        JsonNode report = importFleet(export(
+            boatRow("something-else-entirely", "MYC99", "Newcomer", null, null)));
 
-        // "J/24" and "J 24" are one design, and nobody had to say so.
-        JsonNode designs = get("/api/designs");
-        assertThat(designs.size(), equalTo(1));
-        assertThat(designs.get(0).path("id").asText(), equalTo("j24"));
+        assertThat(get("/api/boats").get(0).path("designId").isNull(), is(true));
+        assertThat(report.path("problems").get(0).asText(), containsString("does not match"));
     }
 
     @Test
-    void aDryRunImportChangesNothing() throws Exception
+    void aDryRunFleetImportChangesNothing() throws Exception
     {
-        JsonNode report = post("/api/boats/import?dryRun=true", "{\"csv\":\"sail,name\\nAUS9,Quick Silver\\n\"}");
+        JsonNode report = post("/api/boats/import?dryRun=true",
+            export(boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.0809, "spin")));
 
-        assertThat(report.path("rows").size(), equalTo(1));
         assertThat(report.path("rows").get(0).path("outcome").asText(), equalTo("PREVIEW"));
         assertThat(get("/api/boats").size(), equalTo(0));
     }
 
     @Test
-    void badRowsAreReportedAndTheRestStillImport() throws Exception
+    void junkIsReportedRatherThanCrashing() throws Exception
     {
-        JsonNode report = importCsv("""
-            sail,name,tcf
-            AUS9,Quick Silver,1.0450
-            ,,0.9
-            5678,Mid Fleet,not-a-number
-            """, createSeries("Summer"));
-
-        // One boat with nothing to identify it, one with a typo'd handicap. Neither
-        // should cost the rest of the list.
-        assertThat(get("/api/boats").size(), equalTo(2));
-        assertThat(report.path("problems").size(), equalTo(2));
-        assertThat(report.path("problems").get(0).asText(), containsString("line 3"));
-        assertThat(report.path("problems").get(1).asText(), containsString("line 4"));
-        // The boat survived; only its handicap was dropped.
-        assertThat(report.path("tally").path("CREATED").asInt(), equalTo(2));
-    }
-
-    @Test
-    void aFileWithNoRecognisableHeaderIsRefused() throws Exception
-    {
-        JsonNode report = importCsv("""
-            alpha,beta
-            1,2
-            """);
-
-        assertThat(report.path("ok").asBoolean(), is(false));
-        assertThat(report.path("problems").get(0).asText(),
-            containsString("no sail-number or name column"));
+        assertThat(post("/api/boats/import", "not json at all").path("problems").get(0).asText(),
+            containsString("not JSON"));
+        assertThat(post("/api/boats/import", "{\"hello\":1}").path("problems").get(0).asText(),
+            containsString("expected a JSON array"));
         assertThat(get("/api/boats").size(), equalTo(0));
     }
 
-    @Test
-    void unrecognisedColumnsAreReportedNotRejected() throws Exception
-    {
-        JsonNode report = importCsv("""
-            sail,name,owner,phone
-            AUS9,Quick Silver,A Skipper,0400000000
-            """);
+    // --- entrants import ------------------------------------------------------
 
-        assertThat(report.path("ok").asBoolean(), is(true));
-        assertThat(get("/api/boats").size(), equalTo(1));
-        assertThat(report.path("ignoredColumns").size(), equalTo(2));
+    @Test
+    void entrantsAreImportedWithTheirHandicapAndVariant() throws Exception
+    {
+        String seriesId = createSeries("Twilight");
+        String raceId = createRace(seriesId, "2026-06-05");
+
+        JsonNode report = importEntrants(raceId, export(
+            boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.0809, "spin"),
+            boatRow("MYC9-knotty-catalina28", "MYC9", "Knotty", 0.7331, "nonspin")));
+
+        assertThat(report.path("entrants").asInt(), equalTo(2));
+        JsonNode entrants = get("/api/races/" + raceId).path("entrants").path("entrants");
+        assertThat(entrants.get(0).path("tcf").asDouble(), closeTo(1.0809, 1e-9));
+        assertThat(entrants.get(0).path("spinnaker").asText(), equalTo("S"));
+        assertThat(entrants.get(1).path("tcf").asDouble(), closeTo(0.7331, 1e-9));
+        assertThat(entrants.get(1).path("spinnaker").asText(), equalTo("NS"));
+        // Boats not yet known are registered as a side effect.
+        assertThat(get("/api/boats").size(), equalTo(2));
     }
 
     @Test
-    void quotedBoatNamesWithCommasSurvive() throws Exception
+    void reimportingEntrantsUpdatesTheHandicapWithoutDuplicating() throws Exception
     {
-        importCsv("sail,name\nAUS9,\"Kayimai, Too\"\n");
-        assertThat(get("/api/boats").get(0).path("name").asText(), equalTo("Kayimai, Too"));
+        String raceId = createRace(createSeries("Twilight"), "2026-06-05");
+        importEntrants(raceId, export(boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.0809, "spin")));
+        JsonNode second = importEntrants(raceId,
+            export(boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.1000, "spin")));
+
+        assertThat(second.path("rows").get(0).path("entered").asText(), equalTo("updated"));
+        JsonNode entrants = get("/api/races/" + raceId).path("entrants").path("entrants");
+        assertThat(entrants.size(), equalTo(1));
+        assertThat(entrants.get(0).path("tcf").asDouble(), closeTo(1.1000, 1e-9));
+    }
+
+    @Test
+    void anEntrantsImportLeavesBoatsMissingFromTheFileAlone() throws Exception
+    {
+        // A handicap export is a statement about ratings, not about who is racing tonight.
+        String raceId = createRace(createSeries("Twilight"), "2026-06-05");
+        importEntrants(raceId, export(
+            boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.0809, "spin"),
+            boatRow("MYC10-joss-jboatsj122", "MYC10", "Joss", 1.0635, "spin")));
+
+        importEntrants(raceId, export(boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.09, "spin")));
+
+        assertThat(get("/api/races/" + raceId).path("entrants").path("entrants").size(),
+            equalTo(2));
+    }
+
+    @Test
+    void aLockedRaceRefusesAnEntrantsImport() throws Exception
+    {
+        String seriesId = createSeries("Twilight");
+        String boatId = createBoat("AUS9", "Quick Silver");
+        putRoster(seriesId, boatId, 1.0);
+        String raceId = createRace(seriesId, "2026-06-05");
+        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        post("/api/races/" + raceId + "/save-handicaps", """
+            {"adjustments":[{"boatId":"%s","finishPosition":1,"penaltyMinutes":6.0,
+              "rewardMinutes":6.0,"netAdjustmentMinutes":0.0,"oldTcf":1.0,"newTcf":1.0}]}"""
+            .formatted(boatId));
+
+        HttpResponse<String> r = postRaw("/api/races/" + raceId + "/entrants/import",
+            export(boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.0809, "spin")));
+        assertThat(r.statusCode(), equalTo(409));
     }
 
     // --- helpers -------------------------------------------------------------
@@ -814,22 +780,14 @@ class JinxApiIntegrationTest
         post("/api/series/" + seriesId + "/roster", sb.toString());
     }
 
-    private JsonNode importCsv(String csv) throws Exception
+    private JsonNode importFleet(String json) throws Exception
     {
-        return importCsv(csv, null);
+        return post("/api/boats/import", json);
     }
 
-    private JsonNode importCsv(String csv, String seriesId) throws Exception
+    private JsonNode importEntrants(String raceId, String json) throws Exception
     {
-        String url = base + "/api/boats/import"
-            + (seriesId == null ? "" : "?seriesId=" + java.net.URLEncoder.encode(
-                seriesId, java.nio.charset.StandardCharsets.UTF_8));
-        HttpResponse<String> r = http.send(HttpRequest.newBuilder(URI.create(url))
-                .header("Content-Type", "text/csv")
-                .POST(HttpRequest.BodyPublishers.ofString(csv)).build(),
-            HttpResponse.BodyHandlers.ofString());
-        assertThat("import -> " + r.body(), r.statusCode(), equalTo(200));
-        return M.readTree(r.body());
+        return post("/api/races/" + raceId + "/entrants/import", json);
     }
 
     private JsonNode get(String path) throws Exception

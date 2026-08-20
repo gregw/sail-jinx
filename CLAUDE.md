@@ -77,7 +77,7 @@ sail-jinx/
   data/archive/                 # pre-v2 SailSys-era store, kept for a future importer
   wiki/                         # git submodule -> the GitHub wiki
   src/main/java/org/mortbay/sailing/jinx/
-    identity/                   # IdGenerator, Aliases, DesignCatalogue, BoatRegistry, BoatCsv
+    identity/                   # IdGenerator, Aliases, DesignCatalogue, BoatRegistry, FleetJson
     model/                      # records: Boat, Series, Race, Entrant, RaceEntrants, ...
     store/JsonStore.java        # atomic writes, journal, defensive load
     server/                     # JinxServer, ApiServlet, StaticResourceServlet
@@ -203,9 +203,16 @@ Consequences worth knowing:
 - A boat joining a series has to be **given** a TCF; there is no register value
   to inherit. The default is 1.0, visibly a starting point rather than a figure
   anybody chose.
-- A CSV fleet list carries both kinds of column. The identity ones go to the
-  register; the entry ones need `?seriesId=` to land on. Without one they are
-  read and reported as not applied, never written onto the register.
+- **Imports come from sailing-pf's `handicaps-*.json` export**, and there are two,
+  because the file mixes both kinds of fact:
+  `POST /api/boats/import` takes identity only and **ignores handicap and
+  variant**; `POST /api/races/{id}/entrants/import` takes the same file and uses
+  the handicap as the race TCF and the variant as the spinnaker.
+- The export's `boatId` is minted by sailing-pf with *our* rules, so it is read,
+  not treated as a foreign key: an exact hit is the strongest match available,
+  and its trailing segment is where a design-less boat's design comes from. An id
+  that disagrees with the sail number and name beside it yields no design rather
+  than a guessed one.
 - `Design.noSpinnaker` supplies the *default* for an entry, not the value: a boat
   that can fly a kite may still enter without one.
 
@@ -232,7 +239,8 @@ for the full list. The shape worth knowing:
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/races/{id}` | **everything the race page needs, in one call** |
-| POST | `/api/boats/import` | bulk-load the fleet from CSV (`?dryRun=true` previews) |
+| POST | `/api/boats/import` | load the fleet from a sailing-pf export (`?dryRun=true` previews) |
+| POST | `/api/races/{id}/entrants/import` | add entrants from the same export, with TCFs |
 | POST | `/api/races/{id}/entrants/seed` | seed from the roster or the previous race |
 | POST | `/api/races/{id}/start-times` | compute and publish the stagger |
 | POST | `/api/races/{id}/process-handicaps` | run the engine (computes, saves nothing) |

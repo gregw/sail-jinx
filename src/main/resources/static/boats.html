@@ -29,39 +29,32 @@
   <div class="toolbar">
     <label><input type="checkbox" id="show-retired"> Show retired</label>
     <button id="add-btn" class="primary" type="button">Add boat</button>
-    <button id="import-btn" type="button">Import from CSV</button>
+    <button id="import-btn" type="button">Import fleet (JSON)</button>
   </div>
 
   <section id="import-panel" style="display:none;">
-    <h2>Import a fleet list</h2>
+    <h2>Import the fleet</h2>
     <p class="lead">
-      Paste a CSV or choose a file. <strong>The first row must be the headings</strong> —
-      the column order does not matter and unrecognised columns are ignored.
-      Recognised: <code>sail</code>, <code>name</code>, <code>design</code>,
-      <code>tcf</code>, <code>division</code>, <code>spinnaker</code>, <code>notes</code>
-      (and the usual variants: <code>sail no</code>, <code>boat</code>,
-      <code>class</code>, <code>handicap</code>…).
+      Takes a <strong>sailing-pf handicap export</strong> —
+      <code>handicaps-YYYY-MM-DD.json</code>. Paste it or choose the file.
     </p>
     <p class="lead">
-      Every column is optional. Boats already registered are matched, not duplicated —
-      including when a later list fills in a design they were imported without.
+      Only the identity is read here: sail number, name, and the design carried in the
+      export's boat id. <strong>Handicap and variant are ignored</strong> — a boat has
+      neither; they belong to a series entry. Use
+      <em>Add entrants from JSON</em> on a race to bring those in.
     </p>
-    <div class="form-grid">
-      <label for="import-series">Enter these boats in</label>
-      <select id="import-series"><option value="">— register only —</option></select>
-    </div>
     <p class="hint" style="max-width:60rem;">
-      A fleet list's <code>tcf</code>, <code>division</code> and <code>spinnaker</code>
-      columns are terms of a series entry, not facts about a boat, so they need a series
-      to land on. Leave this as "register only" and the boats are still added — those
-      columns are just reported as not applied.
+      Boats already registered are matched, not duplicated — by id first, then through the
+      alias file for sail numbers and names that have changed. A boat held without a design
+      is upgraded from the design in the export's id.
     </p>
 
     <div class="toolbar">
-      <input type="file" id="csv-file" accept=".csv,text/csv,text/plain">
+      <input type="file" id="json-file" accept=".json,application/json">
     </div>
-    <textarea id="csv-text" rows="8" spellcheck="false"
-      placeholder="sail,name,design,tcf&#10;AUS9,Quick Silver,J/24,1.0450"></textarea>
+    <textarea id="json-text" rows="8" spellcheck="false"
+      placeholder='[{"boatId":"5656-mondo-sydney38","sailno":"5656","name":"MONDO"}]'></textarea>
     <div class="toolbar">
       <button id="preview-btn" type="button">Preview</button>
       <button id="apply-btn" class="primary" type="button">Import</button>
@@ -215,7 +208,7 @@
     state.textContent = msg;
   }
 
-  // --- CSV import ----------------------------------------------------------
+  // --- fleet import (sailing-pf JSON) ---------------------------------------
 
   document.getElementById('import-btn').onclick = () => {
     const panel = document.getElementById('import-panel');
@@ -225,10 +218,10 @@
   document.getElementById('import-close').onclick = () => {
     document.getElementById('import-panel').style.display = 'none';
   };
-  document.getElementById('csv-file').onchange = async (ev) => {
+  document.getElementById('json-file').onchange = async (ev) => {
     const file = ev.target.files && ev.target.files[0];
     if (!file) return;
-    document.getElementById('csv-text').value = await file.text();
+    document.getElementById('json-text').value = await file.text();
     setImportMsg(file.name + ' loaded — preview it before importing.');
   };
   document.getElementById('preview-btn').onclick = () => runImport(true);
@@ -239,18 +232,14 @@
   }
 
   async function runImport(dryRun) {
-    const csv = document.getElementById('csv-text').value;
-    if (!csv.trim()) { setImportMsg('Nothing to import.'); return; }
+    const json = document.getElementById('json-text').value;
+    if (!json.trim()) { setImportMsg('Nothing to import.'); return; }
     setImportMsg(dryRun ? 'Checking…' : 'Importing…');
 
-    const seriesId = document.getElementById('import-series').value;
-    const query = [];
-    if (dryRun) query.push('dryRun=true');
-    if (seriesId) query.push('seriesId=' + encodeURIComponent(seriesId));
-    const r = await fetchJson('/api/boats/import' + (query.length ? '?' + query.join('&') : ''), {
+    const r = await fetchJson('/api/boats/import' + (dryRun ? '?dryRun=true' : ''), {
       method: 'POST',
-      headers: { 'Content-Type': 'text/csv' },
-      body: csv
+      headers: { 'Content-Type': 'application/json' },
+      body: json
     });
     if (!r.ok) { setImportMsg('Import failed: ' + errorOf(r)); return; }
 
@@ -267,18 +256,6 @@
       parts.push('<div class="banner banner-warn"><strong>Problems</strong><ul>'
         + report.problems.map(p => '<li>' + esc(p) + '</li>').join('') + '</ul></div>');
     }
-    if ((report.recognisedColumns || []).length) {
-      parts.push('<p class="hint">Columns read: ' + esc(report.recognisedColumns.join(', ')) + '</p>');
-    }
-    if ((report.ignoredColumns || []).length) {
-      parts.push('<p class="hint">Columns ignored: ' + esc(report.ignoredColumns.join(', ')) + '</p>');
-    }
-
-    if (report.seriesId) {
-      parts.push('<p class="hint">Roster entries for <strong>'
-        + esc(seriesName(report.seriesId)) + '</strong>: ' + report.rosterEntries + '</p>');
-    }
-
     const tally = report.tally || {};
     const counts = Object.keys(tally).map(k => tally[k] + ' ' + k.toLowerCase());
     if (counts.length) {
@@ -288,15 +265,16 @@
 
     const rows = report.rows || [];
     if (rows.length) {
-      parts.push('<table><thead><tr><th class="num-cell">Line</th><th>Sail #</th>'
-        + '<th>Name</th><th>Result</th><th>Detail</th></tr></thead><tbody>'
+      parts.push('<table><thead><tr><th class="num-cell">#</th><th>Sail #</th>'
+        + '<th>Name</th><th>Result</th><th>Boat id</th></tr></thead><tbody>'
         + rows.map(row =>
             '<tr' + (row.outcome === 'CONFLICT' ? ' class="conflict-row"' : '') + '>'
-            + '<td class="num-cell">' + esc(row.line) + '</td>'
+            + '<td class="num-cell">' + esc(row.index) + '</td>'
             + '<td class="mono">' + esc(row.sailNumber) + '</td>'
             + '<td>' + esc(row.name) + '</td>'
-            + '<td>' + esc(outcomeLabel(row.outcome, dryRun)) + '</td>'
-            + '<td class="hint">' + esc(row.note || row.boatId || '') + '</td>'
+            + '<td>' + esc(outcomeLabel(row.outcome, dryRun))
+              + (row.note ? ' <span class="hint">' + esc(row.note) + '</span>' : '') + '</td>'
+            + '<td class="mono id-cell">' + esc(row.boatId || '') + '</td>'
             + '</tr>').join('')
         + '</tbody></table>');
     }
@@ -304,7 +282,7 @@
   }
 
   function outcomeLabel(outcome, dryRun) {
-    if (dryRun) return 'will be imported';
+    if (dryRun || outcome === 'PREVIEW') return 'will be imported';
     switch (outcome) {
       case 'CREATED':  return 'added';
       case 'MATCHED':  return 'already registered';
@@ -317,30 +295,16 @@
 
   // --- load ----------------------------------------------------------------
 
-  let seriesList = [];
-
-  function seriesName(id) {
-    const s = seriesList.find(x => x.id === id);
-    return s ? s.name : id;
-  }
 
   async function load() {
-    const [boatsR, designsR, seriesR] = await Promise.all([
+    const [boatsR, designsR] = await Promise.all([
       fetchJson('/api/boats'),
-      fetchJson('/api/designs'),
-      fetchJson('/api/series')
+      fetchJson('/api/designs')
     ]);
     if (!boatsR.ok) { showError('Could not load boats: ' + errorOf(boatsR)); return; }
     boats = boatsR.body || [];
     designs = new Map((designsR.ok ? designsR.body || [] : [])
       .map(d => [d.id, d.canonicalName || d.id]));
-    seriesList = (seriesR.ok ? seriesR.body || [] : []).filter(s => !s.archived);
-
-    const sel = document.getElementById('import-series');
-    const chosen = sel.value;
-    sel.innerHTML = '<option value="">— register only —</option>'
-      + seriesList.map(s => '<option value="' + esc(s.id) + '"'
-        + (s.id === chosen ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('');
 
     render();
   }

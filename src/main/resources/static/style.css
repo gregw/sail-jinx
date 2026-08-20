@@ -369,3 +369,13 @@ tr.conflict-row td { background: var(--warn-bg); }
 /* The boat id is worth showing — it is how boats are talked about — but it is
    reference data, not something to read first. */
 td.id-cell { color: var(--muted); font-size: 0.82em; }
+
+#import-panel textarea {
+  width: 100%; max-width: 60rem; font-family: var(--font-mono); font-size: 0.85rem;
+  padding: 0.6rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--ink); resize: vertical;
+}
+#import-panel textarea:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+#import-panel h3 { margin-top: 1rem; }

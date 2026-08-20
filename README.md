@@ -85,18 +85,21 @@ entered through the UI.
 Open <http://localhost:8080/> and work through: **Boats** → **Series** →
 roster → **Races**.
 
-The fleet can be entered a boat at a time or bulk-loaded from a CSV on the Boats
-page. The first row must be the headings; the order does not matter and
-unrecognised columns are ignored, so a spreadsheet with
-`Sail No, Boat Name, Class, TCF` and one with `Handicap; Yacht; Sail #` both
-work. Every column is optional — including the design, which a later import can
-fill in without creating a second boat. **Preview** shows what an import would do
-before it does it.
+The fleet can be entered a boat at a time or loaded from a
+[sailing-pf](https://github.com/gregw/sailing-pf) handicap export
+(`handicaps-YYYY-MM-DD.json`). There are two imports, because that file mixes two
+kinds of fact:
 
-Choose a series in the import panel and the list's TCF, division and spinnaker
-columns build that season's roster as well. Leave it on "register only" and the
-boats are still added; those columns are reported as not applied rather than
-written onto the register, where they do not belong.
+- **Boats page → Import fleet.** Reads identity only — sail number, name, and the
+  design carried in the export's boat id. Handicap and variant are ignored, since
+  a boat has neither.
+- **Race page → Add entrants from JSON.** Reads the same file and uses each boat's
+  handicap as its TCF for that race and its variant as its spinnaker. This is the
+  import that carries the numbers.
+
+Both match rather than duplicate — by boat id first, then through the alias file
+for sail numbers and names that have changed — and both upgrade a boat held
+without a design. **Preview** shows what an import would do before it does it.
 
 ### There is no login
 
