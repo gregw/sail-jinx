@@ -33,11 +33,23 @@
       </span>
     </div>
     <div class="toolbar">
-      <button id="save-setup-btn" type="button">Save setup</button>
       <button id="start-times-btn" class="primary" type="button">Compute start times</button>
       <a id="report-starts-link" class="button-link" href="#" target="_blank">Start sheet ▸</a>
       <span id="setup-msg" class="hint"></span>
     </div>
+  </section>
+
+  <section id="handicap-panel" style="display:none;">
+    <div class="section-head">
+      <h2>Handicaps</h2>
+      <a id="report-finish-link" class="button-link" href="#" target="_blank">Finish sheet ▸</a>
+    </div>
+    <div class="toolbar">
+      <button id="process-btn" class="primary" type="button">Process handicaps</button>
+      <button id="unlock-btn" type="button" style="display:none;">Unlock race</button>
+      <span id="handicap-msg" class="hint"></span>
+    </div>
+    <div id="handicap-summary"></div>
   </section>
 
   <section id="race-entrants" style="display:none;">
@@ -109,19 +121,6 @@
     <span id="save-summary"></span>
   </div>
 
-  <section id="handicap-panel" style="display:none;">
-    <div class="section-head">
-      <h2>Handicaps</h2>
-      <a id="report-finish-link" class="button-link" href="#" target="_blank">Finish sheet ▸</a>
-    </div>
-    <div class="toolbar">
-      <button id="process-btn" class="primary" type="button">Process handicaps</button>
-      <button id="save-handicaps-btn" type="button" disabled>Save &amp; carry forward</button>
-      <button id="unlock-btn" type="button" style="display:none;">Unlock race</button>
-      <span id="handicap-msg" class="hint"></span>
-    </div>
-    <div id="handicap-summary"></div>
-  </section>
 </main>
 
 <script src="/common.js"></script>
@@ -141,7 +140,6 @@
   let dirtyTcf = new Map();          // boatId -> Number
   let dirtyFlags = new Map();        // boatId -> {added:[], removed:[]}
   let adjustments = new Map();       // boatId -> Adjustment (from Process)
-  let adjustmentsSaved = false;
   let locked = false;
   let register = [];                 // the fleet register, for the add-boat fields
   let designNames = new Map();       // designId -> display name
@@ -459,38 +457,7 @@
         touched();
       };
     });
-    document.querySelectorAll('.time-input').forEach(input => {
-      const commit = () => {
-        const t = timesFor(input.dataset.id);
-        const raw = input.value.trim();
-        if (!raw) { t[input.dataset.field] = null; touched(); return; }
-        const norm = reformatTime(raw);
-        // Unparseable input is left on screen for the user to fix rather than
-        // silently dropped.
-        if (norm == null) { input.classList.add('invalid'); return; }
-        input.classList.remove('invalid');
-        t[input.dataset.field] = norm;
-        if (input.dataset.field === 'finish') lastFinish = norm;
-        touched();
-      };
-      input.onblur = commit;
-      input.onkeydown = (ev) => { if (ev.key === 'Enter') { commit(); input.blur(); } };
-      input.onfocus = () => {
-        // Prefill the minute so the RO only keys the seconds.
-        if (input.value) return;
-        const e = entrants.find(x => String(x.boatId) === input.dataset.id);
-        input.value = input.dataset.field === 'finish' ? finishPrefix(e) : startPrefix(e);
-        input.setSelectionRange(input.value.length, input.value.length);
-      };
-    });
-    document.querySelectorAll('.casual-input').forEach(cb => {
-      cb.onchange = () => {
-        const e = entrants.find(x => String(x.boatId) === cb.dataset.id);
-        if (!e) return;
-        e.entryType = cb.checked ? 'CASUAL' : 'ROSTER';
-        touched();
-      };
-    });
+    document.querySelectorAll('.time-input').forEach(wireTimeInput);
     document.querySelectorAll('.tcf-input').forEach(input => {
       input.onchange = () => {
         const v = Number(input.value);
@@ -515,6 +482,100 @@
       };
     });
     wireDrag();
+  }
+
+  /**
+   * A time box the RO keys under pressure. Three assists, all aimed at the same thing:
+   * the minute is nearly always already known, and the seconds are what is actually
+   * being captured as a boat crosses.
+   *
+   * <ul>
+   *   <li><b>Prefill.</b> An empty box focused gets "HH:MM:" filled in, from the boat's
+   *       allocated start or the last finish recorded.</li>
+   *   <li><b>Caret in the seconds.</b> Focusing selects the segment after the last colon,
+   *       so typing two digits completes the time whatever was there before.</li>
+   *   <li><b>Arrows nudge.</b> Up and down move the segment the caret is in — one second
+   *       in the seconds, one minute in the minutes — which is how a mis-keyed capture
+   *       gets corrected without retyping it.</li>
+   * </ul>
+   *
+   * <p>And the rule that makes the prefill safe: a box focused and left <em>unchanged</em>
+   * is cleared again on the way out. Without it, clicking into a box and clicking away
+   * recorded the prefill as a real time — "18:00:" parses to 18:00:00 — so a boat that
+   * never started acquired one.
+   */
+  function wireTimeInput(input) {
+    const field = input.dataset.field;
+
+    const commit = () => {
+      const t = timesFor(input.dataset.id);
+      const raw = input.value.trim();
+      if (!raw) { t[field] = null; touched(); return; }
+      const norm = reformatTime(raw);
+      // Unparseable input is left on screen for the user to fix rather than silently
+      // dropped.
+      if (norm == null) { input.classList.add('invalid'); return; }
+      input.classList.remove('invalid');
+      t[field] = norm;
+      if (field === 'finish') lastFinish = norm;
+      touched();
+    };
+
+    /** Select segment n of HH:MM:SS — 0 hours, 1 minutes, 2 seconds. */
+    const selectSegment = (n) => {
+      const parts = input.value.split(':');
+      if (parts.length <= n) return;
+      const start = parts.slice(0, n).reduce((a, part) => a + part.length + 1, 0);
+      input.setSelectionRange(start, start + parts[n].length);
+    };
+
+    /** Which segment the caret sits in, by counting the colons before it. */
+    const caretSegment = () => {
+      const before = input.value.slice(0, input.selectionStart ?? input.value.length);
+      return Math.min(2, (before.match(/:/g) || []).length);
+    };
+
+    const nudge = (dir) => {
+      const segment = caretSegment();
+      // "18:00:" is what the prefill leaves; treat the empty seconds as zero.
+      const secs = parseTime(input.value.endsWith(':') ? input.value + '00' : input.value);
+      if (secs == null) return;
+      const step = [3600, 60, 1][segment];
+      input.value = fmtTimeOfDay((((secs + dir * step) % 86400) + 86400) % 86400);
+      // Nudging is entry, so the box no longer counts as untouched.
+      delete input.dataset.prefill;
+      selectSegment(segment);
+    };
+
+    input.onfocus = () => {
+      if (!input.value) {
+        const e = entrants.find(x => String(x.boatId) === input.dataset.id);
+        input.value = field === 'finish' ? finishPrefix(e) : startPrefix(e);
+        // Remembering it is how blur can tell "nothing was entered" from "this time".
+        input.dataset.prefill = input.value;
+      } else {
+        delete input.dataset.prefill;
+      }
+      // After the click has finished placing its own caret.
+      setTimeout(() => selectSegment(2), 0);
+    };
+
+    input.onblur = () => {
+      if (input.dataset.prefill !== undefined && input.value === input.dataset.prefill)
+        input.value = '';
+      delete input.dataset.prefill;
+      commit();
+    };
+
+    input.onkeydown = (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); commit(); input.blur(); return; }
+      if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        nudge(ev.key === 'ArrowUp' ? 1 : -1);
+      }
+    };
+
+    input.oninput = () => { delete input.dataset.prefill; };
   }
 
   function startPrefix(e) {
@@ -895,17 +956,18 @@
         }))
       };
       const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/entrants', payload);
-      if (!r.ok) { setMsg('save-summary', 'Could not save entrants: ' + errorOf(r)); return; }
+      if (!r.ok) { setMsg('save-summary', 'Could not save entrants: ' + errorOf(r)); return false; }
     }
 
     const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/times', {
       boatOrder, dutyBoatId: dutyBoatId || null, times: timesMap
     });
-    if (!r.ok) { setMsg('save-summary', 'Could not save times: ' + errorOf(r)); return; }
+    if (!r.ok) { setMsg('save-summary', 'Could not save times: ' + errorOf(r)); return false; }
 
     sessionClear();
     await load();
     setCtrlMsg('banner-ok', 'Saved.');
+    return true;
   }
 
   /**
@@ -922,20 +984,6 @@
 
   // --- setup + start times ---------------------------------------------------
 
-  async function saveSetup() {
-    const r = await postJson('/api/races', {
-      id: raceId,
-      seriesId: bundle.race.seriesId,
-      number: bundle.race.number,
-      name: bundle.race.name,
-      date: bundle.race.date,
-      earliestStart: document.getElementById('f-earliest').value.trim(),
-      targetElapsedMinutes: Number(document.getElementById('f-target').value) || null
-    });
-    if (!r.ok) { setMsg('setup-msg', 'Could not save: ' + errorOf(r)); return; }
-    await load();
-    setMsg('setup-msg', 'Setup saved.');
-  }
 
 
   async function computeStartTimes() {
@@ -955,22 +1003,43 @@
 
   // --- handicaps -------------------------------------------------------------
 
+  /**
+   * Compute the handicaps and commit them in one step.
+   *
+   * <p>Any unsaved times are written first, so the adjustments that get stored were
+   * computed from the times that are on disk — otherwise the saved handicaps would
+   * describe a race nobody could reproduce.
+   *
+   * <p>This locks the race. Unlock is the way back, and it is deliberately the only one:
+   * a preview that could be left uncommitted was a second state to keep track of on the
+   * night for no benefit.
+   */
   async function processHandicaps() {
+    if (isDirty() && !(await doSave())) return;
+
     const boats = scorer.handicapEngineInput('pursuit');
     if (!boats.length) { setMsg('handicap-msg', 'No boats to process.'); return; }
+
     const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/process-handicaps', {
       targetElapsedMinutes: bundle.race.targetElapsedMinutes,
       boats
     });
     if (!r.ok) { setMsg('handicap-msg', 'Could not process: ' + errorOf(r)); return; }
 
-    adjustments = new Map((r.body.adjustments || []).map(a => [String(a.boatId), a]));
-    adjustmentsSaved = false;
-    document.getElementById('save-handicaps-btn').disabled = false;
-    renderHead();
-    renderEntrants();
+    const computed = r.body.adjustments || [];
+    const sr = await postJson('/api/races/' + encodeURIComponent(raceId) + '/save-handicaps',
+      { adjustments: computed });
+    if (!sr.ok) { setMsg('handicap-msg', 'Could not save: ' + errorOf(sr)); return; }
+
+    sessionClear();
+    await load();
     renderHandicapSummary(r.body);
-    setMsg('handicap-msg', 'Computed — review the Adjustment column, then save.');
+    const carried = sr.body.carriedEntrants;
+    setMsg('handicap-msg', 'Processed and saved. '
+      + (carried != null
+          ? carried + ' boats carried forward to the next race.'
+          : 'This is the last race in the series, so nothing was carried forward.')
+      + ' The race is now locked — unlock it to redo.');
   }
 
   function renderHandicapSummary(body) {
@@ -982,19 +1051,6 @@
       + esc(body.targetElapsedMinutes) + ' min.</p>';
   }
 
-  async function saveHandicaps() {
-    if (!adjustments.size) return;
-    if (isDirty() && !confirm('There are unsaved time edits. Save handicaps anyway?')) return;
-    const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/save-handicaps',
-      { adjustments: [...adjustments.values()] });
-    if (!r.ok) { setMsg('handicap-msg', 'Could not save: ' + errorOf(r)); return; }
-    adjustmentsSaved = true;
-    const carried = r.body.carriedEntrants;
-    setMsg('handicap-msg', carried != null
-      ? ('Saved — ' + carried + ' boats carried forward to the next race.')
-      : 'Saved — this is the last race in the series, so nothing was carried forward.');
-    await load();
-  }
 
   async function unlockRace() {
     if (!confirm('Unlock this race? Its saved handicaps are discarded so results '
@@ -1040,7 +1096,6 @@
     ['f-earliest', 'f-target'].forEach(id => {
       document.getElementById(id).disabled = locked;
     });
-    document.getElementById('save-setup-btn').disabled = locked;
     document.getElementById('start-times-btn').disabled = locked;
 
     const startsHref = '/report-starts.html?raceId=' + encodeURIComponent(raceId);
@@ -1074,7 +1129,6 @@
 
     document.getElementById('unlock-btn').style.display = locked ? '' : 'none';
     document.getElementById('process-btn').disabled = locked;
-    document.getElementById('save-handicaps-btn').disabled = locked || !adjustments.size;
 
     if (locked) {
       setCtrlMsg('banner-warn', 'This race is processed and locked. Its handicaps have '
@@ -1111,7 +1165,6 @@
     dirtyTcf = new Map();
     dirtyFlags = new Map();
     adjustments = new Map((bundle.adjustments || []).map(a => [String(a.boatId), a]));
-    adjustmentsSaved = adjustments.size > 0;
 
     baseline = stateJson();
     const restored = sessionRestore();
@@ -1178,10 +1231,8 @@
 
     document.getElementById('save-btn').onclick = doSave;
     document.getElementById('reset-btn').onclick = () => { sessionClear(); load(); };
-    document.getElementById('save-setup-btn').onclick = saveSetup;
     document.getElementById('start-times-btn').onclick = computeStartTimes;
     document.getElementById('process-btn').onclick = processHandicaps;
-    document.getElementById('save-handicaps-btn').onclick = saveHandicaps;
     document.getElementById('unlock-btn').onclick = unlockRace;
     document.getElementById('hide-dnc').onchange = renderEntrants;
     document.getElementById('hide-finished').onchange = renderEntrants;
