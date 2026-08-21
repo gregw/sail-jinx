@@ -101,6 +101,11 @@ unsaved edits and flag overrides.
 `static/scoring-test.html` is the executable specification for that module — 42
 assertions. Open the page to run them. Change `scoring.js`, run that page.
 
+The NOW log under the entrants table is the one piece of race-night state that is
+deliberately **not** in the store: it is a per-tab scratchpad whose whole job is to
+undo a time stamped against the wrong boat, by dragging it onto the right one. A
+value a drag displaces goes back into the log rather than being lost.
+
 `scoring.js` also carries the sail-number normalisation the register uses, so the
 race page's add-a-boat type-ahead finds the boat the server would resolve to
 rather than approximating it.

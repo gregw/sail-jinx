@@ -205,11 +205,6 @@ a.build-err, .build-err { color: var(--err-fg); font-weight: 600; }
 .toolbar label { font-size: 0.9rem; color: var(--muted); display: inline-flex;
   align-items: center; gap: 0.35rem; }
 
-.section-head {
-  display: flex; align-items: baseline; justify-content: space-between;
-  flex-wrap: wrap; gap: 0.5rem 1rem;
-}
-.section-head h2 { flex: 1 1 auto; }
 .filters { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); }
 .filters label { display: inline-flex; align-items: center; gap: 0.35rem; }
 
@@ -220,8 +215,36 @@ a.build-err, .build-err { color: var(--err-fg); font-weight: 600; }
 }
 .form-grid label { color: var(--muted); font-size: 0.9rem; }
 
-.race-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
-.race-nav { display: flex; gap: 0.4rem; }
+/* Nav first, then the title: the arrows read as "step through the season" sitting
+   beside the race they step from, rather than stranded on the far margin. */
+.race-head { display: flex; align-items: center; gap: 0.75rem; }
+.race-nav { display: flex; gap: 0.3rem; }
+.race-nav button { padding: 0.2rem 0.55rem; line-height: 1; }
+
+/* Wide enough for HH:MM and no wider — these hold a clock time and a duration, and a
+   full-width box invites the seconds that neither of them takes. */
+input.hhmm-input { width: 7ch; }
+
+/* The filters sit under the heading rather than opposite it: they are the things
+   most often reached for, and hunting the far side of the page for them costs more
+   than the line of space this takes. */
+#race-entrants > h2 { margin-bottom: 0.35rem; }
+#race-entrants > .filters { margin-bottom: 0.9rem; }
+
+/* NOW log: every NOW click, in a list that can be dragged back onto a time box. */
+#now-log { margin: 0.5rem 0 1rem; }
+#now-log .toolbar { margin: 0.4rem 0 0.2rem; }
+#now-log-list { margin: 0; padding-left: 1.5rem; font-size: 0.9rem; }
+li.now-log-entry { cursor: grab; padding: 1px 0; }
+li.now-log-entry:active { cursor: grabbing; }
+li.now-log-entry code {
+  background: var(--surface-alt); border-radius: 3px; padding: 0 0.25rem;
+}
+.now-drag-handle { color: var(--faint); cursor: grab; user-select: none; }
+li.now-log-entry:hover .now-drag-handle { color: var(--accent); }
+input.time-input.now-drop-target {
+  outline: 2px solid var(--accent); outline-offset: -1px;
+}
 
 .save-bar {
   position: sticky; bottom: 0; z-index: 20;

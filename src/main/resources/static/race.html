@@ -11,24 +11,27 @@
 
 <main>
   <div class="race-head">
-    <h1 id="race-title">Race</h1>
     <div class="race-nav">
-      <button id="prev-btn" type="button" disabled>← Previous</button>
-      <button id="next-btn" type="button" disabled>Next →</button>
+      <button id="prev-btn" type="button" disabled title="Previous race">←</button>
+      <button id="next-btn" type="button" disabled title="Next race">→</button>
     </div>
+    <h1 id="race-title">Race</h1>
   </div>
 
   <div id="ctrl-msg" class="banner banner-info">Loading…</div>
 
   <section id="race-setup" style="display:none;">
-    <h2>Setup</h2>
     <div class="form-grid">
       <label for="f-earliest">Earliest start</label>
-      <input id="f-earliest" placeholder="18:00">
+      <input id="f-earliest" type="time" class="hhmm-input">
 
-      <label for="f-target">Target elapsed (min)</label>
+      <label for="f-target">Target elapsed</label>
       <span>
-        <input id="f-target" type="number" min="1">
+        <!-- A duration, not a time of day, so this is not type="time": that renders in
+             the browser's locale clock, and "1:30 am" is the wrong way to say 90
+             minutes. Plain text, parsed as H:MM (or as bare minutes). -->
+        <input id="f-target" class="hhmm-input" placeholder="H:MM" inputmode="numeric"
+               autocomplete="off">
         <span id="target-note" class="hint"></span>
       </span>
     </div>
@@ -40,12 +43,9 @@
   </section>
 
   <section id="handicap-panel" style="display:none;">
-    <div class="section-head">
-      <h2>Handicaps</h2>
-      <a id="report-finish-link" class="button-link" href="#" target="_blank">Finish sheet ▸</a>
-    </div>
     <div class="toolbar">
       <button id="process-btn" class="primary" type="button">Process handicaps</button>
+      <a id="report-finish-link" class="button-link" href="#" target="_blank">Finish sheet ▸</a>
       <button id="unlock-btn" type="button" style="display:none;">Unlock race</button>
       <span id="handicap-msg" class="hint"></span>
     </div>
@@ -53,22 +53,32 @@
   </section>
 
   <section id="race-entrants" style="display:none;">
-    <div class="section-head">
-      <h2>Entrants <span id="entrants-count" class="hint"></span></h2>
-      <div class="filters">
-        <label><input type="checkbox" id="hide-dnc"> Hide non-starters</label>
-        <label><input type="checkbox" id="hide-finished"> Hide finished</label>
-        <label><input type="checkbox" id="hide-design"> Hide design</label>
-        <label>Duty boat
-          <select id="duty-boat"><option value="">— none —</option></select>
-        </label>
-      </div>
+    <h2>Entrants <span id="entrants-count" class="hint"></span></h2>
+    <div class="filters">
+      <label><input type="checkbox" id="hide-dnc"> Hide non-starters</label>
+      <label><input type="checkbox" id="hide-finished"> Hide finished</label>
+      <label><input type="checkbox" id="hide-design" checked> Hide design</label>
+      <label title="Hides the NOW buttons and the log of times they capture."><input
+        type="checkbox" id="hide-now" checked> Hide NOW</label>
+      <label>Duty boat
+        <select id="duty-boat"><option value="">— none —</option></select>
+      </label>
     </div>
 
     <table id="entrants-table">
       <thead><tr id="entrants-head"></tr></thead>
       <tbody id="entrants-tbody"></tbody>
     </table>
+
+    <div id="now-log" style="display:none;">
+      <div class="toolbar">
+        <strong>NOW log</strong>
+        <span class="hint">this browser tab only — drag an entry onto any time box to
+          set it</span>
+        <button id="now-clear-btn" type="button" disabled>Clear</button>
+      </div>
+      <ol id="now-log-list"></ol>
+    </div>
 
     <div class="toolbar" id="add-entrant-bar">
       <label>Add a boat</label>
@@ -217,6 +227,30 @@
     } catch (_) { return false; }
   }
 
+  // The filter tick boxes are a view preference rather than race data, so they are kept
+   // against the tab and not the race: opening the start sheet and coming back, or
+   // stepping to the next race, must not quietly put the design column back.
+  const FILTERS = ['hide-dnc', 'hide-finished', 'hide-design', 'hide-now'];
+  const FILTER_KEY = 'sail-jinx.race.filters';
+
+  function saveFilters() {
+    const v = {};
+    for (const id of FILTERS) v[id] = document.getElementById(id).checked;
+    try { sessionStorage.setItem(FILTER_KEY, JSON.stringify(v)); } catch (_) {}
+  }
+
+  function restoreFilters() {
+    let v = null;
+    try { v = JSON.parse(sessionStorage.getItem(FILTER_KEY) || 'null'); } catch (_) {}
+    if (!v) return;
+    // Only known ids, and only booleans. Anything missing keeps the markup's own
+    // `checked` attribute, which is where the defaults are written.
+    for (const id of FILTERS)
+      if (typeof v[id] === 'boolean') document.getElementById(id).checked = v[id];
+  }
+
+  function hideNow() { return document.getElementById('hide-now').checked; }
+
   function sessionClear() {
     try { sessionStorage.removeItem(sessionKey()); } catch (_) {}
   }
@@ -334,6 +368,7 @@
   function activeCols() {
     return COLS.filter(c => {
       if (locked && (c.key === 'drag' || c.nowField)) return false;
+      if (c.nowField && hideNow()) return false;
       if (c.key === 'adjustment' && adjustments.size === 0) return false;
       if (c.key === 'design' && document.getElementById('hide-design').checked) return false;
       return true;
@@ -458,6 +493,25 @@
         touched();
       };
     });
+    // Confirmed every time, in both directions. This one tick decides whether the boat
+    // is on next week's printed start sheet, it sits in a table of tick boxes that are
+    // all safe to click, and it is a stray click away from either answer.
+    document.querySelectorAll('.casual-input').forEach(cb => {
+      cb.onchange = () => {
+        const e = entrants.find(x => String(x.boatId) === cb.dataset.id);
+        if (!e) { cb.checked = !cb.checked; return; }
+        const who = [e.sailNumber, e.name].filter(Boolean).join(' ') || 'this boat';
+        const ok = confirm(cb.checked
+          ? ('Mark ' + who + ' as a casual?\n\nIt still races and is handicapped like '
+             + 'anybody else, but it will not be carried into the next race.')
+          : ('Mark ' + who + ' as a series entrant?\n\nIt will be carried into the next '
+             + 'race when the handicaps are processed.'));
+        // Cancelling does not re-render, so the box has to be put back by hand.
+        if (!ok) { cb.checked = !cb.checked; return; }
+        e.entryType = cb.checked ? 'CASUAL' : 'ROSTER';
+        touched();
+      };
+    });
     document.querySelectorAll('.time-input').forEach(wireTimeInput);
     document.querySelectorAll('.tcf-input').forEach(input => {
       input.onchange = () => {
@@ -469,9 +523,12 @@
     });
     document.querySelectorAll('.now-btn:not(.now-head-btn)').forEach(btn => {
       btn.onclick = () => {
-        const t = timesFor(btn.dataset.id);
-        t[btn.dataset.field] = localNow();
-        if (btn.dataset.field === 'finish') lastFinish = t.finish;
+        const id = btn.dataset.id, field = btn.dataset.field;
+        const time = localNow();
+        timesFor(id)[field] = time;
+        if (field === 'finish') lastFinish = time;
+        const e = entrants.find(x => String(x.boatId) === String(id));
+        logNow({ time, field, sail: e && e.sailNumber, name: e && e.name });
         touched();
       };
     });
@@ -603,6 +660,9 @@
       n++;
     }
     if (field === 'finish' && n) lastFinish = now;
+    if (n) logNow({ time: now, field,
+      note: (field === 'finish' ? 'finish' : 'start') + ' stamped on '
+        + n + ' boat' + (n === 1 ? '' : 's') });
     touched();
     setMsg('add-msg', n ? ('Stamped ' + n + ' boats at ' + now + '.') : 'Nothing left to stamp.');
   }
@@ -617,9 +677,16 @@
         dragId = tr.dataset.id;
         ev.dataTransfer.effectAllowed = 'move';
       };
-      tr.ondragover = (ev) => { ev.preventDefault(); tr.classList.add('drag-over'); };
+      // A NOW-log entry dragged over a row is heading for a time box in it, not asking
+      // to reorder anything — leave it to the document-level handlers below.
+      tr.ondragover = (ev) => {
+        if (isNowTimeDrag(ev)) return;
+        ev.preventDefault();
+        tr.classList.add('drag-over');
+      };
       tr.ondragleave = () => tr.classList.remove('drag-over');
       tr.ondrop = (ev) => {
+        if (isNowTimeDrag(ev)) return;
         ev.preventDefault();
         tr.classList.remove('drag-over');
         if (!dragId || dragId === tr.dataset.id) return;
@@ -638,6 +705,135 @@
       };
     });
   }
+
+  // --- the NOW log -----------------------------------------------------------
+  //
+  // Every NOW click lands here as well as in the boat's time box. It earns its keep
+  // twice: a time captured against the wrong boat can be dragged onto the right one
+  // instead of being read off the screen and retyped, and a value about to be
+  // overwritten by such a drag is caught here rather than lost. It lives in the tab and
+  // never reaches the store — a scratchpad for the night, not a record of the race.
+
+  let nowLog = [];
+
+  function nowLogKey() { return sessionKey() + '.nowLog'; }
+
+  function saveNowLog() {
+    try { sessionStorage.setItem(nowLogKey(), JSON.stringify(nowLog)); } catch (_) {}
+  }
+
+  function restoreNowLog() {
+    try {
+      const p = JSON.parse(sessionStorage.getItem(nowLogKey()) || 'null');
+      nowLog = Array.isArray(p) ? p : [];
+    } catch (_) { nowLog = []; }
+  }
+
+  function logNow(entry) {
+    nowLog.push(entry);
+    renderNowLog();
+    saveNowLog();
+  }
+
+  /** What an entry says about itself: an explicit note, or the field and boat. */
+  function nowLogNote(e) {
+    if (e.note) return e.note;
+    const what = e.field === 'finish' ? 'finish'
+               : e.field === 'actualStart' ? 'start' : null;
+    if (!what) return '';
+    const who = [e.sail, e.name].filter(Boolean).join(' ');
+    return what + (who ? ' for ' + who : '');
+  }
+
+  function renderNowLog() {
+    const list = document.getElementById('now-log-list');
+    document.getElementById('now-clear-btn').disabled = nowLog.length === 0;
+    if (!nowLog.length) {
+      list.innerHTML = '<li class="hint">no NOW clicks yet</li>';
+      return;
+    }
+    // Oldest first, so the list reads down the page in the order things happened.
+    const sorted = nowLog.slice()
+      .sort((a, b) => (parseTime(a.time) ?? 0) - (parseTime(b.time) ?? 0));
+    list.innerHTML = sorted.map(e => {
+      const note = nowLogNote(e);
+      return '<li class="now-log-entry" draggable="true" data-time="' + esc(e.time) + '">'
+        + '<span class="now-drag-handle" title="Drag onto a time box">☰</span> '
+        + '<code>' + esc(e.time) + '</code>'
+        + (note ? ' — ' + esc(note) : '') + '</li>';
+    }).join('');
+    list.querySelectorAll('li.now-log-entry').forEach(li => {
+      li.ondragstart = (ev) => {
+        ev.dataTransfer.setData('text/plain', li.dataset.time);
+        // A private type so the row-reorder handlers can tell a time drag from a row
+        // drag without being able to read the payload.
+        ev.dataTransfer.setData('application/x-now-time', li.dataset.time);
+        ev.dataTransfer.effectAllowed = 'copy';
+      };
+    });
+  }
+
+  function isNowTimeDrag(ev) {
+    return !!(ev.dataTransfer && Array.from(ev.dataTransfer.types)
+      .includes('application/x-now-time'));
+  }
+
+  /**
+   * A time already captured for this boat is about to be overwritten by a drag. Keep it,
+   * so the wrong-boat correction the drag is making does not throw away the value it
+   * displaces — the RO may want to drag it somewhere itself.
+   *
+   * <p>The stored time is read, never the box's own value: an unblurred box can be
+   * showing a prefill, and "18:00:" would be logged as a real 18:00:00.
+   */
+  function logDisplaced(previous, e, field) {
+    if (!previous) return;
+    if (nowLog.some(x => x.time === previous)) return;
+    const who = e ? [e.sailNumber, e.name].filter(Boolean).join(' ') : '';
+    nowLog.push({ time: previous,
+      note: 'replaced ' + (field === 'finish' ? 'finish' : 'start')
+        + (who ? ' for ' + who : '') + ' by drag' });
+  }
+
+  function applyNowDrop(inp, dragged) {
+    const canon = reformatTime(dragged);
+    if (!canon) return;
+    const id = inp.dataset.id, field = inp.dataset.field;
+    if (!field) return;
+    const e = entrants.find(x => String(x.boatId) === String(id));
+    const t = timesFor(id);
+    logDisplaced(t[field], e, field);
+    t[field] = canon;
+    if (field === 'finish') lastFinish = canon;
+    renderNowLog();
+    saveNowLog();
+    touched();
+  }
+
+  // Delegated, because the table re-renders on every edit and per-input handlers would
+  // have to be re-bound each time. dragover must preventDefault to mark the box as a
+  // valid target at all; drop must, to stop the browser inserting the text itself.
+  document.addEventListener('dragover', (ev) => {
+    if (!isNowTimeDrag(ev)) return;
+    const inp = ev.target.closest && ev.target.closest('input.time-input');
+    if (!inp || inp.disabled || inp.readOnly) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'copy';
+    inp.classList.add('now-drop-target');
+  });
+  document.addEventListener('dragleave', (ev) => {
+    const inp = ev.target.closest && ev.target.closest('input.time-input');
+    if (inp) inp.classList.remove('now-drop-target');
+  });
+  document.addEventListener('drop', (ev) => {
+    document.querySelectorAll('.now-drop-target')
+      .forEach(i => i.classList.remove('now-drop-target'));
+    if (!isNowTimeDrag(ev)) return;
+    const inp = ev.target.closest && ev.target.closest('input.time-input');
+    if (!inp || inp.disabled || inp.readOnly) return;
+    ev.preventDefault();
+    applyNowDrop(inp, ev.dataTransfer.getData('text/plain'));
+  });
 
   // --- flags popover ---------------------------------------------------------
 
@@ -1014,18 +1210,44 @@
 
 
 
+  /**
+   * The target duration, read from a box that shows H:MM. A bare number is taken as
+   * minutes, because that is how a target gets said out loud — "give them ninety".
+   * Returns null for anything else, which the caller reports rather than sending on.
+   */
+  function parseInterval(raw) {
+    const v = String(raw ?? '').trim();
+    if (!v) return null;
+    const m = v.match(/^(\d{1,2}):([0-5]\d)$/);
+    if (m) return Number(m[1]) * 60 + Number(m[2]);
+    return /^\d{1,4}$/.test(v) ? Number(v) : null;
+  }
+
+  function fmtInterval(minutes) {
+    if (minutes == null || !isFinite(minutes)) return '';
+    const m = Math.max(0, Math.round(minutes));
+    return Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0');
+  }
+
   async function computeStartTimes() {
     if (bundle.startSheet && !confirm(
         'Start times have already been published for this race. Recompute them?')) return;
+    const rawTarget = document.getElementById('f-target').value;
+    const target = parseInterval(rawTarget);
+    if (rawTarget.trim() && target == null) {
+      setMsg('setup-msg', 'Target elapsed must be H:MM, or a plain number of minutes.');
+      return;
+    }
     const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/start-times', {
-      targetElapsedMinutes: Number(document.getElementById('f-target').value) || null,
+      targetElapsedMinutes: target,
       earliestStart: document.getElementById('f-earliest').value.trim() || null
     });
     if (!r.ok) { setMsg('setup-msg', 'Could not compute: ' + errorOf(r)); return; }
     await load();
     setMsg('setup-msg', r.body.limitedBySunset
       ? 'Start times computed — target capped to '
-        + r.body.startSheet.targetElapsedMinutes + ' min by sunset at ' + r.body.sunsetLocal + '.'
+        + fmtInterval(r.body.startSheet.targetElapsedMinutes)
+        + ' by sunset at ' + r.body.sunsetLocal + '.'
       : 'Start times computed — print the start sheet.');
   }
 
@@ -1063,7 +1285,10 @@
     await load();
     renderHandicapSummary(r.body);
     const carried = sr.body.carriedEntrants;
-    setMsg('handicap-msg', 'Processed and saved. '
+    // The notice box only — this used to also go in the hint beside the button, which
+    // put the same three sentences on the screen twice.
+    setMsg('handicap-msg', '');
+    setCtrlMsg('banner-ok', 'Processed and saved. '
       + (carried != null
           ? carried + ' boats carried forward to the next race.'
           : 'This is the last race in the series, so nothing was carried forward.')
@@ -1103,6 +1328,12 @@
     if (el) el.textContent = text;
   }
 
+  function applyNowVisibility() {
+    // Nothing left to capture on a locked race, so the log is stale rather than useful.
+    document.getElementById('now-log').style.display =
+      (locked || hideNow()) ? 'none' : '';
+  }
+
   function renderDutyOptions() {
     const sel = document.getElementById('duty-boat');
     sel.innerHTML = '<option value="">— none —</option>' + entrants
@@ -1120,7 +1351,7 @@
       + (r.date ? ', ' + fmtDate(r.date) : '');
 
     document.getElementById('f-earliest').value = (r.earliestStart || '').slice(0, 5);
-    document.getElementById('f-target').value = r.targetElapsedMinutes ?? '';
+    document.getElementById('f-target').value = fmtInterval(r.targetElapsedMinutes);
     ['f-earliest', 'f-target'].forEach(id => {
       document.getElementById(id).disabled = locked;
     });
@@ -1142,19 +1373,20 @@
     // seeing before the start times are computed rather than after.
     const note = document.getElementById('target-note');
     if (bundle.sunsetLocal) {
-      const target = Number(document.getElementById('f-target').value) || 0;
+      const target = parseInterval(document.getElementById('f-target').value) || 0;
       const earliest = parseTime((r.earliestStart || '').slice(0, 5) + ':00');
       const sunset = parseTime(bundle.sunsetLocal + ':00');
       const available = (earliest != null && sunset != null)
         ? Math.round((sunset - earliest) / 60) : null;
       note.textContent = 'sunset ' + bundle.sunsetLocal
         + (available == null ? ''
-           : ' — ' + available + ' min of daylight'
+           : ' — ' + fmtInterval(available) + ' of daylight'
              + (target > available ? ', so this will be capped' : ''));
     } else {
       note.textContent = '';
     }
 
+    applyNowVisibility();
     document.getElementById('unlock-btn').style.display = locked ? '' : 'none';
     document.getElementById('process-btn').disabled = locked;
 
@@ -1197,6 +1429,8 @@
     baseline = stateJson();
     const restored = sessionRestore();
 
+    restoreNowLog();
+    renderNowLog();
     rebuildScorer();
     renderRace();
     renderDutyOptions();
@@ -1267,13 +1501,29 @@
     document.getElementById('start-times-btn').onclick = computeStartTimes;
     document.getElementById('process-btn').onclick = processHandicaps;
     document.getElementById('unlock-btn').onclick = unlockRace;
-    document.getElementById('hide-dnc').onchange = renderEntrants;
-    document.getElementById('hide-finished').onchange = renderEntrants;
+    // Hide design and Hide NOW change the column set, so the header has to be rebuilt
+    // as well; the other two only change which rows show.
+    document.getElementById('hide-dnc').onchange = () => { saveFilters(); renderEntrants(); };
+    document.getElementById('hide-finished').onchange = () => { saveFilters(); renderEntrants(); };
     document.getElementById('hide-design').onchange = () => {
-      // The column set changes, so the header has to be rebuilt too — the other
-      // filters only change which rows show.
+      saveFilters();
       renderHead();
       renderEntrants();
+    };
+    document.getElementById('hide-now').onchange = () => {
+      saveFilters();
+      applyNowVisibility();
+      renderHead();
+      renderEntrants();
+    };
+    document.getElementById('now-clear-btn').onclick = () => {
+      if (!nowLog.length) return;
+      if (!confirm('Clear all ' + nowLog.length + ' logged time'
+        + (nowLog.length === 1 ? '' : 's') + '?\n\nThe times captured against the boats '
+        + 'themselves are not affected.')) return;
+      nowLog = [];
+      renderNowLog();
+      saveNowLog();
     };
     document.getElementById('duty-boat').onchange = (ev) => {
       dutyBoatId = ev.target.value || null;
@@ -1310,6 +1560,7 @@
       if (isDirty()) { ev.preventDefault(); ev.returnValue = ''; }
     });
 
+    restoreFilters();
     await load();
     refreshAddSuggestions();
     updateAddButtons();
