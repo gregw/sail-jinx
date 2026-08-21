@@ -397,16 +397,21 @@ class JsonStoreTest
         first.start();
         first.putSeriesConfig("s-1",
             new JinxConfig.Algorithm(List.of(7.0, 5.0, 3.0, 1.0), 75, 4, "17:30",
-                -34.5678, 150.4321, true));
+                -34.5678, 150.4321, true,
+                JinxConfig.Variant.B, null, null, false));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
         JinxConfig.Algorithm read = reopened.seriesConfig("s-1");
         assertThat(read.penaltyList(), contains(7.0, 5.0, 3.0, 1.0));
-        assertThat(read.idealRaceDuration(), equalTo(75));
+        assertThat(read.defaultRaceDuration(), equalTo(75));
         assertThat(read.dnfAllowance(), equalTo(4));
         assertThat(read.earliestStart(), equalTo("17:30"));
         assertThat(read.limitBySunset(), is(true));
+        // A per-series variant override has to survive the round trip, or a series
+        // scored on B quietly reverts to the club default on restart.
+        assertThat(read.penaltyScaling(), is(JinxConfig.PenaltyScaling.FIXED));
+        assertThat(read.givebackGamma(), is(1.0));
     }
 
     // --- Adjustments and audit -----------------------------------------------

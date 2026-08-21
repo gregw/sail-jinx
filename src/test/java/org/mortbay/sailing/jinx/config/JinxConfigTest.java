@@ -47,7 +47,7 @@ class JinxConfigTest
         assertThat(config.club().longName(), equalTo("Manly Yacht Club"));
         assertThat(config.club().timezone(), equalTo("Australia/Sydney"));
         assertThat(config.algorithm().penaltyList(), contains(6.0, 4.0, 2.0));
-        assertThat(config.algorithm().idealRaceDuration(), equalTo(75));
+        assertThat(config.algorithm().defaultRaceDuration(), equalTo(75));
         assertThat(config.algorithm().dnfAllowance(), equalTo(7));
         assertThat(config.algorithm().earliestStart(), equalTo("17:45"));
         assertThat(config.algorithm().latitude(), closeTo(-34.1234, 1e-9));
@@ -87,7 +87,7 @@ class JinxConfigTest
 
         // Algorithm defaults (wiki §10)
         assertThat(config.algorithm().penaltyList(), equalTo(List.of(5.0, 4.0, 3.0, 2.0, 1.0)));
-        assertThat(config.algorithm().idealRaceDuration(), equalTo(90));
+        assertThat(config.algorithm().defaultRaceDuration(), equalTo(90));
         assertThat(config.algorithm().dnfAllowance(), equalTo(5));
         assertThat(config.algorithm().earliestStart(), equalTo("18:00"));
         // Manly Yacht Club ground truth — defaults are tuned to the originating
@@ -112,7 +112,7 @@ class JinxConfigTest
         assertThat(config.club().longName(), equalTo("Sailing Club"));
         // shortName falls back to the long one rather than being blank.
         assertThat(config.club().shortName(), equalTo("Sailing Club"));
-        assertThat(config.algorithm().idealRaceDuration(), equalTo(90));
+        assertThat(config.algorithm().defaultRaceDuration(), equalTo(90));
         assertThat(config.server().port(), equalTo(8080));
     }
 

@@ -12,6 +12,22 @@ package org.mortbay.sailing.jinx.pursuit;
  * <p>Nothing else about the boat is relevant here: the algorithm works on handicaps and
  * elapsed times, and does not care what the boat is called or what it was built as.
  */
-public record Competitor(String boatId, double tcf)
+public record Competitor(String boatId, double tcf, boolean seeded)
 {
+    /**
+     * A boat that was on the start sheet before the night began, and so takes part in the
+     * handicap. A boat that turned up and raced without being seeded is scored for the
+     * night but left out of the handicap arithmetic entirely — it is not in the placings,
+     * it neither pays into the pool nor draws from it, and its elapsed time does not
+     * reach the measured duration the rest of the fleet is judged against.
+     */
+    public Competitor
+    {
+    }
+
+    /** A seeded boat — the ordinary case, and what every caller meant before the flag. */
+    public Competitor(String boatId, double tcf)
+    {
+        this(boatId, tcf, true);
+    }
 }

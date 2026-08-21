@@ -4,8 +4,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
@@ -38,7 +41,8 @@ public record JinxConfig(
         if (club == null)
             club = new Club(null, null, null, null);
         if (algorithm == null)
-            algorithm = new Algorithm(null, 0, 0, null, null, null, false);
+            algorithm = new Algorithm(
+                null, 0, 0, null, null, null, false, null, null, null, false);
         if (server == null)
             server = new Server(0);
     }
@@ -87,6 +91,96 @@ public record JinxConfig(
     }
 
     /**
+     * How a penalty scales with the length of the race that earned it.
+     *
+     * <p>{@code FIXED} takes the figure from {@code penaltyList} as it stands, so the
+     * same win costs the same on a 45-minute night as on a two-hour one. {@code PER_HOUR}
+     * reads it as a rate and multiplies by the measured duration, so a win costs in
+     * proportion to the racing it took.
+     */
+    public enum PenaltyScaling
+    {
+        FIXED,
+        PER_HOUR;
+
+        /** Tolerant of how a person writes it: perHour, per_hour, PERHOUR, per-hour. */
+        @JsonCreator
+        public static PenaltyScaling parse(String raw)
+        {
+            if (raw == null)
+                return null;
+            String v = raw.trim().toLowerCase(Locale.ENGLISH).replaceAll("[^a-z]", "");
+            return switch (v)
+            {
+                case "fixed" -> FIXED;
+                case "perhour" -> PER_HOUR;
+                default ->
+                {
+                    LOG.warn("Unknown algorithm.penaltyScaling '{}' — using {}",
+                        raw, DEFAULT_VARIANT.penaltyScaling());
+                    yield null;
+                }
+            };
+        }
+    }
+
+    /**
+     * The four handicap variants, as the two knobs they actually are.
+     *
+     * <pre>
+     *   Variant | penaltyScaling | givebackGamma
+     *      A    | fixed          | 0.0
+     *      B    | fixed          | 1.0
+     *      C    | perHour        | 0.0   &lt;-- default
+     *      D    | perHour        | 1.0
+     * </pre>
+     *
+     * <p>A convenience only. The knobs are what the engine reads, and either may be set
+     * on its own; naming a variant is a shorthand for setting both. Gamma is continuous,
+     * so A/B/C/D are corners of a square rather than a list of alternatives.
+     */
+    public enum Variant
+    {
+        A(PenaltyScaling.FIXED, 0.0),
+        B(PenaltyScaling.FIXED, 1.0),
+        C(PenaltyScaling.PER_HOUR, 0.0),
+        D(PenaltyScaling.PER_HOUR, 1.0);
+
+        private final PenaltyScaling penaltyScaling;
+        private final double givebackGamma;
+
+        Variant(PenaltyScaling penaltyScaling, double givebackGamma)
+        {
+            this.penaltyScaling = penaltyScaling;
+            this.givebackGamma = givebackGamma;
+        }
+
+        public PenaltyScaling penaltyScaling() { return penaltyScaling; }
+
+        public double givebackGamma() { return givebackGamma; }
+
+        @JsonCreator
+        public static Variant parse(String raw)
+        {
+            if (raw == null || raw.isBlank())
+                return null;
+            String v = raw.trim().toUpperCase(Locale.ENGLISH);
+            try
+            {
+                return valueOf(v);
+            }
+            catch (IllegalArgumentException e)
+            {
+                LOG.warn("Unknown algorithm.variant '{}' — using {}", raw, DEFAULT_VARIANT);
+                return null;
+            }
+        }
+    }
+
+    /** What the club gets when it says nothing: per-hour penalties, given back evenly. */
+    public static final Variant DEFAULT_VARIANT = Variant.C;
+
+    /**
      * Parameters for the Jinx pursuit handicap engine. Defaults are tuned to
      * the originating MYC Twilight use case; another club overrides via
      * {@code config.yaml}, and a single series can override further via the
@@ -95,6 +189,27 @@ public record JinxConfig(
      *
      * <p>{@code limitBySunset} caps the race duration so the slowest boat is expected
      * to finish by sunset on the race date.
+     *
+     * <p>{@code variant} is shorthand for the two knobs below it and is resolved away
+     * here — the engine never sees it. An explicitly given knob wins over the variant
+     * that disagrees with it, with a warning, because the specific setting is the one
+     * somebody went to the trouble of writing.
+     *
+     * <p>{@code dnfInRaceDuration} decides whether boats that retired contribute their
+     * allowance-derived elapsed time to the measured duration. Off by default: a stormy
+     * night is exactly when retirements cluster, and their times are an allowance rather
+     * than a measurement, so letting them in would stretch the very number the penalties
+     * are scaled by.
+     *
+     * <p>{@code defaultRaceDuration} is the fallback <em>pre-race</em> target: how long a
+     * race is meant to take when nobody has said, used only to compute published start
+     * times. It is not the measured duration the handicap arithmetic runs on — that is
+     * the median of what the fleet actually sailed, and the two must not be confused.
+     *
+     * <p>It carries the old name {@code idealRaceDuration} as an alias, because that key
+     * held this value too. Its other job is gone: γ used to be derived from it, as
+     * {@code t_target / (t_target + ideal)}. γ is an explicit knob now. One key doing a
+     * shaping constant and a default target at once is how the two got conflated.
      *
      * <p>There was a {@code v0knots} here — V₀, the speed of a notional 1.000-TCF boat.
      * It had two jobs and has neither. Sizing a course from a target duration went when
@@ -106,19 +221,24 @@ public record JinxConfig(
      */
     public record Algorithm(
         @JsonProperty("penaltyList") List<Double> penaltyList,
-        @JsonProperty("idealRaceDuration") @JsonAlias("idealRaceLength") int idealRaceDuration,
+        @JsonProperty("defaultRaceDuration")
+        @JsonAlias({"idealRaceDuration", "idealRaceLength"}) int defaultRaceDuration,
         @JsonProperty("dnfAllowance") int dnfAllowance,
         @JsonProperty("earliestStart") String earliestStart,
         @JsonProperty("latitude") Double latitude,
         @JsonProperty("longitude") Double longitude,
-        @JsonProperty("limitBySunset") boolean limitBySunset)
+        @JsonProperty("limitBySunset") boolean limitBySunset,
+        @JsonProperty("variant") Variant variant,
+        @JsonProperty("penaltyScaling") PenaltyScaling penaltyScaling,
+        @JsonProperty("givebackGamma") Double givebackGamma,
+        @JsonProperty("dnfInRaceDuration") boolean dnfInRaceDuration)
     {
         public Algorithm
         {
             if (penaltyList == null || penaltyList.isEmpty())
                 penaltyList = List.of(5.0, 4.0, 3.0, 2.0, 1.0);
-            if (idealRaceDuration <= 0)
-                idealRaceDuration = 90;
+            if (defaultRaceDuration <= 0)
+                defaultRaceDuration = 90;
             if (dnfAllowance <= 0)
                 dnfAllowance = 5;
             if (earliestStart == null || earliestStart.isBlank())
@@ -127,6 +247,48 @@ public record JinxConfig(
                 latitude = -33.8000;
             if (longitude == null)
                 longitude = 151.2833;
+
+            // Resolve the variant away, so everything downstream reads two plain knobs.
+            Variant base = variant != null ? variant : DEFAULT_VARIANT;
+            if (variant != null && penaltyScaling != null
+                && penaltyScaling != variant.penaltyScaling())
+            {
+                LOG.warn("algorithm.variant {} says penaltyScaling {}, but penaltyScaling "
+                    + "is set to {} — the explicit setting wins",
+                    variant, variant.penaltyScaling(), penaltyScaling);
+            }
+            if (variant != null && givebackGamma != null
+                && Double.compare(givebackGamma, variant.givebackGamma()) != 0)
+            {
+                LOG.warn("algorithm.variant {} says givebackGamma {}, but givebackGamma "
+                    + "is set to {} — the explicit setting wins",
+                    variant, variant.givebackGamma(), givebackGamma);
+            }
+            if (penaltyScaling == null)
+                penaltyScaling = base.penaltyScaling();
+            if (givebackGamma == null)
+                givebackGamma = base.givebackGamma();
+            // γ is an exponent between "even" and "elapsed-weighted". Outside that range
+            // it is not a stronger opinion, it is a typo, so it is clamped rather than
+            // obeyed — an exponent of 12 would hand the whole pool to one boat.
+            if (givebackGamma < 0.0 || givebackGamma > 1.0)
+            {
+                LOG.warn("algorithm.givebackGamma {} is outside 0.0..1.0 — clamping",
+                    givebackGamma);
+                givebackGamma = Math.min(1.0, Math.max(0.0, givebackGamma));
+            }
+        }
+
+        /** The knobs as the variant they correspond to, or empty at an intermediate γ. */
+        public Optional<Variant> asVariant()
+        {
+            for (Variant v : Variant.values())
+            {
+                if (v.penaltyScaling() == penaltyScaling
+                    && Double.compare(v.givebackGamma(), givebackGamma) == 0)
+                    return Optional.of(v);
+            }
+            return Optional.empty();
         }
     }
 

@@ -27,11 +27,21 @@ import static org.hamcrest.Matchers.hasSize;
 class PursuitHandicapEngineTest
 {
     private static final JinxConfig.Algorithm DEFAULT_ALG = new JinxConfig.Algorithm(
-        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 5, "18:00", -33.8000, 151.2833, false);
+        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 5, "18:00", -33.8000, 151.2833, false,
+        null, null, null, false);
 
     private static final double TOLERANCE = 0.01;
 
+    /** The default the club gets when it says nothing: C — per-hour penalties, even giveback. */
     private final PursuitHandicapEngine engine = new PursuitHandicapEngine(DEFAULT_ALG);
+
+    /** A corner of the square this file needs by name rather than by default. */
+    private static PursuitHandicapEngine engine(JinxConfig.PenaltyScaling scaling, double gamma)
+    {
+        return new PursuitHandicapEngine(new JinxConfig.Algorithm(
+            List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 5, "18:00", -33.8000, 151.2833, false,
+            null, scaling, gamma, false));
+    }
 
     /** The pair the engine works on: an id to key the answer by, and the TCF in force. */
     private static Competitor boat(String id, String name, String sailNumber, double tcf)
@@ -96,7 +106,11 @@ class PursuitHandicapEngineTest
      * smallest; the back of the fleet picks up larger shares because
      * their elapsed (or DNF effective elapsed) is larger.
      *
-     * <p>Worked-example fleet @ tTarget=90, ideal=90, gamma=0.5:
+     * <p>This is the γ knob at 0.5 — an intermediate value, between the even split of
+     * A/C and the fully elapsed-weighted B/D — with fixed penalties so the pool is a
+     * round 15. Named explicitly rather than taken from the default, which is γ = 0.
+     *
+     * <p>Worked-example fleet, penaltyScaling fixed, gamma=0.5:
      * weights = √elapsed = √[85,90,95,100,105,110,115,120(dnf)]
      *         ≈ [9.220, 9.487, 9.747, 10.000, 10.247, 10.488, 10.724, 10.954]
      * Σweights ≈ 80.867; pool = 5+4+3+2+1 = 15.
@@ -109,7 +123,8 @@ class PursuitHandicapEngineTest
         Race race = race(90);
         Map<String, Result> results = workedExampleResults();
 
-        Adjustment first = engine.processResults(boats, race, results).stream()
+        Adjustment first = engine(JinxConfig.PenaltyScaling.FIXED, 0.5)
+            .processResults(boats, race, results).stream()
             .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
             .findFirst().orElseThrow();
 
@@ -191,21 +206,23 @@ class PursuitHandicapEngineTest
     }
 
     /**
-     * newTcf is anchored to the race that was actually sailed: the median over finishers
-     * of {@code TCF × elapsed}, the length of the race in "minutes of a 1.000-TCF boat".
+     * newTcf is anchored to the race that was actually sailed, under the default variant
+     * C: per-hour penalties, given back evenly.
      *
-     * <p>Worked example fleet: 7 finishers @ 85,90,…,115 min + 1 DNF, all TCF=1.0, so
-     * the median of {@code TCF × E} is 100. p1 gets reward ≈ 1.711 (see
-     * {@link #winnerRewardScalesWithOwnElapsed}), so net = 5 − 1.711 = 3.289:
+     * <p>Worked example fleet: 7 finishers @ 85,90,…,115 min + 1 DNF, all TCF = 1.0.
      * <pre>
-     *   tMinutesPerUnitTcf = 100
-     *   newTcf = 1.0 / (1 − 3.289 × 1.0 / 100)
-     *          = 1.0 / (1 − 0.03289) ≈ 1.0340
+     *   raceDuration = median(85,90,95,100,105,110,115)      = 100 min
+     *   pool         = (5+4+3+2+1) × 100/60                  = 25.0 min
+     *   participants = 7 finishers + 1 DNF                   = 8
+     *   reward       = 25.0 / 8                              = 3.125  (γ = 0, even)
+     *   p1 penalty   = 5 × 100/60                            = 8.3333
+     *   p1 net       = 8.3333 − 3.125                        = 5.2083
+     *   scale        = raceDuration × medianTcf = 100 × 1.0  = 100
+     *   newTcf       = 1.0 / (1 − 5.2083 / 100)              ≈ 1.05495
      * </pre>
      *
-     * <p>The expected value is unchanged from when this was written in terms of V₀ and a
-     * course in nautical miles — V₀ = 6.0 gave {@code 60 × 10.0 / 6.0 = 100}, the same
-     * number by a longer route. That is the whole reason V₀ could go.
+     * <p>Note the target elapsed time appears nowhere. The race is created with a target
+     * of 90; the arithmetic runs on the 100 the fleet actually took.
      */
     @Test
     void newTcfIsAnchoredToTheRaceActuallySailed()
@@ -218,7 +235,7 @@ class PursuitHandicapEngineTest
             .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
             .findFirst().orElseThrow();
 
-        assertThat(p1.newTcf(), closeTo(1.0340, 0.0005));
+        assertThat(p1.newTcf(), closeTo(1.05495, 0.00005));
     }
 
     /**
@@ -271,10 +288,13 @@ class PursuitHandicapEngineTest
             "ocs",   new Result("ocs",   FinishStatus.FIN, start, start.plusMinutes(40), null, 3),
             "third", new Result("third", FinishStatus.FIN, start, start.plusMinutes(60), null, 2));
 
-        Map<String, Adjustment> byId = engine.processResults(boats, race, results).stream()
+        // Fixed scaling, so the ladder reads as the plain figures from penaltyList and
+        // the test stays about which boat gets which rung.
+        Map<String, Adjustment> byId = engine(JinxConfig.PenaltyScaling.FIXED, 0.0)
+            .processResults(boats, race, results).stream()
             .collect(Collectors.toMap(Adjustment::boatId, a -> a));
 
-        // penaltyList is [5,4,3,2,1] in DEFAULT_ALG; positions 1,2,3 ⇒ 5,4,3.
+        // penaltyList is [5,4,3,2,1]; positions 1,2,3 ⇒ 5,4,3.
         assertThat(byId.get("first").penaltyMinutes(), closeTo(5.0, TOLERANCE));
         assertThat(byId.get("third").penaltyMinutes(), closeTo(4.0, TOLERANCE));
         assertThat(byId.get("ocs").penaltyMinutes(),   closeTo(3.0, TOLERANCE));

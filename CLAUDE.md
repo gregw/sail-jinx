@@ -35,6 +35,9 @@ Deliberately preserved pluggability:
 - `HandicapEngine` is an interface. `PursuitHandicapEngine` is the first
   implementation; another algorithm can be added without touching the server or
   the store.
+- **The four handicap variants are not four implementations.** A, B, C and D are
+  two independent knobs on the one pursuit engine — see below. Adding a fifth
+  letter would be a mistake; adding a third knob might not be.
 - Club identity and algorithm parameters are configuration, not code. Another
   club runs its own `config.yaml`.
 
@@ -109,6 +112,45 @@ value a drag displaces goes back into the log rather than being lost.
 `scoring.js` also carries the sail-number normalisation the register uses, so the
 race page's add-a-boat type-ahead finds the boat the server would resolve to
 rather than approximating it.
+
+### The handicap variants: two knobs, not four algorithms
+
+`config.yaml`'s `algorithm:` block selects a corner of a 2×2:
+
+| Variant | `penaltyScaling` | `givebackGamma` |
+|---|---|---|
+| A | `fixed` | 0.0 |
+| B | `fixed` | 1.0 |
+| **C** | `perHour` | **0.0** — the default |
+| D | `perHour` | 1.0 |
+
+`variant: C` is shorthand for setting both. Either knob may be set alone; an
+explicit knob beats a variant that contradicts it, with a warning. `givebackGamma`
+is continuous, so the letters are corners of a square, not a menu — 0.35 is a real
+setting.
+
+Three things it is easy to get wrong here:
+
+1. **`raceDuration` is measured, `targetElapsedMinutes` is a guess.** The handicap
+   arithmetic runs on the median of the elapsed times the fleet actually sailed.
+   The target is the pre-race estimate and is used *only* to publish start times.
+   The engine deliberately does not read it in `processResults`.
+2. **The penalty scaling and the §7 denominator must be the same quantity.** Under
+   `perHour` the penalties scale by `raceDuration` and the TCF conversion divides by
+   `raceDuration × TCF_med`; the two cancel, which is what makes C give the same
+   correction whether the night was 45 minutes or two hours. Substitute the target
+   in either place and the cancellation breaks silently. `HandicapVariantTest`
+   pins it.
+3. **Casuals are out of the handicap entirely.** `Competitor.seeded` is false for
+   them: no rung on the penalty ladder, no share of the pool, and their elapsed
+   time stays out of the median. Note this *contradicts* `Entrant.scoresHandicap()`,
+   which still answers true for CASUAL — the client decides what to send
+   (`scoring.js handicapEngineInput` sets `seeded: entryType === 'ROSTER'`), so
+   that is the one line to change if the club wants casuals handicapped again.
+
+`Design.noSpinnaker`-style asymmetry applies to `dnfInRaceDuration` too: retirements
+draw from the pool because they sailed, but their elapsed time is an *allowance*
+rather than a measurement, so it stays out of the median unless asked for.
 
 ### The corrected/scored distinction
 

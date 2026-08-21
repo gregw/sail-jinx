@@ -15,9 +15,24 @@ club:
   timezone: "Australia/Sydney"     # used to compute local sunset
 
 algorithm:
-  penaltyList: [6, 4, 2]           # minutes deducted for 1st, 2nd, 3rd
-  idealRaceDuration: 90            # minutes
+  # The handicap variant, as the two knobs it actually is. `variant` is shorthand for
+  # both; either knob may be set on its own, and an explicit knob beats the variant it
+  # contradicts. Omit the lot and you get C.
+  #
+  #   variant | penaltyScaling | givebackGamma
+  #      A    | fixed          | 0.0
+  #      B    | fixed          | 1.0
+  #      C    | perHour        | 0.0   <-- default
+  #      D    | perHour        | 1.0
+  variant: C
+  penaltyScaling: perHour          # perHour = a rate scaled by the measured duration
+  givebackGamma: 0.0               # 0 = even split, 1 = weighted by elapsed
+
+  penaltyList: [6, 4, 2]           # minutes for 1st, 2nd, 3rd — per hour under perHour
   dnfAllowance: 5                  # minutes added to the slowest finisher
+  dnfInRaceDuration: false         # keep retirements out of the measured duration
+  defaultRaceDuration: 90          # pre-race target when a race does not say; start
+                                   # times only, never the handicap arithmetic
   earliestStart: "18:00"           # the slowest boat's gun
   limitBySunset: false             # cap the duration so the fleet finishes by sundown
 

@@ -801,7 +801,7 @@ public class ApiServlet extends HttpServlet
         LocalTime earliest = parseTime(text(body, "earliestStart"),
             LocalTime.parse(alg.earliestStart()));
         Integer target = body.hasNonNull("targetElapsedMinutes")
-            ? body.path("targetElapsedMinutes").asInt() : alg.idealRaceDuration();
+            ? body.path("targetElapsedMinutes").asInt() : alg.defaultRaceDuration();
 
         // An edit keeps the id it was given, so renaming a race never orphans its
         // entrants or times. Only a new race can be a repeating run.
@@ -1094,7 +1094,7 @@ public class ApiServlet extends HttpServlet
         int target = body.hasNonNull("targetElapsedMinutes")
             ? body.path("targetElapsedMinutes").asInt()
             : (race.targetElapsedMinutes() != null
-                ? race.targetElapsedMinutes() : alg.idealRaceDuration());
+                ? race.targetElapsedMinutes() : alg.defaultRaceDuration());
         LocalTime earliest = parseTime(text(body, "earliestStart"),
             race.earliestStart() != null
                 ? race.earliestStart() : LocalTime.parse(alg.earliestStart()));
@@ -1264,7 +1264,7 @@ public class ApiServlet extends HttpServlet
 
         int tTarget = body.path("targetElapsedMinutes").asInt(
             race != null && race.targetElapsedMinutes() != null
-                ? race.targetElapsedMinutes() : alg.idealRaceDuration());
+                ? race.targetElapsedMinutes() : alg.defaultRaceDuration());
 
         JsonNode boatsNode = body.path("boats");
         if (!boatsNode.isArray() || boatsNode.isEmpty())
@@ -1281,7 +1281,9 @@ public class ApiServlet extends HttpServlet
             if (isBlank(boatId))
                 continue;
             double tcf = b.path("currentTcf").asDouble(1.0);
-            boats.add(new Competitor(boatId, tcf));
+            // Absent means seeded: every caller before the flag meant that, and treating
+            // a missing field as "casual" would quietly drop the whole fleet.
+            boats.add(new Competitor(boatId, tcf, b.path("seeded").asBoolean(true)));
 
             FinishStatus status;
             try
@@ -1433,7 +1435,11 @@ public class ApiServlet extends HttpServlet
     {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("penaltyList", a.penaltyList());
-        m.put("idealRaceDuration", a.idealRaceDuration());
+        m.put("defaultRaceDuration", a.defaultRaceDuration());
+        m.put("penaltyScaling", a.penaltyScaling().name());
+        m.put("givebackGamma", a.givebackGamma());
+        m.put("dnfInRaceDuration", a.dnfInRaceDuration());
+        m.put("variant", a.asVariant().map(Enum::name).orElse(null));
         m.put("dnfAllowance", a.dnfAllowance());
         m.put("earliestStart", a.earliestStart());
         m.put("latitude", a.latitude());

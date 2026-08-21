@@ -369,6 +369,11 @@ function createScorer(state) {
       .map(e => ({
         boatId: e.boatId,
         currentTcf: tcf(e),
+        // Seeded means "was on the start sheet before tonight". A casual raced and is
+        // scored, but takes no part in the handicap: it is not on the penalty ladder,
+        // neither pays into the pool nor draws from it, and its elapsed time stays out
+        // of the measured duration the rest of the fleet is judged against.
+        seeded: e.entryType === 'ROSTER',
         status: jinxStatus(e),
         elapsedMinutes: handicapElapsedMinutes(e),
         finishPosition: placeMap.get(key(e)) ?? null

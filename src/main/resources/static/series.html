@@ -73,7 +73,7 @@
       <label for="cfg-penalties">Penalties (minutes, 1st, 2nd, …)</label>
       <input id="cfg-penalties" placeholder="6, 4, 2">
 
-      <label for="cfg-duration">Ideal race duration (min)</label>
+      <label for="cfg-duration">Default race duration (min)</label>
       <input id="cfg-duration" type="number" min="1">
 
       <label for="cfg-dnf">DNF allowance (min)</label>
@@ -84,7 +84,30 @@
 
       <label for="cfg-sunset">Cap duration at sunset</label>
       <input id="cfg-sunset" type="checkbox">
+
+      <label for="cfg-scaling">Penalty scaling</label>
+      <select id="cfg-scaling">
+        <option value="PER_HOUR">Per hour — a rate, scaled by how long the race took</option>
+        <option value="FIXED">Fixed — the listed minutes, whatever the race took</option>
+      </select>
+
+      <label for="cfg-gamma">Giveback weighting (γ)</label>
+      <span>
+        <input id="cfg-gamma" type="number" min="0" max="1" step="0.05" class="hhmm-input">
+        <span class="hint" id="cfg-variant-note"></span>
+      </span>
+
+      <label for="cfg-dnf-duration">Count retirements in the measured duration</label>
+      <input id="cfg-dnf-duration" type="checkbox">
     </div>
+    <p class="hint" style="max-width:46rem;">
+      The two settings above the retirement box are the handicap variant. Penalties are
+      either a flat number of minutes or a rate per hour of racing; the pool comes back
+      either evenly (γ = 0) or weighted by time on the course (γ = 1), with anything in
+      between allowed. The club default is <strong>C</strong> — per hour, given back
+      evenly — which is the combination that makes a long night and a short one apply the
+      same correction.
+    </p>
     <div class="toolbar">
       <button id="cfg-save" class="primary" type="button">Save settings</button>
       <button id="cfg-defaults" type="button">Restore defaults</button>
@@ -268,11 +291,36 @@
 
   function fillConfig(c) {
     document.getElementById('cfg-penalties').value = (c.penaltyList || []).join(', ');
-    document.getElementById('cfg-duration').value = c.idealRaceDuration;
+    document.getElementById('cfg-duration').value = c.defaultRaceDuration;
     document.getElementById('cfg-dnf').value = c.dnfAllowance;
     document.getElementById('cfg-earliest').value = c.earliestStart;
     document.getElementById('cfg-sunset').checked = !!c.limitBySunset;
+    document.getElementById('cfg-scaling').value = c.penaltyScaling || 'PER_HOUR';
+    document.getElementById('cfg-gamma').value =
+      c.givebackGamma == null ? 0 : c.givebackGamma;
+    document.getElementById('cfg-dnf-duration').checked = !!c.dnfInRaceDuration;
+    showVariant();
   }
+
+  // The knobs are what the engine reads; the letter is only a name for a corner. Shown
+  // where the knobs are, so a club that says "we score on C" can check it at a glance —
+  // and so an intermediate gamma reads as deliberate rather than as a broken variant.
+  const VARIANT_KNOBS = {
+    A: ['FIXED', 0], B: ['FIXED', 1], C: ['PER_HOUR', 0], D: ['PER_HOUR', 1]
+  };
+
+  function showVariant() {
+    const scaling = document.getElementById('cfg-scaling').value;
+    const gamma = Number(document.getElementById('cfg-gamma').value);
+    const hit = Object.keys(VARIANT_KNOBS).find(k =>
+      VARIANT_KNOBS[k][0] === scaling && VARIANT_KNOBS[k][1] === gamma);
+    document.getElementById('cfg-variant-note').textContent =
+      hit ? 'variant ' + hit + (hit === 'C' ? ' (the default)' : '')
+          : '0 = even, 1 = weighted by elapsed — between the named variants';
+  }
+
+  document.getElementById('cfg-scaling').onchange = showVariant;
+  document.getElementById('cfg-gamma').oninput = showVariant;
 
   document.getElementById('cfg-defaults').onclick = () => {
     if (configDefaults) fillConfig(configDefaults);
@@ -286,10 +334,15 @@
       .split(',').map(s => Number(s.trim())).filter(n => !isNaN(n));
     const payload = {
       penaltyList: penalties,
-      idealRaceDuration: Number(document.getElementById('cfg-duration').value),
+      defaultRaceDuration: Number(document.getElementById('cfg-duration').value),
       dnfAllowance: Number(document.getElementById('cfg-dnf').value),
       earliestStart: document.getElementById('cfg-earliest').value.trim(),
-      limitBySunset: document.getElementById('cfg-sunset').checked
+      limitBySunset: document.getElementById('cfg-sunset').checked,
+      // The knobs, never the letter: sending both would make the server arbitrate
+      // between two things this form already knows are consistent.
+      penaltyScaling: document.getElementById('cfg-scaling').value,
+      givebackGamma: Number(document.getElementById('cfg-gamma').value),
+      dnfInRaceDuration: document.getElementById('cfg-dnf-duration').checked
     };
     const r = await postJson('/api/series/' + seriesPath(configSeriesId) + '/config', payload);
     const msg = document.getElementById('cfg-msg');
