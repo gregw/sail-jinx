@@ -1237,7 +1237,9 @@
     document.getElementById('hide-dnc').onchange = renderEntrants;
     document.getElementById('hide-finished').onchange = renderEntrants;
     document.getElementById('hide-design').onchange = () => {
-      renderEntrantsHead();
+      // The column set changes, so the header has to be rebuilt too — the other
+      // filters only change which rows show.
+      renderHead();
       renderEntrants();
     };
     document.getElementById('duty-boat').onchange = (ev) => {

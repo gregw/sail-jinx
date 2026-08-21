@@ -299,6 +299,15 @@ mvn test        # 169 tests, offline
 - `SailingPfCompatibilityTest` — the cross-project contract described above.
 - `static/scoring-test.html` — the browser half. Not run by Maven; open it.
 
+```bash
+node tools/check-scripts.mjs    # optional; needs node, not part of the build
+```
+
+Catches calls to names that do not exist — a mistyped function, a helper that
+got renamed. `node --check` cannot: those pages parse perfectly and then throw at
+runtime, which in a `onchange` handler means the control silently does nothing.
+That has bitten three times. Run it after editing anything under `static/`.
+
 Write the failing test first.
 
 ---
