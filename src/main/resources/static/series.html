@@ -22,7 +22,7 @@
   </div>
 
   <section id="new-panel" style="display:none;">
-    <h2>New series</h2>
+    <h2 id="new-title">New series</h2>
     <div class="form-grid">
       <label for="new-name">Name</label>
       <input id="new-name" placeholder="2026 Winter Twilight">
@@ -47,6 +47,10 @@
         <option value="SCRATCH" disabled>Scratch (not implemented)</option>
       </select>
     </div>
+    <p class="hint" id="new-rename-note" style="display:none; max-width:46rem;">
+      Renaming is safe: the series keeps the id it was created with, so its races,
+      roster and handicap settings stay attached. Only what is displayed changes.
+    </p>
     <div class="toolbar">
       <button id="new-save" class="primary" type="button">Create series</button>
       <button id="new-cancel" type="button">Cancel</button>
@@ -133,12 +137,16 @@
         + '<td class="num-cell"><a href="/roster.html?seriesId=' + encodeURIComponent(s.id) + '">'
         + roster + '</a></td>'
         + '<td class="actions-cell">'
+        + '<button type="button" class="link-btn edit-btn" data-id="' + esc(s.id) + '">Edit</button> '
         + '<button type="button" class="link-btn cfg-btn" data-id="' + esc(s.id) + '">Handicap settings</button> '
         + '<button type="button" class="link-btn arch-btn" data-id="' + esc(s.id) + '">'
         + (s.archived ? 'Unarchive' : 'Archive') + '</button>'
         + '</td></tr>';
     }).join('');
 
+    document.querySelectorAll('.edit-btn').forEach(b => {
+      b.onclick = () => openSeriesForm(b.dataset.id);
+    });
     document.querySelectorAll('.cfg-btn').forEach(b => {
       b.onclick = () => openConfig(b.dataset.id);
     });
@@ -172,32 +180,69 @@
     return ALGORITHM_LABELS[s.handicapAlgorithm] || s.handicapAlgorithm || '';
   }
 
-  document.getElementById('add-btn').onclick = () => {
+  // The series being edited, or null when the form is creating one. The same four
+  // fields answer both jobs, so there is one form rather than two that would drift.
+  let editingId = null;
+
+  /**
+   * Open the form. With an id it edits that series, prefilled; without one it creates.
+   *
+   * <p>Opening it on the series already being edited closes it again, so the Edit button
+   * toggles; opening it on a different one switches rather than closing, which is what
+   * clicking a second row means.
+   */
+  function openSeriesForm(id) {
     const panel = document.getElementById('new-panel');
-    const open = panel.style.display === 'none';
-    panel.style.display = open ? '' : 'none';
-    if (open) {
-      document.getElementById('new-name').value =
-        new Date().getFullYear() + ' Twilight Series';
-      document.getElementById('new-msg').textContent = '';
-      document.getElementById('new-name').focus();
-    }
-  };
-  document.getElementById('new-cancel').onclick = () => {
+    const showing = panel.style.display !== 'none';
+    if (showing && editingId === (id || null)) { closeSeriesForm(); return; }
+
+    const s = id ? series.find(x => x.id === id) : null;
+    if (id && !s) return;
+    editingId = s ? s.id : null;
+
+    document.getElementById('new-title').textContent = s ? 'Edit series' : 'New series';
+    document.getElementById('new-save').textContent = s ? 'Save series' : 'Create series';
+    document.getElementById('new-rename-note').style.display = s ? '' : 'none';
+    document.getElementById('new-name').value = s ? s.name
+      : new Date().getFullYear() + ' Twilight Series';
+    document.getElementById('new-spin').value = (s && s.spinnakerPolicy) || 'MIXED';
+    document.getElementById('new-format').value = (s && s.raceFormat) || 'PURSUIT';
+    document.getElementById('new-algorithm').value = (s && s.handicapAlgorithm) || 'JINX';
+    document.getElementById('new-msg').textContent = '';
+
+    panel.style.display = '';
+    document.getElementById('new-name').focus();
+    document.getElementById('new-name').select();
+  }
+
+  function closeSeriesForm() {
     document.getElementById('new-panel').style.display = 'none';
-  };
+    editingId = null;
+  }
+
+  document.getElementById('add-btn').onclick = () => openSeriesForm(null);
+  document.getElementById('new-cancel').onclick = closeSeriesForm;
   document.getElementById('new-save').onclick = async () => {
     const name = document.getElementById('new-name').value.trim();
     const msg = document.getElementById('new-msg');
     if (!name) { msg.textContent = 'A series needs a name.'; return; }
+    const existing = editingId ? series.find(x => x.id === editingId) : null;
     const r = await postJson('/api/series', {
+      // The id is what keeps a rename from orphaning the races: the server mints one
+      // from the name only when none is sent.
+      id: editingId || undefined,
       name,
       spinnakerPolicy: document.getElementById('new-spin').value,
       raceFormat: document.getElementById('new-format').value,
-      handicapAlgorithm: document.getElementById('new-algorithm').value
+      handicapAlgorithm: document.getElementById('new-algorithm').value,
+      // Not on the form, so it has to be carried or an edit would unarchive.
+      archived: existing ? existing.archived : false
     });
-    if (!r.ok) { msg.textContent = 'Could not create: ' + errorOf(r); return; }
-    document.getElementById('new-panel').style.display = 'none';
+    if (!r.ok) {
+      msg.textContent = (editingId ? 'Could not save: ' : 'Could not create: ') + errorOf(r);
+      return;
+    }
+    closeSeriesForm();
     await load();
   };
 

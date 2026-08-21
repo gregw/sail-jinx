@@ -439,6 +439,56 @@ class JinxApiIntegrationTest
     }
 
     @Test
+    void aSeriesCanBeEditedAndKeepsItsIdAcrossARename() throws Exception
+    {
+        String seriesId = createSeries("2026 Winter Twilight");
+        String raceId = createRace(seriesId, "2026-06-05");
+
+        JsonNode saved = post("/api/series", """
+            {"id":"%s","name":"2026 Summer Twilight","spinnakerPolicy":"NON_SPINNAKER",\
+             "raceFormat":"PURSUIT","handicapAlgorithm":"JINX","archived":false}"""
+            .formatted(seriesId));
+
+        // The id is minted from the name, so a rename would mint a different one — and
+        // every race, roster and series-config file keys off the old one. An edit keeps
+        // the id it was given; that is what makes the series editable at all.
+        assertThat(saved.path("series").path("id").asText(), equalTo(seriesId));
+        assertThat(saved.path("series").path("name").asText(), equalTo("2026 Summer Twilight"));
+        assertThat(saved.path("series").path("spinnakerPolicy").asText(),
+            equalTo("NON_SPINNAKER"));
+
+        // One series, not two, and the race still belongs to it.
+        assertThat(get("/api/series").size(), equalTo(1));
+        assertThat(get("/api/races/" + raceId).path("race").path("seriesId").asText(),
+            equalTo(seriesId));
+        assertThat(get("/api/races/" + raceId).path("seriesName").asText(),
+            equalTo("2026 Summer Twilight"));
+        assertThat(get("/api/races/" + raceId).path("spinnakerPolicy").asText(),
+            equalTo("NON_SPINNAKER"));
+    }
+
+    @Test
+    void anEditCannotSelectAnUnimplementedFormatOrAlgorithm() throws Exception
+    {
+        String seriesId = createSeries("2026 Winter Twilight");
+
+        HttpResponse<String> phs = postRaw("/api/series", """
+            {"id":"%s","name":"2026 Winter Twilight","raceFormat":"PHS"}"""
+            .formatted(seriesId));
+        assertThat(phs.statusCode(), equalTo(400));
+
+        HttpResponse<String> scratch = postRaw("/api/series", """
+            {"id":"%s","name":"2026 Winter Twilight","handicapAlgorithm":"SCRATCH"}"""
+            .formatted(seriesId));
+        assertThat(scratch.statusCode(), equalTo(400));
+
+        // Refused, so nothing was written: the series still reads as it did.
+        assertThat(get("/api/series").get(0).path("raceFormat").asText(), equalTo("PURSUIT"));
+        assertThat(get("/api/series").get(0).path("handicapAlgorithm").asText(),
+            equalTo("JINX"));
+    }
+
+    @Test
     void anUnknownRaceIsA404() throws Exception
     {
         assertThat(getRaw("/api/races/r-nope").statusCode(), equalTo(404));
