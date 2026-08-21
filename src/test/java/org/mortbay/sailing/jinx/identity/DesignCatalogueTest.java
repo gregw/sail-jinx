@@ -4,6 +4,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
 
+import org.eclipse.jetty.logging.StacklessLogging;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -141,8 +142,12 @@ class DesignCatalogueTest
 
         // A broken file must not stop the server; every design is simply taken at face value.
         Files.writeString(dir.resolve("design.yaml"), "ignored: [unclosed\n");
-        DesignCatalogue broken = DesignCatalogue.load(dir);
-        assertThat(broken.isIgnored("yacht"), is(false));
+        // The parse failure is what is being asserted, so its trace is expected output.
+        try (StacklessLogging ignored = new StacklessLogging(DesignCatalogue.class))
+        {
+            DesignCatalogue broken = DesignCatalogue.load(dir);
+            assertThat(broken.isIgnored("yacht"), is(false));
+        }
     }
 
     @Test

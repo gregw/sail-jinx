@@ -10,6 +10,7 @@ import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 
+import org.eclipse.jetty.logging.StacklessLogging;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mortbay.sailing.jinx.config.JinxConfig;
@@ -517,12 +518,19 @@ class JsonStoreTest
         Files.writeString(tmp.resolve("store/race-times/r-1.json"), "{ not json",
             StandardCharsets.UTF_8);
 
-        JsonStore reopened = new JsonStore(tmp);
-        reopened.start();
-        assertThat(reopened.raceTimes("r-1"), nullValue());
-        assertThat(reopened.raceTimes("r-2").times().get("b-1").finish(), equalTo("19:31:00"));
-        assertThat(reopened.loadErrors(), hasSize(1));
-        assertThat(reopened.loadErrors().get(0), not(nullValue()));
+        // The parse failure is the point of the test, and JsonStore logs it with the
+        // stack trace a real one deserves. Hidden here so a green build stays readable —
+        // scoped to this block, so an unexpected trace anywhere else still shows.
+        try (StacklessLogging ignored = new StacklessLogging(JsonStore.class))
+        {
+            JsonStore reopened = new JsonStore(tmp);
+            reopened.start();
+            assertThat(reopened.raceTimes("r-1"), nullValue());
+            assertThat(reopened.raceTimes("r-2").times().get("b-1").finish(),
+                equalTo("19:31:00"));
+            assertThat(reopened.loadErrors(), hasSize(1));
+            assertThat(reopened.loadErrors().get(0), not(nullValue()));
+        }
     }
 
     @Test
@@ -534,10 +542,13 @@ class JsonStoreTest
         Files.writeString(tmp.resolve("store/boats.json"), "]]] nope",
             StandardCharsets.UTF_8);
 
-        JsonStore reopened = new JsonStore(tmp);
-        reopened.start();
-        assertThat(reopened.boats().entrySet(), hasSize(0));
-        assertThat(reopened.loadErrors(), hasSize(1));
+        try (StacklessLogging ignored = new StacklessLogging(JsonStore.class))
+        {
+            JsonStore reopened = new JsonStore(tmp);
+            reopened.start();
+            assertThat(reopened.boats().entrySet(), hasSize(0));
+            assertThat(reopened.loadErrors(), hasSize(1));
+        }
     }
 
     @Test

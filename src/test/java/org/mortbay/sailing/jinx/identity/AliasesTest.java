@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 
+import org.eclipse.jetty.logging.StacklessLogging;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -257,7 +258,9 @@ class AliasesTest
         String broken = "boats:\n  \"1014-wildthing\":\n    canonicalName: \"Wild\n";
         Files.writeString(dir.resolve("aliases.yaml"), broken);
 
-        try
+        // Refusing loudly is the behaviour under test, so its stack trace is expected
+        // output rather than a problem. Hidden for this block only.
+        try (StacklessLogging ignored = new StacklessLogging(Aliases.class))
         {
             aliases.addBoatAliases("1014", "Wild Thing",
                 List.of(new Aliases.SailNumberName("AUS99", "wildthing")));
