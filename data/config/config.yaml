@@ -37,4 +37,4 @@ algorithm:
   limitBySunset: false             # cap the duration so the fleet finishes by sundown
 
 server:
-  port: 8080
+  port: 8082
