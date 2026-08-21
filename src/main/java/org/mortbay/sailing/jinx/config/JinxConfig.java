@@ -44,7 +44,7 @@ public record JinxConfig(
             algorithm = new Algorithm(
                 null, 0, 0, null, null, null, false, null, null, null, false);
         if (server == null)
-            server = new Server(0);
+            server = new Server(0, false);
     }
 
     public static JinxConfig load(Path configFile) throws IOException
@@ -292,11 +292,35 @@ public record JinxConfig(
         }
     }
 
-    public record Server(int port)
+    /**
+     * The listener.
+     *
+     * <p>{@code forwardedHeaders} makes Jetty reconstruct the externally-visible URL from
+     * {@code X-Forwarded-*} / {@code Forwarded} headers. Turn it on when — and only when —
+     * something else terminates the connection: nginx, Apache, a load balancer.
+     *
+     * <p>It matters here for one specific reason. The OAuth {@code redirect_uri} is built
+     * from the request, so behind a proxy without this the server sends Google back to
+     * {@code http://localhost:8080/auth/callback} — which is not the address registered in
+     * the console, and the login fails with a redirect-URI mismatch that looks like a
+     * configuration error at Google's end.
+     *
+     * <p>Off by default, and it must stay off when the server is directly exposed: those
+     * headers are just headers, and a client that sets its own would be deciding what the
+     * server thinks its own address is.
+     */
+    public record Server(
+        @JsonProperty("port") int port,
+        @JsonProperty("forwardedHeaders") boolean forwardedHeaders)
     {
         public Server
         {
             if (port <= 0) port = 8080;
+        }
+
+        public Server(int port)
+        {
+            this(port, false);
         }
     }
 }

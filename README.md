@@ -117,14 +117,58 @@ signs in can run a race night but not rewrite the season.
 `auth.yaml` holds a client secret and is gitignored. The example file beside it
 is committed and must never carry a real one.
 
-Two things worth knowing before turning it on:
+Three things worth knowing before turning it on:
 
+- **Google requires HTTPS.** A plain `http://` redirect URI is rejected for a web
+  application; `http://localhost` is the only exception. So a hosted install needs
+  a certificate before sign-in works at all. That is worth having regardless — the
+  session cookie is as good as the password.
 - **It needs the internet.** The server reaches Google at startup and at every
   login. `allowLoopback: true` exempts requests from the same machine, so the
   office PC can still score a race night during an outage — but it is dangerous
   behind a reverse proxy, where every request arrives from `127.0.0.1`.
 - **Sessions are in memory.** Restarting the server signs everybody out. The race
   data is on disk and unaffected.
+
+---
+
+## Running it on the club Pi
+
+The first deployment is **https://myc.mortbay.org**, on the same Raspberry Pi as
+[sailing-pf](https://github.com/gregw/sailing-pf). `etc/` holds a systemd unit and
+an installer that follow the same conventions:
+
+```bash
+git clone https://github.com/gregw/sail-jinx.git
+cd sail-jinx
+sudo etc/install.sh
+sudo systemctl start sail-jinx
+```
+
+| Path | Holds |
+|---|---|
+| `/opt/sail-jinx` | the source, rebuilt from git |
+| `/var/lib/sail-jinx/config` | club settings, boat aliases, `auth.yaml` |
+| `/var/lib/sail-jinx/store` | **the only copy of the race data** — back it up |
+
+Upgrading is `git pull && sudo etc/install.sh`. The installer is safe to re-run:
+it seeds config files only when they are missing and never touches the store, so
+an upgrade cannot revert the club's settings or its OAuth client.
+
+Logs go to the journal: `sudo journalctl -u sail-jinx -f`.
+
+### In front of it
+
+The server listens on plain HTTP on the configured port and does not terminate
+TLS. Put nginx or Caddy in front of it with a Let's Encrypt certificate, then set
+`forwardedHeaders: true` under `server:` in `config.yaml`.
+
+That flag is not cosmetic. The OAuth `redirect_uri` is built from the incoming
+request, so without it a proxied login sends Google to
+`http://localhost:8080/auth/callback` — which is not what is registered in the
+console, and the failure reads as a Google configuration error rather than a local
+one. Leave it `false` whenever the server is exposed directly: those headers are
+whatever the client chose to send.
 
 ---
 

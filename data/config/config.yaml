@@ -38,3 +38,10 @@ algorithm:
 
 server:
   port: 8082
+  # Reconstruct the externally-visible URL from X-Forwarded-* headers. Set this true
+  # when something else terminates the connection — on the Pi, the nginx or Caddy
+  # that serves https://myc.mortbay.org — and false when this server is reached
+  # directly. It decides what address the OAuth redirect_uri is built from; without
+  # it, a proxied login sends Google to http://localhost and fails. Never turn it on
+  # for a directly-exposed server: those headers are whatever the client sent.
+  forwardedHeaders: false

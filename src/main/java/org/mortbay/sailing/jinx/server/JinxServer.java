@@ -15,6 +15,9 @@ import org.eclipse.jetty.security.SecurityHandler;
 import org.eclipse.jetty.security.openid.OpenIdAuthenticator;
 import org.eclipse.jetty.security.openid.OpenIdConfiguration;
 import org.eclipse.jetty.security.openid.OpenIdLoginService;
+import org.eclipse.jetty.server.ForwardedRequestCustomizer;
+import org.eclipse.jetty.server.HttpConfiguration;
+import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.mortbay.sailing.jinx.config.AuthConfig;
@@ -94,7 +97,17 @@ public class JinxServer
         String version = version();
 
         Server server = new Server();
-        ServerConnector connector = new ServerConnector(server);
+        HttpConfiguration http = new HttpConfiguration();
+        if (config.server().forwardedHeaders())
+        {
+            // Behind a proxy the request's own host and scheme are the proxy's. Without
+            // this the OAuth redirect_uri comes out as http://localhost:8080/... and
+            // Google refuses it — see JinxConfig.Server.
+            http.addCustomizer(new ForwardedRequestCustomizer());
+            LOG.info("Trusting X-Forwarded-* headers — only correct behind a proxy");
+        }
+        ServerConnector connector =
+            new ServerConnector(server, new HttpConnectionFactory(http));
         connector.setPort(port >= 0 ? port : config.server().port());
         server.addConnector(connector);
 

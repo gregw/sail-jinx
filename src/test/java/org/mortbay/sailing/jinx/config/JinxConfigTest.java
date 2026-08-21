@@ -38,6 +38,7 @@ class JinxConfigTest
               v0knots: 6.2                # retired key — must be ignored, not fatal
             server:
               port: 9090
+              forwardedHeaders: true
             """);
 
         JinxConfig config = JinxConfig.load(file);
@@ -54,6 +55,7 @@ class JinxConfigTest
         assertThat(config.algorithm().longitude(), closeTo(150.9876, 1e-9));
         assertThat(config.algorithm().limitBySunset(), is(true));
         assertThat(config.server().port(), equalTo(9090));
+        assertThat(config.server().forwardedHeaders(), is(true));
     }
 
     @Test
@@ -97,6 +99,9 @@ class JinxConfigTest
         assertThat(config.algorithm().limitBySunset(), is(false));
 
         assertThat(config.server().port(), equalTo(8080));
+        // Off unless asked for: trusting X-Forwarded-* on a directly-exposed server
+        // would let a client decide what address the server thinks it has.
+        assertThat(config.server().forwardedHeaders(), is(false));
     }
 
     @Test

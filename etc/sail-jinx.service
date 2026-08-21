@@ -1,0 +1,34 @@
+[Unit]
+Description=sail-jinx — MYC Twilight pursuit race management
+Documentation=https://github.com/gregw/sail-jinx
+# network-online, not just network: with authentication on, the server reaches the
+# OpenID provider during startup to discover its endpoints. Starting before the Pi
+# has a route means that lookup fails and the unit does not come up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sail-jinx
+Group=sail-jinx
+WorkingDirectory=/opt/sail-jinx
+Environment=HOME=/var/lib/sail-jinx
+ExecStart=/usr/bin/mvn --batch-mode -Dmaven.repo.local=/var/lib/sail-jinx/.m2/repository exec:java -Djinx-data=/var/lib/sail-jinx
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sail-jinx
+
+# Prevent the service from acquiring new privileges
+NoNewPrivileges=true
+
+# The store is the only copy of the club's race data. These stop a compromised or
+# confused process from writing anywhere except where it is supposed to.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/sail-jinx
+
+[Install]
+WantedBy=multi-user.target

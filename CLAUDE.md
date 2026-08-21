@@ -87,6 +87,8 @@ sail-jinx/
   data/config/design.yaml       # ignored/excluded designs, per-boat design overrides
   data/store/                   # THE ONLY COPY of everything (gitignored)
   data/archive/                 # pre-v2 SailSys-era store, kept for a future importer
+  etc/sail-jinx.service         # systemd unit for the club Pi
+  etc/install.sh                # installs it; safe to re-run for an upgrade
   wiki/                         # git submodule -> the GitHub wiki
   src/main/java/org/mortbay/sailing/jinx/
     identity/                   # IdGenerator, Aliases, DesignCatalogue, BoatRegistry, FleetJson
@@ -400,6 +402,31 @@ Four things that are easy to get wrong:
 
 `isAdmin()` in the browser is a **UI hint only**, so buttons match what they will
 do. The server checks the same thing and returns 403.
+
+### Deployment
+
+The first hosted install is **https://myc.mortbay.org**, on the same Raspberry Pi
+as sailing-pf. `etc/install.sh` mirrors sailing-pf's: a system user, the source in
+`/opt/sail-jinx`, the data in `/var/lib/sail-jinx`, Maven `exec:java` under
+systemd.
+
+Two differences from sailing-pf's installer, both deliberate:
+
+- It **seeds config and never overwrites it**, so `git pull && sudo etc/install.sh`
+  cannot revert the club's settings, its learned aliases or its OAuth client. The
+  rsync excludes `data` entirely — `--delete` across it would take the store.
+- The unit waits on `network-online.target`, not `network.target`. With
+  authentication on, the OIDC discovery call happens during startup.
+
+Two things that will bite on that deployment specifically:
+
+1. **Google rejects a plain `http://` redirect URI** for a web application —
+   `http://localhost` is the only exception. So it needs TLS in front of it before
+   sign-in works at all.
+2. **`forwardedHeaders: true` is required behind that proxy**, or the
+   `redirect_uri` is built from the server's own address and Google is sent to
+   `http://localhost:8080/auth/callback`. It must stay `false` when the server is
+   directly exposed, since the headers are attacker-controlled there.
 
 ---
 

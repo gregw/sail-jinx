@@ -5,6 +5,9 @@
 # auth.yaml holds a client secret and is in .gitignore. THIS file is committed and
 # must never contain a real one. If you paste a secret here by mistake, treat it as
 # leaked: revoke it in the Google Cloud console and issue a new one.
+#
+# The examples below are for the first deployment, https://myc.mortbay.org, running
+# on the club Raspberry Pi alongside sailing-pf. See etc/install.sh.
 
 # Off by default. With this false, or with no auth.yaml at all, sail-jinx behaves as
 # it always has: no login, every request an admin. That is fine for the club PC on
@@ -13,18 +16,41 @@ enabled: false
 
 # --- Google Workspace ------------------------------------------------------
 #
-# In the Google Cloud console, for a project owned by the club:
+# In the Google Cloud console — https://console.cloud.google.com — signed in as a
+# club Workspace administrator, with a project owned by the club:
 #
-#   1. APIs & Services > OAuth consent screen. User type "Internal" — that alone
-#      restricts sign-in to the club Workspace, and this file's allowedDomain is
-#      then a second, independent check rather than the only one.
-#   2. APIs & Services > Credentials > Create credentials > OAuth client ID,
-#      application type "Web application".
-#   3. Authorised redirect URI: the server's own address plus redirectPath below,
-#      exactly, including scheme and port. Google matches it as a literal string.
-#         http://localhost:8080/auth/callback
-#         https://jinx.myc.org.au/auth/callback
+#   1. Audience / OAuth consent screen:
+#         https://console.cloud.google.com/auth/audience
+#      (older consoles: https://console.cloud.google.com/apis/credentials/consent —
+#      Google renamed this area "Google Auth Platform"; both links land in the same
+#      place.) Set User type to "Internal". That alone restricts sign-in to the club
+#      Workspace, and this file's allowedDomain is then a second, independent check
+#      rather than the only one. "Internal" is only offered on a Workspace account —
+#      if it is greyed out, the project is not owned by the club's Workspace.
+#
+#   2. Clients / Credentials:
+#         https://console.cloud.google.com/auth/clients
+#      (older: https://console.cloud.google.com/apis/credentials)
+#      Create client > application type "Web application".
+#   3. Authorised redirect URI: the address the RACE OFFICER'S BROWSER uses, plus
+#      redirectPath below. Google matches it as a literal string, so it must agree
+#      exactly — scheme, host, port and path.
+#
+#         https://myc.mortbay.org/auth/callback
+#
 #      Add one line per address the server is reached on.
+#
+#      *** IT MUST BE https. *** Google rejects a plain http:// redirect URI for a
+#      web application; the only exception is http://localhost. So the Pi needs a
+#      TLS certificate before sign-in can work at all — in practice a reverse proxy
+#      (nginx or Caddy) terminating Let's Encrypt in front of this server. That is
+#      worth having anyway: the session cookie this login issues is as good as the
+#      password, and over plain http anyone on the path can read it.
+#
+#      Behind that proxy, set `forwardedHeaders: true` under `server:` in
+#      config.yaml, or the server builds its redirect_uri from its own address and
+#      sends Google to http://localhost:8080/auth/callback instead.
+#
 #   4. Copy the client ID and secret here.
 
 issuer: "https://accounts.google.com"
@@ -38,6 +64,9 @@ redirectPath: "/auth/callback"
 # the `hd` claim Google returns, and against the address. Leave it out to admit any
 # account the issuer will authenticate — which for Google means any Gmail account,
 # so do not leave it out.
+#
+# Note this is the club's EMAIL domain, which need not be the address the server is
+# reached at: people sign in as someone@myc.org.au to use https://myc.mortbay.org.
 allowedDomain: "myc.org.au"
 
 # Who may edit handicaps and unlock races. Everyone else who signs in can still run
@@ -52,7 +81,8 @@ admins:
 # race night working during an internet outage, when Google cannot be reached and
 # nobody could sign in.
 #
-# DANGEROUS behind a reverse proxy. Nginx, Apache or a cloud load balancer connects
-# from 127.0.0.1, so every request in the world would arrive as loopback and this
-# would exempt all of them. Leave it false for any hosted deployment.
+# DANGEROUS behind a reverse proxy, which is how myc.mortbay.org is served. Nginx,
+# Caddy or a cloud load balancer connects from 127.0.0.1, so every request in the
+# world would arrive as loopback and this would exempt all of them. Leave it false
+# for the Pi.
 allowLoopback: false
