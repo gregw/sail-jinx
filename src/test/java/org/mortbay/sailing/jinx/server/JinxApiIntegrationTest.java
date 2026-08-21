@@ -425,6 +425,9 @@ class JinxApiIntegrationTest
         JsonNode bundle = get("/api/races/" + race1);
         assertThat(bundle.path("race").path("id").asText(), equalTo(race1));
         assertThat(bundle.path("seriesName").asText(), equalTo("2026 Winter Twilight"));
+        // The race page shows the Spin column only for a mixed series, so the policy has
+        // to travel with the bundle — there is nowhere else the page could learn it.
+        assertThat(bundle.path("spinnakerPolicy").asText(), equalTo("MIXED"));
         assertThat(bundle.path("algorithm").path("v0knots").asDouble(), closeTo(5.5, 1e-9));
         assertThat(bundle.path("entrants").path("entrants").size(), equalTo(1));
         assertThat(bundle.path("startSheet").path("starts").size(), equalTo(1));

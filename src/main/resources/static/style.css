@@ -221,9 +221,10 @@ a.build-err, .build-err { color: var(--err-fg); font-weight: 600; }
 .race-nav { display: flex; gap: 0.3rem; }
 .race-nav button { padding: 0.2rem 0.55rem; line-height: 1; }
 
-/* Wide enough for HH:MM and no wider — these hold a clock time and a duration, and a
-   full-width box invites the seconds that neither of them takes. */
-input.hhmm-input { width: 7ch; }
+/* Both hold HH:MM in a native time control. Sized by content rather than in ch: the
+   picker button sits inside the box, and a width counted in characters put it on top
+   of the minutes. The floor covers a locale that renders these 12-hour with an am/pm. */
+input.hhmm-input { width: auto; min-width: 7.5rem; }
 
 /* The filters sit under the heading rather than opposite it: they are the things
    most often reached for, and hunting the far side of the page for them costs more

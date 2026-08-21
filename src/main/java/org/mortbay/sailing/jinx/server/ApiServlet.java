@@ -878,6 +878,8 @@ public class ApiServlet extends HttpServlet
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("race", raceMap(race));
         out.put("seriesName", series == null ? null : series.name());
+        // The page shows the Spin column only where boats in the same series differ.
+        out.put("spinnakerPolicy", series == null ? null : series.spinnakerPolicy().name());
         JinxConfig.Algorithm alg = algorithmFor(race.seriesId());
         out.put("algorithm", algorithmMap(alg));
         LocalTime sunset = alg.limitBySunset() ? sunsetFor(alg, race) : null;

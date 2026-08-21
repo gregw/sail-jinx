@@ -21,19 +21,16 @@
   <div id="ctrl-msg" class="banner banner-info">Loading…</div>
 
   <section id="race-setup" style="display:none;">
-    <div class="form-grid">
+    <div class="toolbar">
       <label for="f-earliest">Earliest start</label>
       <input id="f-earliest" type="time" class="hhmm-input">
-
-      <label for="f-target">Target elapsed</label>
-      <span>
-        <!-- A duration, not a time of day, so this is not type="time": that renders in
-             the browser's locale clock, and "1:30 am" is the wrong way to say 90
-             minutes. Plain text, parsed as H:MM (or as bare minutes). -->
-        <input id="f-target" class="hhmm-input" placeholder="H:MM" inputmode="numeric"
-               autocomplete="off">
-        <span id="target-note" class="hint"></span>
-      </span>
+      <!-- A duration in a control meant for a clock time. The value it reports is
+           always 24-hour HH:MM, which is all this reads, but a browser whose locale
+           is 12-hour will show it as "01:30 am" — the right number said the wrong
+           way. Kept because a picker was asked for. -->
+      <label for="f-target">Expected race duration</label>
+      <input id="f-target" type="time" class="hhmm-input">
+      <span id="target-note" class="hint"></span>
     </div>
     <div class="toolbar">
       <button id="start-times-btn" class="primary" type="button">Compute start times</button>
@@ -55,9 +52,11 @@
   <section id="race-entrants" style="display:none;">
     <h2>Entrants <span id="entrants-count" class="hint"></span></h2>
     <div class="filters">
-      <label><input type="checkbox" id="hide-dnc"> Hide non-starters</label>
+      <label><input type="checkbox" id="hide-dnc"> Hide didn't come</label>
       <label><input type="checkbox" id="hide-finished"> Hide finished</label>
-      <label><input type="checkbox" id="hide-design" checked> Hide design</label>
+      <label title="Hides design, corrected finish and scored elapsed — the columns that
+are reference rather than capture."><input type="checkbox" id="hide-details" checked>
+        Hide details</label>
       <label title="Hides the NOW buttons and the log of times they capture."><input
         type="checkbox" id="hide-now" checked> Hide NOW</label>
       <label>Duty boat
@@ -230,7 +229,7 @@
   // The filter tick boxes are a view preference rather than race data, so they are kept
    // against the tab and not the race: opening the start sheet and coming back, or
    // stepping to the next race, must not quietly put the design column back.
-  const FILTERS = ['hide-dnc', 'hide-finished', 'hide-design', 'hide-now'];
+  const FILTERS = ['hide-dnc', 'hide-finished', 'hide-details', 'hide-now'];
   const FILTER_KEY = 'sail-jinx.race.filters';
 
   function saveFilters() {
@@ -251,6 +250,26 @@
 
   function hideNow() { return document.getElementById('hide-now').checked; }
 
+  // A published start sheet is stale the moment the fleet or its handicaps change.
+  // Nothing on the server records that, so it is tracked here — against the tab rather
+  // than the page, or a reload would silently take the controls away again.
+  let entrantsSavedSinceStartSheet = false;
+
+  function staleKey() { return sessionKey() + '.startSheetStale'; }
+
+  function setStartSheetStale(v) {
+    entrantsSavedSinceStartSheet = v;
+    try {
+      if (v) sessionStorage.setItem(staleKey(), '1');
+      else sessionStorage.removeItem(staleKey());
+    } catch (_) {}
+  }
+
+  function restoreStartSheetStale() {
+    try { entrantsSavedSinceStartSheet = sessionStorage.getItem(staleKey()) === '1'; }
+    catch (_) { entrantsSavedSinceStartSheet = false; }
+  }
+
   function sessionClear() {
     try { sessionStorage.removeItem(sessionKey()); } catch (_) {}
   }
@@ -268,11 +287,10 @@
     { key: 'drag', label: '', sortable: false, cls: 'drag-handle',
       render: () => '<span title="Drag to reorder">☰</span>' },
     { key: 'sail', label: 'Sail #', get: e => e.sailNumber || '' },
-    { key: 'name', label: 'Name',
-      get: e => e.name || '',
-      render: e => esc(e.name || '')
-        + (e.entryType === 'ONE_OFF' ? ' <span class="tag" title="Not in the register">one-off</span>' : '')
-        + (e.entryType === 'CASUAL' ? ' <span class="tag">casual</span>' : '') },
+    // Just the name. The entry type is the Casual column's job, and it was being said
+    // twice on the same row — the lozenge here and the tick box (or the one-off
+    // lozenge) three columns along.
+    { key: 'name', label: 'Name', get: e => e.name || '' },
     { key: 'design', label: 'Design',
       get: e => designNameOf(e.designId),
       render: e => e.designId
@@ -291,6 +309,13 @@
           + (e.entryType === 'CASUAL' ? ' checked' : '')
           + ' title="Casual — will not be seeded into the next race">';
       } },
+    { key: 'spin', label: 'Spin',
+      // Display only: the Jinx handicap does not separate spinnaker from non-spinnaker
+      // boats, the TCF absorbs it. Set on the roster, or by the JSON import.
+      get: e => e.spinnaker || '',
+      render: e => e.spinnaker
+        ? esc(e.spinnaker)
+        : '<span class="hint" title="Not recorded">—</span>' },
     { key: 'tcf', label: 'TCF', cls: 'num-cell',
       get: e => tcfOf(e),
       render: e => {
@@ -313,16 +338,11 @@
         return '<input type="checkbox" class="came-input" data-id="' + esc(e.boatId) + '"'
           + ((t.came && !duty) ? ' checked' : '') + (duty ? ' disabled' : '') + '>';
       } },
+    { key: 'actualStartNow', label: '', sortable: false, cls: 'now-col', nowField: 'actualStart',
+      render: e => nowButton(e, 'actualStart') },
     { key: 'actualStart', label: 'Actual<br>Start',
       get: e => timesFor(e.boatId).actualStart || '',
       render: e => timeInput(e, 'actualStart') },
-    { key: 'actualStartNow', label: '', sortable: false, cls: 'now-col', nowField: 'actualStart',
-      render: e => nowButton(e, 'actualStart') },
-    { key: 'finish', label: 'Actual<br>Finish',
-      get: e => timesFor(e.boatId).finish || '',
-      render: e => timeInput(e, 'finish') },
-    { key: 'finishNow', label: '', sortable: false, cls: 'now-col', nowField: 'finish',
-      render: e => nowButton(e, 'finish') },
     { key: 'late', label: 'Late', cls: 'num-cell',
       get: e => scorer.lateSeconds(e) ?? NaN,
       render: e => {
@@ -332,12 +352,17 @@
         const a = Math.abs(s);
         return esc(sign + Math.floor(a / 60) + ':' + String(a % 60).padStart(2, '0'));
       } },
-    { key: 'scoredFinish', label: 'Scored<br>Finish', cls: 'num-cell',
-      get: e => scorer.scoredFinishSeconds(e) ?? NaN,
-      render: e => esc(fmtTimeOfDay(scorer.scoredFinishSeconds(e))) },
+    { key: 'finishNow', label: '', sortable: false, cls: 'now-col', nowField: 'finish',
+      render: e => nowButton(e, 'finish') },
+    { key: 'finish', label: 'Actual<br>Finish',
+      get: e => timesFor(e.boatId).finish || '',
+      render: e => timeInput(e, 'finish') },
     { key: 'corrected', label: 'Corrected<br>Finish', cls: 'num-cell',
       get: e => scorer.correctedFinishSeconds(e) ?? NaN,
       render: e => esc(fmtTimeOfDay(scorer.correctedFinishSeconds(e))) },
+    { key: 'scoredFinish', label: 'Scored<br>Finish', cls: 'num-cell',
+      get: e => scorer.scoredFinishSeconds(e) ?? NaN,
+      render: e => esc(fmtTimeOfDay(scorer.scoredFinishSeconds(e))) },
     { key: 'elapsed', label: 'Scored<br>Elapsed', cls: 'num-cell',
       get: e => scorer.scoredElapsedSeconds(e) ?? NaN,
       render: e => esc(fmtElapsed(scorer.scoredElapsedSeconds(e))) },
@@ -365,12 +390,22 @@
       } }
   ];
 
+  // Reference rather than capture: worth having, but not while boats are crossing.
+  const DETAIL_COLS = ['design', 'corrected', 'elapsed'];
+
+  function isMixedSeries() {
+    return !!bundle && bundle.spinnakerPolicy === 'MIXED';
+  }
+
   function activeCols() {
     return COLS.filter(c => {
       if (locked && (c.key === 'drag' || c.nowField)) return false;
       if (c.nowField && hideNow()) return false;
       if (c.key === 'adjustment' && adjustments.size === 0) return false;
-      if (c.key === 'design' && document.getElementById('hide-design').checked) return false;
+      // Every boat in a one-way series answers the same, so the column says nothing.
+      if (c.key === 'spin' && !isMixedSeries()) return false;
+      if (DETAIL_COLS.includes(c.key)
+          && document.getElementById('hide-details').checked) return false;
       return true;
     });
   }
@@ -661,8 +696,7 @@
     }
     if (field === 'finish' && n) lastFinish = now;
     if (n) logNow({ time: now, field,
-      note: (field === 'finish' ? 'finish' : 'start') + ' stamped on '
-        + n + ' boat' + (n === 1 ? '' : 's') });
+      note: (field === 'finish' ? 'finish' : 'start') + ' stamped' });
     touched();
     setMsg('add-msg', n ? ('Stamped ' + n + ' boats at ' + now + '.') : 'Nothing left to stamp.');
   }
@@ -1168,9 +1202,10 @@
   }
 
   async function doSave() {
+    const fleetChanged = entrantsChanged();
     // Entrants first: a TCF edit changes what the times are scored against, and
     // saving times against the old handicaps would be briefly wrong.
-    if (entrantsChanged()) {
+    if (fleetChanged) {
       const payload = {
         tcfSource: dirtyTcf.size ? 'MANUAL_EDIT' : undefined,
         entrants: entrants.map(e => ({
@@ -1189,6 +1224,9 @@
     if (!r.ok) { setMsg('save-summary', 'Could not save times: ' + errorOf(r)); return false; }
 
     sessionClear();
+    // Set after sessionClear, which does not touch this key, and before load, which
+    // reads it back to decide whether the start-time controls reopen.
+    if (fleetChanged) setStartSheetStale(true);
     await load();
     setCtrlMsg('banner-ok', 'Saved.');
     return true;
@@ -1229,6 +1267,12 @@
     return Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0');
   }
 
+  /** The same duration as a time control wants it: zero-padded, always two digits. */
+  function fmtHHMM(minutes) {
+    const v = fmtInterval(minutes);
+    return v && v.length < 5 ? '0' + v : v;
+  }
+
   async function computeStartTimes() {
     if (bundle.startSheet && !confirm(
         'Start times have already been published for this race. Recompute them?')) return;
@@ -1243,6 +1287,7 @@
       earliestStart: document.getElementById('f-earliest').value.trim() || null
     });
     if (!r.ok) { setMsg('setup-msg', 'Could not compute: ' + errorOf(r)); return; }
+    setStartSheetStale(false);
     await load();
     setMsg('setup-msg', r.body.limitedBySunset
       ? 'Start times computed — target capped to '
@@ -1351,11 +1396,20 @@
       + (r.date ? ', ' + fmtDate(r.date) : '');
 
     document.getElementById('f-earliest').value = (r.earliestStart || '').slice(0, 5);
-    document.getElementById('f-target').value = fmtInterval(r.targetElapsedMinutes);
+    document.getElementById('f-target').value = fmtHHMM(r.targetElapsedMinutes);
+    // Once the fleet has been told when it starts, moving a gun needs a reason. The
+    // reason that counts is the entrant list changing, so these reopen on a save that
+    // changed it and close again the moment new times are published.
+    const fixed = locked || (!!bundle.startSheet && !entrantsSavedSinceStartSheet);
+    document.getElementById('start-times-btn').disabled = fixed;
     ['f-earliest', 'f-target'].forEach(id => {
-      document.getElementById(id).disabled = locked;
+      document.getElementById(id).disabled = fixed;
     });
-    document.getElementById('start-times-btn').disabled = locked;
+    if (fixed && !locked)
+      setMsg('setup-msg', 'Start times are published. Edit and save the entrants to '
+        + 'compute them again.');
+    else if (!fixed)
+      setMsg('setup-msg', '');
 
     const startsHref = '/report-starts.html?raceId=' + encodeURIComponent(raceId);
     const finishHref = '/report-finish.html?raceId=' + encodeURIComponent(raceId);
@@ -1431,6 +1485,7 @@
 
     restoreNowLog();
     renderNowLog();
+    restoreStartSheetStale();
     rebuildScorer();
     renderRace();
     renderDutyOptions();
@@ -1505,7 +1560,7 @@
     // as well; the other two only change which rows show.
     document.getElementById('hide-dnc').onchange = () => { saveFilters(); renderEntrants(); };
     document.getElementById('hide-finished').onchange = () => { saveFilters(); renderEntrants(); };
-    document.getElementById('hide-design').onchange = () => {
+    document.getElementById('hide-details').onchange = () => {
       saveFilters();
       renderHead();
       renderEntrants();

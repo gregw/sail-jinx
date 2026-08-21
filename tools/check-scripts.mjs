@@ -1,7 +1,12 @@
 // `node --check` only parses. These pages fail at *runtime* on names that do not exist —
-// a mistyped function name, a helper that got renamed. That has bitten three times, so:
-// strip comments and string literals, then diff every called name against every declared
-// one.
+// a mistyped function name, a helper that got renamed, an element id that was renamed in
+// the markup but not in the handler that binds it. Every one of those parses perfectly
+// and then throws, and in an onchange handler that means the control silently does
+// nothing. So: two checks, neither of which the parser can make.
+//
+//   1. Strip comments and string literals, then diff every called name against every
+//      declared one.
+//   2. Diff every getElementById('literal') against the ids the markup actually has.
 import fs from 'node:fs';
 
 const dir = new URL('../src/main/resources/static/', import.meta.url).pathname;
@@ -43,6 +48,13 @@ for (const page of fs.readdirSync(dir).filter(f => f.endsWith('.html') && !f.sta
   const raw = shared.map(s => fs.readFileSync(dir + s, 'utf8')).join('\n') + '\n' + scriptsOf(html);
   const src = stripLiterals(raw);
 
+  // Ids the page can actually produce: its own markup, the shared nav it includes, and
+  // anything it writes itself through innerHTML — which is why this scans the raw text
+  // rather than the stripped copy.
+  const navHtml = html.includes('INCLUDE _nav.html')
+    ? fs.readFileSync(dir + '_nav.html', 'utf8') : '';
+  const ids = new Set([...(html + navHtml + raw).matchAll(/\bid="([\w-]+)"/g)].map(m => m[1]));
+
   const declared = new Set([...BROWSER,
     ...[...src.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)].map(m => m[1]),
     ...[...src.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)].map(m => m[1]),
@@ -66,12 +78,27 @@ for (const page of fs.readdirSync(dir).filter(f => f.endsWith('.html') && !f.sta
     }
   });
 
-  if (missing.size) {
-    problems += missing.size;
+  // Only a plain literal is checked; an id built by concatenation cannot be resolved
+  // here and is left alone rather than guessed at.
+  //
+  // And only where the result is used on the spot — `getElementById(x).onchange = …`,
+  // which is the shape that throws. A lookup assigned to a variable is very often
+  // followed by a null check (common.js does exactly that for the nav widget, which the
+  // report pages legitimately do not have), and flagging those buries the real ones.
+  const badIds = new Map();
+  raw.split('\n').forEach((line, idx) => {
+    for (const m of line.matchAll(/getElementById\(\s*['"]([\w-]+)['"]\s*\)\s*[.[]/g))
+      if (!ids.has(m[1]) && !badIds.has(m[1])) badIds.set(m[1], idx + 1);
+  });
+
+  if (missing.size || badIds.size) {
+    problems += missing.size + badIds.size;
     console.log(`  ${page}`);
     for (const [name, line] of missing)
       console.log(`     line ${line}: ${name}() — called but never defined`);
+    for (const [id, line] of badIds)
+      console.log(`     line ${line}: getElementById('${id}') — no such id in the markup`);
   }
 }
-console.log(problems ? `\n${problems} undefined name(s)` : '\nno undefined names in any page');
+console.log(problems ? `\n${problems} problem(s)` : '\nno undefined names or ids in any page');
 process.exit(problems ? 1 : 0);
