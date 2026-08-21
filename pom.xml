@@ -21,7 +21,7 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <jackson.version>2.21.1</jackson.version>
-        <jetty.version>12.1.6</jetty.version>
+        <jetty.version>12.1.12</jetty.version>
         <junit.version>5.13.4</junit.version>
         <hamcrest.version>3.0</hamcrest.version>
         <jinx-data>data</jinx-data>
@@ -53,8 +53,17 @@
             <artifactId>jetty-ee10-servlet</artifactId>
             <version>${jetty.version}</version>
         </dependency>
-        <!-- No HTTP client dependency. sail-jinx v2 makes no outbound calls;
-             if one reappears here, the standalone architecture has regressed. -->
+        <!-- OpenID Connect, for signing in with a club Google Workspace account.
+             This brings jetty-client with it, and that is the ONE outbound call
+             sail-jinx makes: to the identity provider, to find out who is asking.
+             It is not a data integration. No club data leaves this process, and a
+             SailSys-shaped client here would still be the regression the rest of
+             this file is guarding against. -->
+        <dependency>
+            <groupId>org.eclipse.jetty</groupId>
+            <artifactId>jetty-openid</artifactId>
+            <version>${jetty.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-slf4j-impl</artifactId>

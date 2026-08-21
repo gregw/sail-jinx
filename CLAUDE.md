@@ -4,14 +4,19 @@ Please read [README.md](README.md) for a project overview.
 
 ## The one thing to know
 
-**sail-jinx v2 is standalone.** It has no SailSys client, no credentials, no
-outbound network calls of any kind. Results reach SailSys because a human reads
-a printed report and types them in.
+**sail-jinx v2 is standalone.** It has no SailSys client and exchanges no data
+with anything. Results reach SailSys because a human reads a printed report and
+types them in.
 
-If you find yourself adding an HTTP client, an API key, or a "sync" button, stop
-— that is the architecture this version exists to remove. The SailSys-coupled
-implementation is preserved on the `backed-by-sailsys` branch; it is history,
-not a reference.
+If you find yourself adding an HTTP client for club data, an API key, or a "sync"
+button, stop — that is the architecture this version exists to remove. The
+SailSys-coupled implementation is preserved on the `backed-by-sailsys` branch; it
+is history, not a reference.
+
+**The one exception is the identity provider.** With `auth.yaml` configured the
+server talks to Google to find out *who is asking* — see "Authentication" below.
+That is the only outbound call, it carries no club data, and it is off by default.
+An HTTP client here for anything else is still the regression.
 
 `grep -ri sailsys src/ pom.xml` should return only comments explaining why
 something is the way it is. No endpoints, no code.
@@ -27,8 +32,9 @@ decision leans on that:
 - The whole dataset is small enough to load into memory and hand-edit.
 - The fleet register is an array you filter client-side — no search index.
 - There is no concurrency control, because there is one user.
-- There is no authentication, because there is one machine. **This must change
-  before the app is hosted anywhere.** The seam is `ApiServlet.currentRole()`.
+- Authentication is **off by default** and on when `data/config/auth.yaml` says so.
+  Off is right for one machine on one desk; on is required for anything reachable
+  over a network. See "Authentication" below.
 
 Deliberately preserved pluggability:
 
@@ -64,8 +70,9 @@ migration, but nothing reads it except the display.
 | Persistence | JSON files on disk via Jackson |
 | Build | Maven |
 
-No database. No framework. No HTTP client — the absence is deliberate and
-`pom.xml` says so.
+No database. No framework. The only HTTP client is Jetty's, pulled in by
+`jetty-openid` and used for nothing but the identity provider — `pom.xml` says so
+at the dependency.
 
 ---
 
@@ -74,6 +81,8 @@ No database. No framework. No HTTP client — the absence is deliberate and
 ```txt
 sail-jinx/
   data/config/config.yaml       # club, algorithm defaults, port
+  data/config/auth.yaml         # OIDC client secret — GITIGNORED, absent means no login
+  data/config/auth.yaml.example # …and the committed template for it
   data/config/aliases.yaml      # boat + design equivalences, seeded from sailing-pf
   data/config/design.yaml       # ignored/excluded designs, per-boat design overrides
   data/store/                   # THE ONLY COPY of everything (gitignored)
@@ -344,6 +353,53 @@ for the full list. The shape worth knowing:
 | POST | `/api/races/{id}/process-handicaps` | run the engine (computes, saves nothing) |
 | POST | `/api/races/{id}/save-handicaps` | save, and carry TCFs to the next race |
 | DELETE | `/api/races/{id}/adjustments` | unlock for reprocessing |
+
+---
+
+## Authentication
+
+Off unless `data/config/auth.yaml` exists and says `enabled: true`. With it off,
+every request is an admin and there is no session handler, no security handler and
+no outbound call — exactly what the server did before a login existed.
+
+**`auth.yaml` is gitignored; `auth.yaml.example` beside it is committed.** The
+example documents the Google Cloud console setup and must never carry a real
+secret. If one is ever pushed, revoking the client is the fix — rewriting history
+is not, because the value is public the moment it reaches a remote.
+
+The pieces, and why each exists:
+
+| Piece | Job |
+|---|---|
+| `AuthConfig` | loads `auth.yaml`; **throws** rather than starting half-configured |
+| `JinxSecurityHandler` | `Constraint.ANY_USER` for every path, plus the loopback exemption |
+| `OpenIdAuthenticator` | Jetty's; does the OIDC dance and puts the claims on the session |
+| `AuthFilter` | **the club-domain check** — runs after login, 403s anyone else |
+| `SignedIn` | reads the claims back off the session |
+| `ApiServlet.currentRole` | admin vs race officer, from `admins:` |
+
+Four things that are easy to get wrong:
+
+1. **Jetty's authenticator alone is not access control.** It establishes that
+   Google knows who you are — *any* Google account, personal Gmail included.
+   `AuthFilter` is what restricts it to the club. Remove it and "sign in with
+   Google" becomes "sign in with anything".
+2. **The `hd` claim is the check; the `hd` request parameter is not.** The
+   parameter is a hint to Google's account chooser and a client can ignore it.
+   `AuthConfig.permits` checks the claim that comes back, and falls back to the
+   address suffix.
+3. **`allowLoopback` is dangerous behind a reverse proxy.** Nginx or a load
+   balancer connects from 127.0.0.1, so the exemption would cover the whole
+   internet. It is off by default and exists for one case: the club PC with the
+   browser on the same machine, so a race night survives an internet outage —
+   with auth on, the server needs Google reachable at startup and at every login.
+4. **A guard must stop the handler.** `denyIfNotAdmin` returns a boolean and every
+   caller does `if (denyIfNotAdmin(req, resp)) return;`, matching `rejectIfLocked`.
+   Its predecessor wrote a 403 and returned void, so the caller did the work
+   anyway — invisible while everyone was an admin.
+
+`isAdmin()` in the browser is a **UI hint only**, so buttons match what they will
+do. The server checks the same thing and returns 403.
 
 ---
 

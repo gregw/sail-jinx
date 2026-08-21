@@ -28,6 +28,12 @@ target/
 .idea/
 *.iml
 
+# The OAuth client secret. auth.yaml.example beside it is committed and shows the
+# shape; the real file never is. If this line is ever removed and a secret pushed,
+# revoke the client in the Google Cloud console — rewriting history is not enough,
+# the value is public the moment it lands on a remote.
+data/config/auth.yaml
+
 # Local JSON store
 data/store/
 

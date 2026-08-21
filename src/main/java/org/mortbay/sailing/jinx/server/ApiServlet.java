@@ -23,6 +23,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.mortbay.sailing.jinx.config.AuthConfig;
 import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.identity.BoatRegistry;
 import org.mortbay.sailing.jinx.identity.FleetJson;
@@ -118,32 +119,48 @@ public class ApiServlet extends HttpServlet
         .build();
 
     private final JinxConfig config;
+    private final AuthConfig auth;
     private final JsonStore store;
     private final HandicapEngine engine;
     private final BoatRegistry registry;
     private final String version;
 
-    public ApiServlet(JinxConfig config, JsonStore store, HandicapEngine engine,
-                      BoatRegistry registry, String version)
+    public ApiServlet(JinxConfig config, AuthConfig auth, JsonStore store,
+                      HandicapEngine engine, BoatRegistry registry, String version)
     {
         this.config = config;
+        this.auth = auth;
         this.store = store;
         this.engine = engine;
         this.registry = registry;
         this.version = version;
     }
 
-    /**
-     * Who is asking. Always {@link Role#ADMIN}: sail-jinx has no login, and the
-     * single machine it runs on is the security boundary.
-     *
-     * <p>This exists as a seam rather than being inlined so that adding
-     * authentication later is one method, not a hunt through the servlet. The
-     * role checks it feeds are real and are already in the right places.
-     */
-    static Role currentRole(HttpServletRequest req)
+    /** Authentication off, for tests and for the single-machine deployment. */
+    public ApiServlet(JinxConfig config, JsonStore store, HandicapEngine engine,
+                      BoatRegistry registry, String version)
     {
-        return Role.ADMIN;
+        this(config, AuthConfig.disabled(), store, engine, registry, version);
+    }
+
+    /**
+     * Who is asking.
+     *
+     * <p>With {@code auth.yaml} absent or off this is always {@link Role#ADMIN}, which is
+     * what sail-jinx did before it had a login: one machine on one desk is the security
+     * boundary. With authentication on, an account named in {@code admins} is an admin and
+     * everyone else in the club domain is a race officer — they can capture a night's
+     * times but not rewrite the season's handicaps.
+     *
+     * <p>Nobody signed in is a race officer rather than an admin. It should be
+     * unreachable — the security handler admits no unauthenticated request — but a
+     * failure here should narrow what a caller can do, not widen it.
+     */
+    Role currentRole(HttpServletRequest req)
+    {
+        if (auth == null || !auth.enabled())
+            return Role.ADMIN;
+        return SignedIn.of(req, auth).admin() ? Role.ADMIN : Role.RACE_OFFICER;
     }
 
     /** What a caller is allowed to do. */
@@ -165,6 +182,7 @@ public class ApiServlet extends HttpServlet
             switch (path)
             {
                 case "/config" -> writeJson(resp, publicConfig());
+                case "/whoami" -> writeJson(resp, whoami(req));
                 case "/boats" -> writeJson(resp, sortedBoats());
                 case "/designs" -> writeJson(resp, sortedDesigns());
                 case "/series" -> writeJson(resp, sortedSeries());
@@ -304,7 +322,8 @@ public class ApiServlet extends HttpServlet
      */
     private void handleSaveBoat(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
-        requireAdmin(resp);
+        if (denyIfNotAdmin(req, resp))
+            return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         String sailNumber = text(body, "sailNumber");
         String name = text(body, "name");
@@ -402,7 +421,8 @@ public class ApiServlet extends HttpServlet
     private void handleImportBoats(HttpServletRequest req, HttpServletResponse resp)
         throws Exception
     {
-        requireAdmin(resp);
+        if (denyIfNotAdmin(req, resp))
+            return;
         FleetJson.Parsed parsed = FleetJson.parse(importBody(req));
         boolean dryRun = "true".equalsIgnoreCase(req.getParameter("dryRun"));
 
@@ -448,7 +468,8 @@ public class ApiServlet extends HttpServlet
     private void handleImportEntrants(HttpServletRequest req, HttpServletResponse resp,
                                       String raceId) throws Exception
     {
-        requireAdmin(resp);
+        if (denyIfNotAdmin(req, resp))
+            return;
         Race race = store.races().get(raceId);
         if (race == null)
         {
@@ -616,7 +637,8 @@ public class ApiServlet extends HttpServlet
 
     private void handleSaveSeries(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
-        requireAdmin(resp);
+        if (denyIfNotAdmin(req, resp))
+            return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         String name = text(body, "name");
         if (isBlank(name))
@@ -674,7 +696,8 @@ public class ApiServlet extends HttpServlet
     private void handleSaveSeriesConfig(HttpServletRequest req, HttpServletResponse resp,
                                         String seriesId) throws Exception
     {
-        requireAdmin(resp);
+        if (denyIfNotAdmin(req, resp))
+            return;
         // The compact constructor fills in a safe default for every missing or
         // invalid field, so a partial payload is fine.
         JinxConfig.Algorithm posted =
@@ -715,7 +738,8 @@ public class ApiServlet extends HttpServlet
     private void handleSaveRoster(HttpServletRequest req, HttpServletResponse resp,
                                   String seriesId) throws Exception
     {
-        requireAdmin(resp);
+        if (denyIfNotAdmin(req, resp))
+            return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         JsonNode entries = body.isArray() ? body : body.path("entries");
         List<Roster.Entry> out = new ArrayList<>();
@@ -786,7 +810,8 @@ public class ApiServlet extends HttpServlet
      */
     private void handleSaveRace(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
-        requireAdmin(resp);
+        if (denyIfNotAdmin(req, resp))
+            return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         String seriesId = text(body, "seriesId");
         if (isBlank(seriesId) || !store.series().containsKey(seriesId))
@@ -1257,7 +1282,8 @@ public class ApiServlet extends HttpServlet
     private void handleProcessHandicaps(HttpServletRequest req, HttpServletResponse resp,
                                         String raceId) throws Exception
     {
-        requireAdmin(resp);
+        if (denyIfNotAdmin(req, resp))
+            return;
         Race race = store.races().get(raceId);
         JsonNode body = MAPPER.readTree(req.getInputStream());
         JinxConfig.Algorithm alg = algorithmFor(race == null ? null : race.seriesId());
@@ -1335,7 +1361,8 @@ public class ApiServlet extends HttpServlet
     private void handleSaveHandicaps(HttpServletRequest req, HttpServletResponse resp, String raceId)
         throws Exception
     {
-        requireAdmin(resp);
+        if (denyIfNotAdmin(req, resp))
+            return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         JsonNode arr = body.isArray() ? body : body.path("adjustments");
         if (!arr.isArray() || arr.isEmpty())
@@ -1413,7 +1440,8 @@ public class ApiServlet extends HttpServlet
     private void handleUnlockRace(HttpServletRequest req, HttpServletResponse resp, String raceId)
         throws Exception
     {
-        requireAdmin(resp);
+        if (denyIfNotAdmin(req, resp))
+            return;
         boolean removed = store.deleteAdjustments(raceId);
         if (removed)
         {
@@ -1482,13 +1510,46 @@ public class ApiServlet extends HttpServlet
      * every call site that will need it so that turning authentication on is a
      * change in one place rather than an audit of the whole servlet.
      */
-    private void requireAdmin(HttpServletResponse resp) throws IOException
+    /**
+     * True when this caller is not an admin, having already written the 403.
+     *
+     * <p>Returns rather than throws, and the caller must act on it —
+     * {@code if (denyIfNotAdmin(req, resp)) return;} — matching
+     * {@link #rejectIfLocked}. The previous version took no request, so it asked
+     * {@code currentRole(null)}, and wrote a 403 without stopping the handler: the caller
+     * read the status, ignored it, and did the work anyway. Harmless while every request
+     * was an admin, and a hole the moment one was not.
+     */
+    private boolean denyIfNotAdmin(HttpServletRequest req, HttpServletResponse resp)
+        throws IOException
     {
-        if (currentRole(null) != Role.ADMIN)
-        {
-            resp.setStatus(403);
-            writeJson(resp, mapOf("error", "admin required"));
-        }
+        if (currentRole(req) == Role.ADMIN)
+            return false;
+        resp.setStatus(403);
+        writeJson(resp, mapOf("error", "admin required"));
+        return true;
+    }
+
+    /**
+     * Who the browser is signed in as, so the nav bar can say so and the UI can hide
+     * what this caller cannot do.
+     *
+     * <p>Only what the page needs: the address, the display name, and the two booleans.
+     * No token, no claim dump — none of it is the browser's business, and a token echoed
+     * into a page is a token in somebody's screenshot.
+     */
+    private Map<String, Object> whoami(HttpServletRequest req)
+    {
+        SignedIn who = SignedIn.of(req, auth);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("authEnabled", auth != null && auth.enabled());
+        out.put("signedIn", who.isSignedIn());
+        out.put("email", who.email());
+        out.put("name", who.name());
+        out.put("admin", who.admin());
+        out.put("role", currentRole(req).name());
+        out.put("logoutPath", "/auth/logout");
+        return out;
     }
 
     private static String path(HttpServletRequest req)

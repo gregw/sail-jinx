@@ -1,0 +1,58 @@
+# sail-jinx authentication — copy to auth.yaml and fill in.
+#
+#   cp data/config/auth.yaml.example data/config/auth.yaml
+#
+# auth.yaml holds a client secret and is in .gitignore. THIS file is committed and
+# must never contain a real one. If you paste a secret here by mistake, treat it as
+# leaked: revoke it in the Google Cloud console and issue a new one.
+
+# Off by default. With this false, or with no auth.yaml at all, sail-jinx behaves as
+# it always has: no login, every request an admin. That is fine for the club PC on
+# one desk. It is not fine for anything reachable over a network.
+enabled: false
+
+# --- Google Workspace ------------------------------------------------------
+#
+# In the Google Cloud console, for a project owned by the club:
+#
+#   1. APIs & Services > OAuth consent screen. User type "Internal" — that alone
+#      restricts sign-in to the club Workspace, and this file's allowedDomain is
+#      then a second, independent check rather than the only one.
+#   2. APIs & Services > Credentials > Create credentials > OAuth client ID,
+#      application type "Web application".
+#   3. Authorised redirect URI: the server's own address plus redirectPath below,
+#      exactly, including scheme and port. Google matches it as a literal string.
+#         http://localhost:8080/auth/callback
+#         https://jinx.myc.org.au/auth/callback
+#      Add one line per address the server is reached on.
+#   4. Copy the client ID and secret here.
+
+issuer: "https://accounts.google.com"
+clientId: "000000000000-xxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com"
+clientSecret: "REPLACE-ME"
+
+# Where Google sends the browser back. Must match the registered redirect URI.
+redirectPath: "/auth/callback"
+
+# Only Workspace accounts in this domain may sign in. Checked server-side against
+# the `hd` claim Google returns, and against the address. Leave it out to admit any
+# account the issuer will authenticate — which for Google means any Gmail account,
+# so do not leave it out.
+allowedDomain: "myc.org.au"
+
+# Who may edit handicaps and unlock races. Everyone else who signs in can still run
+# a race night — enter times, results, flags — but not rewrite the season.
+# An empty list means everyone who can sign in is an admin.
+admins:
+  - "commodore@myc.org.au"
+
+# Treat requests from this machine as an admin without signing in.
+#
+# For the club PC where the browser and the server are the same computer: it keeps
+# race night working during an internet outage, when Google cannot be reached and
+# nobody could sign in.
+#
+# DANGEROUS behind a reverse proxy. Nginx, Apache or a cloud load balancer connects
+# from 127.0.0.1, so every request in the world would arrive as loopback and this
+# would exempt all of them. Leave it false for any hosted deployment.
+allowLoopback: false

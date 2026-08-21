@@ -101,12 +101,30 @@ Both match rather than duplicate — by boat id first, then through the alias fi
 for sail numbers and names that have changed — and both upgrade a boat held
 without a design. **Preview** shows what an import would do before it does it.
 
-### There is no login
+### Signing in
 
-Every connection is treated as an administrator. The machine it runs on is the
-security boundary, which is fine on a club office PC and **not** fine anywhere
-with a network around it. See `currentRole()` in `ApiServlet` — adding
-authentication is one method, and it must happen before this is hosted.
+Out of the box there is no login: every connection is treated as an
+administrator, and the machine it runs on is the security boundary. That is fine
+on a club office PC and **not** fine anywhere with a network around it.
+
+For anything reachable over a network, copy `data/config/auth.yaml.example` to
+`data/config/auth.yaml` and fill in a Google OAuth client. Sign-in is then
+restricted to the club's Workspace domain — checked on the server, against the
+domain Google itself asserts, so a personal Gmail account cannot get in. Named
+addresses in `admins:` may edit handicaps and unlock races; everyone else who
+signs in can run a race night but not rewrite the season.
+
+`auth.yaml` holds a client secret and is gitignored. The example file beside it
+is committed and must never carry a real one.
+
+Two things worth knowing before turning it on:
+
+- **It needs the internet.** The server reaches Google at startup and at every
+  login. `allowLoopback: true` exempts requests from the same machine, so the
+  office PC can still score a race night during an outage — but it is dangerous
+  behind a reverse proxy, where every request arrives from `127.0.0.1`.
+- **Sessions are in memory.** Restarting the server signs everybody out. The race
+  data is on disk and unaffected.
 
 ---
 

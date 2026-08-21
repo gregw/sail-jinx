@@ -68,14 +68,38 @@ function getConfig() {
   return _configPromise;
 }
 
+let _whoPromise = null;
+let _who = { authEnabled: false, signedIn: false, admin: true, role: 'ADMIN' };
+
 /**
- * There is no login. Everyone reaching this server is treated as an admin —
- * it runs on one machine on one desk, which is the whole security boundary.
- * Kept as a function so the pages ask a question rather than assume an answer,
- * and so adding real authentication later is one place, not thirty.
+ * Who the server says we are. Cached for the life of the page: the answer cannot change
+ * without a round trip through the identity provider, which reloads the page anyway.
+ */
+function getWhoami() {
+  if (_whoPromise) return _whoPromise;
+  _whoPromise = fetchJson('/api/whoami').then(r => {
+    if (r.ok && r.body) _who = r.body;
+    return _who;
+  });
+  return _whoPromise;
+}
+
+/**
+ * Whether this caller may edit handicaps and unlock races.
+ *
+ * <p>With no login configured this is everybody, which is what sail-jinx did before it
+ * had one. It answers from the cached whoami, so a page that has not called
+ * {@link getWhoami} yet gets the permissive default — which is a UI hint only. The
+ * server checks the same thing for real and returns 403; this exists so the buttons
+ * match what the button will actually do, not to enforce anything.
  */
 function isAdmin() {
-  return true;
+  return _who.admin !== false;
+}
+
+/** The signed-in account, or null. For display. */
+function signedInAs() {
+  return _who.signedIn ? (_who.email || null) : null;
 }
 
 /**
@@ -86,7 +110,18 @@ function isAdmin() {
 async function refreshBuildWidget() {
   const widget = document.getElementById('build-widget');
   const cfg = await getConfig();
+  const who = await getWhoami();
   if (!widget) return;
+  const authWidget = document.getElementById('auth-widget');
+  if (authWidget) {
+    // Nothing at all when there is no login: an empty "not signed in" would be a
+    // permanent complaint about a machine that is working exactly as intended.
+    authWidget.innerHTML = !who.authEnabled ? ''
+      : who.signedIn
+        ? esc(who.email) + (who.admin ? '' : ' <span class="tag">race officer</span>')
+          + ' <a href="' + esc(who.logoutPath || '/auth/logout') + '">sign out</a>'
+        : '<span class="tag">local</span>';
+  }
   if (!cfg) {
     widget.innerHTML = '<span class="build-err">server unreachable</span>';
     return;
