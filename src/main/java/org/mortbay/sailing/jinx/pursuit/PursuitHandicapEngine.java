@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -57,8 +58,70 @@ public class PursuitHandicapEngine implements HandicapEngine
         return out;
     }
 
+    /**
+     * Adjust the fleet's handicaps, in two passes.
+     *
+     * <p>A casual sailed, so its own handicap should move — but it is not in the series,
+     * and it must not shift the handicaps of the boats that are. One boat turning up for
+     * one night should not be able to change what the season's regulars are rated at.
+     *
+     * <p>So the algorithm runs twice:
+     *
+     * <ol>
+     *   <li><b>Without the casuals.</b> This is the answer for every series entrant, and
+     *       it is exactly the race their series had.</li>
+     *   <li><b>With everybody.</b> This is the answer for the casuals alone, and it is
+     *       the race they actually sailed.</li>
+     * </ol>
+     *
+     * <p>The visible consequence is deliberate: when a casual wins, the top penalty is
+     * awarded twice — to the casual, and to the first series boat home, which won its own
+     * race. Neither is being over-charged; they are being charged in two different races.
+     *
+     * <p><b>The merged answer does not conserve.</b> Each pass redistributes its own pool
+     * in full, so the series entrants still sum to zero — but the casuals' share comes
+     * from a race the series boats were not scored on, so the totals do not add up across
+     * the two. That is inherent to the requirement, not a bug: making them add up would
+     * mean feeding the casual's residue back into the series fleet, which is the exact
+     * thing the two passes exist to prevent. See
+     * {@code conservationHoldsPerPassNotAcrossTheMergedAnswer}.
+     */
     @Override
-    public List<Adjustment> processResults(List<Competitor> boats, Race race, Map<String, Result> results)
+    public List<Adjustment> processResults(List<Competitor> boats, Race race,
+                                           Map<String, Result> results)
+    {
+        if (boats == null || boats.isEmpty())
+            return List.of();
+
+        List<Competitor> seriesOnly = boats.stream().filter(Competitor::seeded).toList();
+        // Nothing to separate: one pass is the whole answer, and is bit-for-bit what the
+        // two-pass path would produce anyway.
+        if (seriesOnly.size() == boats.size())
+            return onePass(boats, race, results);
+
+        // Pass 2 first, because its ordering is the one worth returning: every boat, in
+        // the order it finished. Pass 1 then overwrites the series entrants' numbers.
+        List<Competitor> everybody = boats.stream()
+            .map(b -> b.seeded() ? b : new Competitor(b.boatId(), b.tcf(), true))
+            .toList();
+        List<Adjustment> withCasuals = onePass(everybody, race, results);
+
+        Map<String, Adjustment> seriesAnswer = new LinkedHashMap<>();
+        for (Adjustment a : onePass(seriesOnly, race, results))
+            seriesAnswer.put(a.boatId(), a);
+
+        List<Adjustment> merged = new ArrayList<>(withCasuals.size());
+        for (Adjustment a : withCasuals)
+        {
+            Adjustment own = seriesAnswer.get(a.boatId());
+            merged.add(own != null ? own : a);
+        }
+        return merged;
+    }
+
+    /** One run of the algorithm over whatever fleet it is handed. */
+    private List<Adjustment> onePass(List<Competitor> boats, Race race,
+                                     Map<String, Result> results)
     {
         // The sunset cap is not applied here. It shapes the course the RO lays before the
         // race, not the handicap maths afterwards — by this point the boats have sailed
@@ -76,12 +139,6 @@ public class PursuitHandicapEngine implements HandicapEngine
         List<Competitor> frozen = new ArrayList<>();
         for (Competitor b : boats)
         {
-            // A boat that was not seeded raced tonight but takes no part in the handicap.
-            if (!b.seeded())
-            {
-                frozen.add(b);
-                continue;
-            }
             Result r = results == null ? null : results.get(b.boatId());
             if (r == null)
             {
@@ -194,8 +251,8 @@ public class PursuitHandicapEngine implements HandicapEngine
             adjustments.add(new Adjustment(p.boat().boatId(), p.position(),
                 p.penalty(), rewards[i], net, oldTcf, oldTcf / denom));
         }
-        // Frozen boats — unseeded, or seeded with no time — still get a row, with zero
-        // deltas and their TCF untouched, so the audit and the table can show them.
+        // Frozen boats — in this fleet, but with no time of their own — still get a row,
+        // with zero deltas and their TCF untouched, so the audit and the table show them.
         for (Competitor b : frozen)
             adjustments.add(new Adjustment(b.boatId(), null, 0.0, 0.0, 0.0, b.tcf(), b.tcf()));
 

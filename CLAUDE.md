@@ -141,12 +141,26 @@ Three things it is easy to get wrong here:
    correction whether the night was 45 minutes or two hours. Substitute the target
    in either place and the cancellation breaks silently. `HandicapVariantTest`
    pins it.
-3. **Casuals are out of the handicap entirely.** `Competitor.seeded` is false for
-   them: no rung on the penalty ladder, no share of the pool, and their elapsed
-   time stays out of the median. Note this *contradicts* `Entrant.scoresHandicap()`,
-   which still answers true for CASUAL — the client decides what to send
-   (`scoring.js handicapEngineInput` sets `seeded: entryType === 'ROSTER'`), so
-   that is the one line to change if the club wants casuals handicapped again.
+3. **Casuals are handicapped by a second pass.** `Competitor.seeded` is false for
+   them, and `processResults` runs the algorithm twice: once over the series
+   entrants alone, which is *their* answer, and once over everybody, from which
+   only the *casuals'* answer is taken. A casual therefore gets a real TCF
+   adjustment while being unable to shift anyone else's — including the size of
+   their penalties, since its elapsed time never reaches their `raceDuration`.
+
+   Two consequences that look like bugs and are not:
+   - **When a casual wins, the top penalty is awarded twice** — to the casual and
+     to the first series boat home. They won two different races.
+   - **The merged result does not conserve.** Each pass redistributes its own pool
+     in full, so `Σ net = 0` holds across the series entrants; the casuals' share
+     comes from a race the series boats were not scored on. Making the totals add
+     up would mean feeding the casual's residue back into the series fleet, which
+     is the exact thing the two passes prevent.
+     `conservationHoldsPerPassNotAcrossTheMergedAnswer` pins this.
+
+   `scoring.js handicapEngineInput` decides who is seeded
+   (`seeded: entryType === 'ROSTER'`), which keeps `Entrant.scoresHandicap()`
+   honest: a casual still scores a handicap, just not in the series' race.
 
 `Design.noSpinnaker`-style asymmetry applies to `dnfInRaceDuration` too: retirements
 draw from the pool because they sailed, but their elapsed time is an *allowance*

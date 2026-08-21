@@ -22,6 +22,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.closeTo;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 
 /**
  * The 2×2 of handicap variants, exercised through the one engine that implements them.
@@ -265,36 +266,121 @@ class HandicapVariantTest
 
     // --- who is in the arithmetic at all ------------------------------------
 
+    /**
+     * A casual is handicapped, but does not disturb anybody else's handicap.
+     *
+     * <p>Two passes. The first excludes the casuals and is the answer for every series
+     * entrant. The second includes everybody and is the answer for the casuals alone.
+     * A casual therefore gets a real TCF adjustment — it sailed, and next time it turns
+     * up its handicap should reflect that — while the series boats are scored on the
+     * race their own series had.
+     */
     @Test
-    void anUnseededBoatIsLeftOutOfTheHandicapEntirely()
+    void aCasualIsHandicappedWithoutDisturbingTheSeriesEntrants()
     {
         List<Sailed> withCasual = new ArrayList<>(fleet());
-        withCasual.add(new Sailed("casual", 1.0, 85));
+        withCasual.add(new Sailed("casual", 1.0, 70));   // wins on the water
 
         List<Competitor> boats = new ArrayList<>(competitors(fleet()));
         boats.add(new Competitor("casual", 1.0, false));
 
-        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(Variant.C))
-            .processResults(boats, race(), resultsOf(withCasual, 1.0)));
+        PursuitHandicapEngine engine = new PursuitHandicapEngine(alg(Variant.C));
+        Map<String, Adjustment> mixed = byId(
+            engine.processResults(boats, race(), resultsOf(withCasual, 1.0)));
+        Map<String, Adjustment> alone = byId(
+            engine.processResults(competitors(fleet()), race(), resultsOf(fleet(), 1.0)));
 
-        // Present in the answer, but untouched by it.
-        Adjustment c = out.get("casual");
-        assertThat(c.newTcf(), equalTo(c.oldTcf()));
-        assertThat(c.penaltyMinutes(), closeTo(0.0, 1e-12));
-        assertThat(c.rewardMinutes(), closeTo(0.0, 1e-12));
-
-        // And it did not take a rung on the ladder: it finished 2nd on the water, but the
-        // seeded boats still pay 5, 4, 3, 2, 1 in their own order.
-        Map<String, Adjustment> seeded = byId(new PursuitHandicapEngine(alg(Variant.C))
-            .processResults(competitors(fleet()), race(), resultsOf(fleet(), 1.0)));
+        // The series entrants are scored exactly as if the casual had stayed home.
         for (String id : List.of("a", "b", "c", "d", "e"))
         {
-            assertThat("unseeded boat must not change " + id,
-                out.get(id).penaltyMinutes(), closeTo(seeded.get(id).penaltyMinutes(), 1e-9));
+            assertThat("casual must not move " + id,
+                mixed.get(id).newTcf(), closeTo(alone.get(id).newTcf(), 1e-12));
+            assertThat(mixed.get(id).penaltyMinutes(),
+                closeTo(alone.get(id).penaltyMinutes(), 1e-12));
+            assertThat(mixed.get(id).rewardMinutes(),
+                closeTo(alone.get(id).rewardMinutes(), 1e-12));
         }
-        // Conservation still holds over the participants.
-        assertThat(out.values().stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum(),
-            closeTo(0.0, 1e-9));
+
+        // …and the casual is handicapped rather than frozen.
+        Adjustment c = mixed.get("casual");
+        assertThat(c.newTcf(), not(equalTo(c.oldTcf())));
+        assertThat(c.penaltyMinutes() > 0.0, is(true));
+    }
+
+    /**
+     * The visible consequence, and the intended one: when a casual wins, the top penalty
+     * is awarded twice — once to the casual, and once to the first series boat home,
+     * which won its own race.
+     */
+    @Test
+    void aWinningCasualDoesNotCostTheFirstSeriesBoatItsPenalty()
+    {
+        List<Sailed> withCasual = new ArrayList<>(fleet());
+        withCasual.add(new Sailed("casual", 1.0, 70));
+
+        List<Competitor> boats = new ArrayList<>(competitors(fleet()));
+        boats.add(new Competitor("casual", 1.0, false));
+
+        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(Variant.A))
+            .processResults(boats, race(), resultsOf(withCasual, 1.0)));
+
+        // Fixed scaling, so the ladder reads as the plain figures.
+        assertThat(out.get("casual").penaltyMinutes(), closeTo(5.0, 1e-9));
+        assertThat(out.get("a").penaltyMinutes(), closeTo(5.0, 1e-9));
+        // …and the rest of the series fleet is unshifted, down the ladder 4, 3, 2, 1.
+        assertThat(out.get("b").penaltyMinutes(), closeTo(4.0, 1e-9));
+        assertThat(out.get("c").penaltyMinutes(), closeTo(3.0, 1e-9));
+        assertThat(out.get("d").penaltyMinutes(), closeTo(2.0, 1e-9));
+        assertThat(out.get("e").penaltyMinutes(), closeTo(1.0, 1e-9));
+    }
+
+    /**
+     * Conservation holds within each pass, and therefore over the series entrants — but
+     * NOT over the merged answer once a casual is in it. That is inherent: the casual's
+     * numbers come from a race the series boats were not scored on, so the two halves do
+     * not add up. Asserted here so nobody "fixes" it by feeding the casual's residue back
+     * into the series fleet, which is precisely what the two passes exist to prevent.
+     */
+    @Test
+    void conservationHoldsPerPassNotAcrossTheMergedAnswer()
+    {
+        List<Sailed> withCasual = new ArrayList<>(fleet());
+        withCasual.add(new Sailed("casual", 1.0, 70));
+
+        List<Competitor> boats = new ArrayList<>(competitors(fleet()));
+        boats.add(new Competitor("casual", 1.0, false));
+
+        List<Adjustment> out = new PursuitHandicapEngine(alg(Variant.C))
+            .processResults(boats, race(), resultsOf(withCasual, 1.0));
+
+        double seeded = out.stream().filter(a -> !a.boatId().equals("casual"))
+            .mapToDouble(Adjustment::netAdjustmentMinutes).sum();
+        assertThat("the series fleet redistributes in full", seeded, closeTo(0.0, 1e-9));
+
+        double all = out.stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum();
+        assertThat("the casual's share is extra, by design",
+            Math.abs(all) > 1e-6, is(true));
+    }
+
+    @Test
+    void everySeededBoatIsAnsweredExactlyOnce()
+    {
+        List<Sailed> withCasuals = new ArrayList<>(fleet());
+        withCasuals.add(new Sailed("c1", 1.0, 70));
+        withCasuals.add(new Sailed("c2", 1.0, 130));
+
+        List<Competitor> boats = new ArrayList<>(competitors(fleet()));
+        boats.add(new Competitor("c1", 1.0, false));
+        boats.add(new Competitor("c2", 1.0, false));
+
+        List<Adjustment> out = new PursuitHandicapEngine(alg(Variant.C))
+            .processResults(boats, race(), resultsOf(withCasuals, 1.0));
+
+        assertThat(out.size(), equalTo(7));
+        assertThat(out.stream().map(Adjustment::boatId).distinct().count(), equalTo(7L));
+        // A casual that finished last still draws from the pool of the race it was in.
+        assertThat(out.stream().filter(a -> a.boatId().equals("c2"))
+            .findFirst().orElseThrow().rewardMinutes() > 0.0, is(true));
     }
 
     @Test
