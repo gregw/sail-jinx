@@ -79,6 +79,7 @@
       <datalist id="name-matches"></datalist>
       <input id="add-design" list="design-matches" placeholder="design" autocomplete="off">
       <datalist id="design-matches"></datalist>
+      <label title="A casual races and is handicapped like anybody else, but is not carried into the next race."><input type="checkbox" id="add-casual"> casual</label>
       <button id="add-existing-btn" type="button" disabled>Add from register</button>
       <button id="add-new-btn" type="button" disabled>Add &amp; register</button>
       <button id="add-oneoff-btn" type="button" disabled>One-off only</button>
@@ -707,6 +708,11 @@
   /**
    * Boats matching every field that has something in it. Substring on each column, so
    * partial typing narrows rather than finding nothing.
+   *
+   * Boats already in this race are left out: they cannot be added again, so offering
+   * one is a suggestion that leads nowhere. Typing an entered boat's number in full
+   * still resolves it, which is what produces the "already in this race" message —
+   * that is worth saying, whereas a dead suggestion is not.
    */
   function addCandidates() {
     const f = addFields();
@@ -714,6 +720,7 @@
     const name = normName(f.name.value.trim());
     const design = normName(f.design.value.trim());
     return register.filter(b => {
+      if (alreadyEntered(b.id)) return false;
       if (sail && !stripSailPrefix(b.sailNumber).includes(sail)) return false;
       if (name && !normName(b.name).includes(name)) return false;
       if (design && !normName(designNameOf(b.designId)).includes(design)) return false;
@@ -790,6 +797,25 @@
       setMsg('add-msg', '');
   }
 
+  /**
+   * Whether a hand-added boat is a casual. The tick box carries the answer; the default
+   * is what the race number implies. Race 1 is where the season's fleet gets built, so
+   * anybody typed in then is a series entrant; from race 2 on the fleet arrives by
+   * seeding, so a boat being typed in is one that was not expected — a casual.
+   */
+  // Applied once per page load rather than on every load(): a save reloads the bundle,
+  // and a tick the RO put there deliberately has to survive that.
+  let addCasualDefaulted = false;
+  function applyCasualDefault() {
+    if (addCasualDefaulted) return;
+    addCasualDefaulted = true;
+    document.getElementById('add-casual').checked = !!bundle.previousRaceId;
+  }
+
+  function addEntryType() {
+    return document.getElementById('add-casual').checked ? 'CASUAL' : 'ROSTER';
+  }
+
   function clearAddFields() {
     const f = addFields();
     f.sail.value = '';
@@ -815,7 +841,7 @@
     const tcf = DEFAULT_ENTRY_TCF;
     addEntrant({ boatId: b.id, sailNumber: b.sailNumber, name: b.name,
       designId: b.designId, division: null, spinnaker: null, tcf,
-      entryType: b.casual ? 'CASUAL' : 'ROSTER' });
+      entryType: addEntryType() });
     setMsg('add-msg', 'Added ' + b.sailNumber + ' on TCF ' + fmtTcf(tcf)
       + ' — edit it in the table, then Save.');
   }
@@ -831,7 +857,8 @@
     // The register takes the boat's identity — including the design, if one was given;
     // the handicap belongs to this entry.
     const r = await postJson('/api/boats',
-      { sailNumber: sail, name: name || sail, design: design || null, casual: true });
+      { sailNumber: sail, name: name || sail, design: design || null,
+        casual: addEntryType() === 'CASUAL' });
     if (!r.ok) { setMsg('add-msg', 'Could not register: ' + errorOf(r)); return; }
 
     const b = r.body.boat;
@@ -845,7 +872,8 @@
       return;
     }
     addEntrant({ boatId: b.id, sailNumber: b.sailNumber, name: b.name,
-      designId: b.designId, division: null, spinnaker: null, tcf, entryType: 'CASUAL' });
+      designId: b.designId, division: null, spinnaker: null, tcf,
+      entryType: addEntryType() });
     setMsg('add-msg', (known ? 'Matched existing ' : 'Registered and added ')
       + b.sailNumber + ' (' + b.id + ').');
   }
@@ -1172,6 +1200,11 @@
     rebuildScorer();
     renderRace();
     renderDutyOptions();
+    // Seeding and the JSON import both change the entrant list and then come back
+    // through here, and the suggestions leave entered boats out — so they are rebuilt
+    // on every load, not just the first.
+    refreshAddSuggestions();
+    applyCasualDefault();
 
     document.getElementById('race-setup').style.display = '';
     document.getElementById('race-entrants').style.display = '';
