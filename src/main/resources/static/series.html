@@ -56,7 +56,7 @@
 
   <table id="series-table" style="display:none;">
     <thead>
-      <tr><th>Name</th><th>Format</th><th>Spin</th>
+      <tr><th>Name</th><th>Format</th><th>Handicap</th><th>Spin</th>
         <th class="num-cell">Races</th><th class="num-cell">Roster</th><th></th></tr>
     </thead>
     <tbody id="series-tbody"></tbody>
@@ -125,6 +125,9 @@
       return '<tr class="' + (s.archived ? 'retired' : '') + '">'
         + '<td>' + esc(s.name)
         + (s.archived ? ' <span class="tag">archived</span>' : '') + '</td>'
+        + '<td>' + esc(formatLabel(s)) + '</td>'
+        + '<td>' + esc(algorithmLabel(s)) + '</td>'
+        + '<td>' + esc(spinLabel(s.spinnakerPolicy)) + '</td>'
         + '<td class="num-cell"><a href="/races.html?seriesId=' + encodeURIComponent(s.id) + '">'
         + races + '</a></td>'
         + '<td class="num-cell"><a href="/roster.html?seriesId=' + encodeURIComponent(s.id) + '">'
@@ -159,12 +162,14 @@
 
   const SPIN_LABELS = { MIXED: 'mixed', SPINNAKER: 'spin', NON_SPINNAKER: 'non-spin' };
   const FORMAT_LABELS = { PURSUIT: 'pursuit', TCF_PURSUIT: 'TCF pursuit', PHS: 'PHS' };
+  const ALGORITHM_LABELS = { JINX: 'Jinx', SCRATCH: 'scratch' };
 
   function spinLabel(policy) { return SPIN_LABELS[policy] || policy || ''; }
-  function formatLabel(s) {
-    const f = FORMAT_LABELS[s.raceFormat] || s.raceFormat || '';
-    const h = (s.handicapAlgorithm || '').toLowerCase();
-    return h && h !== 'jinx' ? f + ' / ' + h : f;
+  function formatLabel(s) { return FORMAT_LABELS[s.raceFormat] || s.raceFormat || ''; }
+  // Its own column rather than a suffix on the format: they are two separate choices on
+  // the form that creates a series, and the table should answer them separately.
+  function algorithmLabel(s) {
+    return ALGORITHM_LABELS[s.handicapAlgorithm] || s.handicapAlgorithm || '';
   }
 
   document.getElementById('add-btn').onclick = () => {

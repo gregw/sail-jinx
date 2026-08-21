@@ -321,12 +321,21 @@ public class BoatRegistry
 
     /**
      * The spinnaker a boat should default to when entering a series: none when its design
-     * physically cannot fly one, otherwise a kite. Only a default — the entry may say
-     * otherwise, because a boat that can fly one may still enter without it.
+     * physically cannot fly one, otherwise <b>nothing</b>.
+     *
+     * <p>The asymmetry is the point. A design marked {@code noSpinnaker} is a hull fact,
+     * so NS is known. The absence of that mark is not the opposite fact — it says only
+     * that nobody has recorded anything, and a boat that <em>could</em> fly a kite may
+     * well not be flying one. Returning S there invented an answer for every hull in the
+     * register, so a fleet nobody had ever been asked about displayed as if the whole
+     * lot carried spinnakers.
+     *
+     * <p>Only a default in any case — the entry decides, and the series policy answers
+     * first where the series is one-way.
      */
     public Spinnaker defaultSpinnaker(String designId)
     {
-        return catalogue.isNoSpinnaker(designId) ? Spinnaker.NS : Spinnaker.S;
+        return catalogue.isNoSpinnaker(designId) ? Spinnaker.NS : null;
     }
 
     /**

@@ -251,7 +251,13 @@ class BoatRegistryTest
         // design only supplies the default.
         assertThat(store.designs().get("radford12catrig").noSpinnaker(), is(true));
         assertThat(registry.defaultSpinnaker(r.boat().designId()), equalTo(Spinnaker.NS));
-        assertThat(registry.defaultSpinnaker("j24"), equalTo(Spinnaker.S));
+
+        // And a design that says nothing yields nothing. "Not recorded as unable to fly
+        // one" is not evidence that a boat flies one, and the old default said S for
+        // every hull in the register — so a fleet nobody had ever been asked about read
+        // as if the whole lot carried kites. Unknown stays unknown; the entry says.
+        assertThat(registry.defaultSpinnaker("j24"), is(nullValue()));
+        assertThat(registry.defaultSpinnaker(null), is(nullValue()));
     }
 
     @Test

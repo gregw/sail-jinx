@@ -23,19 +23,17 @@
   <section id="race-setup" style="display:none;">
     <div class="toolbar">
       <label for="f-earliest">Earliest start</label>
-      <input id="f-earliest" type="time" class="hhmm-input">
-      <!-- A duration in a control meant for a clock time. The value it reports is
-           always 24-hour HH:MM, which is all this reads, but a browser whose locale
-           is 12-hour will show it as "01:30 am" — the right number said the wrong
-           way. Kept because a picker was asked for. -->
+      <input id="f-earliest" class="hhmm-input" placeholder="HH:MM" inputmode="numeric"
+             autocomplete="off" maxlength="5">
       <label for="f-target">Expected race duration</label>
-      <input id="f-target" type="time" class="hhmm-input">
+      <input id="f-target" class="hhmm-input" placeholder="HH:MM" inputmode="numeric"
+             autocomplete="off" maxlength="5">
       <span id="target-note" class="hint"></span>
     </div>
     <div class="toolbar">
       <button id="start-times-btn" class="primary" type="button">Compute start times</button>
+      <button id="unlock-starts-btn" type="button" style="display:none;">Unlock starts</button>
       <a id="report-starts-link" class="button-link" href="#" target="_blank">Start sheet ▸</a>
-      <span id="setup-msg" class="hint"></span>
     </div>
   </section>
 
@@ -43,10 +41,8 @@
     <div class="toolbar">
       <button id="process-btn" class="primary" type="button">Process handicaps</button>
       <a id="report-finish-link" class="button-link" href="#" target="_blank">Finish sheet ▸</a>
-      <button id="unlock-btn" type="button" style="display:none;">Unlock race</button>
-      <span id="handicap-msg" class="hint"></span>
+      <button id="unlock-results-btn" type="button" style="display:none;">Unlock results</button>
     </div>
-    <div id="handicap-summary"></div>
   </section>
 
   <section id="race-entrants" style="display:none;">
@@ -250,24 +246,33 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
 
   function hideNow() { return document.getElementById('hide-now').checked; }
 
-  // A published start sheet is stale the moment the fleet or its handicaps change.
-  // Nothing on the server records that, so it is tracked here — against the tab rather
-  // than the page, or a reload would silently take the controls away again.
-  let entrantsSavedSinceStartSheet = false;
+  // Publishing a start sheet closes everything that feeds it — the two setup boxes, the
+  // TCF column and the add-a-boat form. Every one of those changes a gun the fleet has
+  // already been told, so reopening them is a decision somebody makes on purpose, with
+  // the Unlock starts button, rather than a side effect of an edit.
+  //
+  // Kept against the tab: nothing on the server records it, and a reload must not
+  // silently take the controls away again mid-change.
+  let startsUnlocked = false;
 
-  function staleKey() { return sessionKey() + '.startSheetStale'; }
+  function startsKey() { return sessionKey() + '.startsUnlocked'; }
 
-  function setStartSheetStale(v) {
-    entrantsSavedSinceStartSheet = v;
+  function setStartsUnlocked(v) {
+    startsUnlocked = v;
     try {
-      if (v) sessionStorage.setItem(staleKey(), '1');
-      else sessionStorage.removeItem(staleKey());
+      if (v) sessionStorage.setItem(startsKey(), '1');
+      else sessionStorage.removeItem(startsKey());
     } catch (_) {}
   }
 
-  function restoreStartSheetStale() {
-    try { entrantsSavedSinceStartSheet = sessionStorage.getItem(staleKey()) === '1'; }
-    catch (_) { entrantsSavedSinceStartSheet = false; }
+  function restoreStartsUnlocked() {
+    try { startsUnlocked = sessionStorage.getItem(startsKey()) === '1'; }
+    catch (_) { startsUnlocked = false; }
+  }
+
+  /** True once the fleet has been given its guns and nobody has reopened them. */
+  function startsLocked() {
+    return locked || (!!(bundle && bundle.startSheet) && !startsUnlocked);
   }
 
   function sessionClear() {
@@ -319,7 +324,8 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     { key: 'tcf', label: 'TCF', cls: 'num-cell',
       get: e => tcfOf(e),
       render: e => {
-        if (locked || !isAdmin()) return esc(fmtTcf(tcfOf(e)));
+        // A TCF is what the stagger was computed from, so it closes with the starts.
+        if (startsLocked() || !isAdmin()) return esc(fmtTcf(tcfOf(e)));
         const dirty = dirtyTcf.has(e.boatId);
         return '<input type="number" step="0.0001" class="tcf-input' + (dirty ? ' dirty' : '')
           + '" data-id="' + esc(e.boatId) + '" value="' + esc(fmtTcf(tcfOf(e))) + '">';
@@ -344,7 +350,8 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
       get: e => timesFor(e.boatId).actualStart || '',
       render: e => timeInput(e, 'actualStart') },
     { key: 'late', label: 'Late', cls: 'num-cell',
-      get: e => scorer.lateSeconds(e) ?? NaN,
+      // NaN wherever the cell renders blank, so sorting agrees with what is on screen.
+      get: e => (timesFor(e.boatId).actualStart ? scorer.lateSeconds(e) : null) ?? NaN,
       render: e => {
         const s = scorer.lateSeconds(e);
         if (s == null || !timesFor(e.boatId).actualStart) return '';
@@ -437,7 +444,17 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
         .filter(s => s.col && s.col.get);
       rows.sort((a, b) => {
         for (const { col, dir } of cols) {
-          const cmp = compareValues(col.get(a), col.get(b));
+          const av = col.get(a), bv = col.get(b);
+          // Emptiness is not a value to sort by, so it is settled before the direction
+          // is applied. A boat with no Late is not "the earliest away" when the column
+          // is reversed — it simply has not started, and belongs at the bottom either
+          // way. Only real values get flipped.
+          const ae = isEmptyValue(av), be = isEmptyValue(bv);
+          if (ae || be) {
+            if (ae && be) continue;
+            return ae ? 1 : -1;
+          }
+          const cmp = compareValues(av, bv);
           if (cmp !== 0) return cmp * dir;
         }
         return 0;
@@ -449,11 +466,15 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     return rows.filter(keepRow);
   }
 
+  function isEmptyValue(v) {
+    return v == null || v === '' || (typeof v === 'number' && isNaN(v));
+  }
+
   // Empty values and NaN always sort last, whichever direction is asked for —
   // a boat with no finish time is not "first", it is simply not yet ranked.
   function compareValues(a, b) {
-    const aEmpty = a == null || a === '' || (typeof a === 'number' && isNaN(a));
-    const bEmpty = b == null || b === '' || (typeof b === 'number' && isNaN(b));
+    const aEmpty = isEmptyValue(a);
+    const bEmpty = isEmptyValue(b);
     if (aEmpty && bEmpty) return 0;
     if (aEmpty) return 1;
     if (bEmpty) return -1;
@@ -501,6 +522,9 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
   }
 
   function renderEntrants() {
+    // The flags cell refuses to open when locked, but its cursor, hover and pencil said
+    // otherwise — it looked editable and did nothing. The styling is gated on this.
+    document.getElementById('entrants-table').classList.toggle('locked', locked);
     const cols = activeCols();
     const rows = orderedEntrants();
     document.getElementById('entrants-tbody').innerHTML = rows.map(e => {
@@ -698,7 +722,9 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     if (n) logNow({ time: now, field,
       note: (field === 'finish' ? 'finish' : 'start') + ' stamped' });
     touched();
-    setMsg('add-msg', n ? ('Stamped ' + n + ' boats at ' + now + '.') : 'Nothing left to stamp.');
+    setCtrlMsg(n ? 'banner-ok' : 'banner-warn',
+      n ? 'Stamped ' + n + ' boat' + (n === 1 ? '' : 's') + ' at ' + now + '.'
+        : 'Nothing left to stamp.');
   }
 
   // --- drag to reorder -------------------------------------------------------
@@ -1202,10 +1228,9 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
   }
 
   async function doSave() {
-    const fleetChanged = entrantsChanged();
     // Entrants first: a TCF edit changes what the times are scored against, and
     // saving times against the old handicaps would be briefly wrong.
-    if (fleetChanged) {
+    if (entrantsChanged()) {
       const payload = {
         tcfSource: dirtyTcf.size ? 'MANUAL_EDIT' : undefined,
         entrants: entrants.map(e => ({
@@ -1224,9 +1249,6 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     if (!r.ok) { setMsg('save-summary', 'Could not save times: ' + errorOf(r)); return false; }
 
     sessionClear();
-    // Set after sessionClear, which does not touch this key, and before load, which
-    // reads it back to decide whether the start-time controls reopen.
-    if (fleetChanged) setStartSheetStale(true);
     await load();
     setCtrlMsg('banner-ok', 'Saved.');
     return true;
@@ -1247,6 +1269,21 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
   // --- setup + start times ---------------------------------------------------
 
 
+
+  /**
+   * A clock time typed as HH:MM. Forgiving about the shapes a hurried hand produces —
+   * "6:05", "1800" — and null for anything it cannot read, which the caller reports
+   * rather than sending on.
+   */
+  function parseHHMM(raw) {
+    const v = String(raw ?? '').trim();
+    if (!v) return null;
+    const m = v.match(/^(\d{1,2}):?([0-5]\d)$/);
+    if (!m) return null;
+    const h = Number(m[1]);
+    return h > 23 ? null
+      : String(h).padStart(2, '0') + ':' + m[2];
+  }
 
   /**
    * The target duration, read from a box that shows H:MM. A bare number is taken as
@@ -1279,18 +1316,25 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     const rawTarget = document.getElementById('f-target').value;
     const target = parseInterval(rawTarget);
     if (rawTarget.trim() && target == null) {
-      setMsg('setup-msg', 'Target elapsed must be H:MM, or a plain number of minutes.');
+      setCtrlMsg('banner-err', 'Expected race duration must be HH:MM, or a plain number '
+        + 'of minutes.');
+      return;
+    }
+    const rawEarliest = document.getElementById('f-earliest').value;
+    const earliest = parseHHMM(rawEarliest);
+    if (rawEarliest.trim() && earliest == null) {
+      setCtrlMsg('banner-err', 'Earliest start must be a time of day, as HH:MM.');
       return;
     }
     const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/start-times', {
       targetElapsedMinutes: target,
-      earliestStart: document.getElementById('f-earliest').value.trim() || null
+      earliestStart: earliest
     });
-    if (!r.ok) { setMsg('setup-msg', 'Could not compute: ' + errorOf(r)); return; }
-    setStartSheetStale(false);
+    if (!r.ok) { setCtrlMsg('banner-err', 'Could not compute: ' + errorOf(r)); return; }
+    setStartsUnlocked(false);
     await load();
-    setMsg('setup-msg', r.body.limitedBySunset
-      ? 'Start times computed — target capped to '
+    setCtrlMsg('banner-ok', r.body.limitedBySunset
+      ? 'Start times computed — duration capped to '
         + fmtInterval(r.body.startSheet.targetElapsedMinutes)
         + ' by sunset at ' + r.body.sunsetLocal + '.'
       : 'Start times computed — print the start sheet.');
@@ -1313,49 +1357,67 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     if (isDirty() && !(await doSave())) return;
 
     const boats = scorer.handicapEngineInput('pursuit');
-    if (!boats.length) { setMsg('handicap-msg', 'No boats to process.'); return; }
+    if (!boats.length) { setCtrlMsg('banner-warn', 'No boats to process.'); return; }
 
     const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/process-handicaps', {
       targetElapsedMinutes: bundle.race.targetElapsedMinutes,
       boats
     });
-    if (!r.ok) { setMsg('handicap-msg', 'Could not process: ' + errorOf(r)); return; }
+    if (!r.ok) { setCtrlMsg('banner-err', 'Could not process: ' + errorOf(r)); return; }
 
     const computed = r.body.adjustments || [];
     const sr = await postJson('/api/races/' + encodeURIComponent(raceId) + '/save-handicaps',
       { adjustments: computed });
-    if (!sr.ok) { setMsg('handicap-msg', 'Could not save: ' + errorOf(sr)); return; }
+    if (!sr.ok) { setCtrlMsg('banner-err', 'Could not save: ' + errorOf(sr)); return; }
 
     sessionClear();
     await load();
-    renderHandicapSummary(r.body);
     const carried = sr.body.carriedEntrants;
-    // The notice box only — this used to also go in the hint beside the button, which
-    // put the same three sentences on the screen twice.
-    setMsg('handicap-msg', '');
+    // One notice, in one place. This used to be two: a sentence beside the button and
+    // the same thing again in the box, plus a summary panel that stayed on screen
+    // describing a run that had long since finished.
     setCtrlMsg('banner-ok', 'Processed and saved. '
       + (carried != null
           ? carried + ' boats carried forward to the next race.'
           : 'This is the last race in the series, so nothing was carried forward.')
-      + ' The race is now locked — unlock it to redo.');
+      + ' The results are now locked — unlock them to redo. '
+      + handicapSummary(r.body));
   }
 
-  function renderHandicapSummary(body) {
+  /**
+   * What the run did, as one sentence for the notice box. Not a panel: it describes an
+   * action that has finished, so it belongs with the other notices and is allowed to go
+   * away on reload, when the derived status takes over.
+   */
+  function handicapSummary(body) {
     const pool = [...adjustments.values()].reduce((s, a) => s + (a.penaltyMinutes || 0), 0);
     const net = [...adjustments.values()].reduce((s, a) => s + (a.netAdjustmentMinutes || 0), 0);
-    document.getElementById('handicap-summary').innerHTML =
-      '<p class="hint">Penalty pool ' + pool.toFixed(1) + ' min, redistributed in full '
-      + '(net across the fleet ' + net.toFixed(3) + ' min). Target elapsed '
-      + esc(body.targetElapsedMinutes) + ' min.</p>';
+    return 'Penalty pool ' + pool.toFixed(1) + ' min, redistributed in full (net across '
+      + 'the fleet ' + net.toFixed(3) + ' min) over ' + fmtInterval(body.targetElapsedMinutes)
+      + '.';
   }
 
 
-  async function unlockRace() {
-    if (!confirm('Unlock this race? Its saved handicaps are discarded so results '
+  /**
+   * Reopen the inputs behind the start sheet. Nothing is discarded and no gun moves —
+   * the published sheet stands until Compute start times replaces it — so unlike
+   * unlocking the results this needs no confirmation.
+   */
+  function unlockStarts() {
+    setStartsUnlocked(true);
+    renderRace();
+    renderHead();
+    renderEntrants();
+    setCtrlMsg('banner-warn', 'Starts unlocked. The published start sheet still stands '
+      + 'until you compute new times.');
+  }
+
+  async function unlockResults() {
+    if (!confirm('Unlock the results? The saved handicaps are discarded so results '
       + 'can be edited and reprocessed. The next race keeps the TCFs it was '
       + 'already given until you process again.')) return;
     const r = await deleteJson('/api/races/' + encodeURIComponent(raceId) + '/adjustments');
-    if (!r.ok) { setMsg('handicap-msg', 'Could not unlock: ' + errorOf(r)); return; }
+    if (!r.ok) { setCtrlMsg('banner-err', 'Could not unlock: ' + errorOf(r)); return; }
     await load();
   }
 
@@ -1397,19 +1459,18 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
 
     document.getElementById('f-earliest').value = (r.earliestStart || '').slice(0, 5);
     document.getElementById('f-target').value = fmtHHMM(r.targetElapsedMinutes);
-    // Once the fleet has been told when it starts, moving a gun needs a reason. The
-    // reason that counts is the entrant list changing, so these reopen on a save that
-    // changed it and close again the moment new times are published.
-    const fixed = locked || (!!bundle.startSheet && !entrantsSavedSinceStartSheet);
+    const fixed = startsLocked();
     document.getElementById('start-times-btn').disabled = fixed;
     ['f-earliest', 'f-target'].forEach(id => {
       document.getElementById(id).disabled = fixed;
     });
-    if (fixed && !locked)
-      setMsg('setup-msg', 'Start times are published. Edit and save the entrants to '
-        + 'compute them again.');
-    else if (!fixed)
-      setMsg('setup-msg', '');
+    // Offered only where it would do something: not before there is a sheet to unlock,
+    // and not on a locked race, where unlocking the results is the way back.
+    document.getElementById('unlock-starts-btn').style.display =
+      (fixed && !locked) ? '' : 'none';
+    // The add-a-boat form goes with them: a boat added after the sheet is published has
+    // no gun, and leaving the form there quietly implies it would get one.
+    document.getElementById('add-entrant-bar').style.display = fixed ? 'none' : '';
 
     const startsHref = '/report-starts.html?raceId=' + encodeURIComponent(raceId);
     const finishHref = '/report-finish.html?raceId=' + encodeURIComponent(raceId);
@@ -1441,7 +1502,7 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     }
 
     applyNowVisibility();
-    document.getElementById('unlock-btn').style.display = locked ? '' : 'none';
+    document.getElementById('unlock-results-btn').style.display = locked ? '' : 'none';
     document.getElementById('process-btn').disabled = locked;
 
     if (locked) {
@@ -1485,7 +1546,7 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
 
     restoreNowLog();
     renderNowLog();
-    restoreStartSheetStale();
+    restoreStartsUnlocked();
     rebuildScorer();
     renderRace();
     renderDutyOptions();
@@ -1498,8 +1559,7 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     document.getElementById('race-setup').style.display = '';
     document.getElementById('race-entrants').style.display = '';
     document.getElementById('handicap-panel').style.display = '';
-    document.getElementById('add-entrant-bar').style.display = locked ? 'none' : '';
-    if (locked) document.getElementById('import-panel').style.display = 'none';
+    if (startsLocked()) document.getElementById('import-panel').style.display = 'none';
 
     if (!entrants.length) {
       setCtrlMsg('banner-warn', 'This race has no entrants yet.');
@@ -1555,7 +1615,8 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     document.getElementById('reset-btn').onclick = () => { sessionClear(); load(); };
     document.getElementById('start-times-btn').onclick = computeStartTimes;
     document.getElementById('process-btn').onclick = processHandicaps;
-    document.getElementById('unlock-btn').onclick = unlockRace;
+    document.getElementById('unlock-results-btn').onclick = unlockResults;
+    document.getElementById('unlock-starts-btn').onclick = unlockStarts;
     // Hide design and Hide NOW change the column set, so the header has to be rebuilt
     // as well; the other two only change which rows show.
     document.getElementById('hide-dnc').onchange = () => { saveFilters(); renderEntrants(); };

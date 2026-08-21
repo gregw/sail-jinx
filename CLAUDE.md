@@ -219,7 +219,11 @@ Consequences worth knowing:
   that disagrees with the sail number and name beside it yields no design rather
   than a guessed one.
 - `Design.noSpinnaker` supplies the *default* for an entry, not the value: a boat
-  that can fly a kite may still enter without one.
+  that can fly a kite may still enter without one. And it is **one-directional** —
+  the mark means NS, its absence means *nothing*, not S. `defaultSpinnaker` used to
+  return S for every unmarked hull, so a fleet nobody had ever been asked about
+  displayed as if the whole lot carried kites. Unknown renders as a dash, like a
+  missing design does.
 
 Two more things that are easy to get wrong:
 

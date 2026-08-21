@@ -305,9 +305,13 @@ th.adjustment-cell, td.adjustment-cell { text-align: right; }
 .adjustment { cursor: help; font-family: var(--font-mono); }
 
 /* Flags cell — clickable, with a pencil hint that takes no layout space. */
-td.flag-cell { cursor: pointer; position: relative; }
-td.flag-cell:hover { background: #fff5cc; }
-td.flag-cell:hover::after {
+/* Only where the cell will actually open. On a locked race the click is refused, and
+   a pointer, a hover and a pencil that lead nowhere read as a control that is broken
+   rather than one that is closed. */
+td.flag-cell { position: relative; }
+#entrants-table:not(.locked) td.flag-cell { cursor: pointer; }
+#entrants-table:not(.locked) td.flag-cell:hover { background: #fff5cc; }
+#entrants-table:not(.locked) td.flag-cell:hover::after {
   content: ' \270E'; color: var(--muted); font-size: 0.9em; margin-left: 0.3em;
 }
 .flag-popover {
