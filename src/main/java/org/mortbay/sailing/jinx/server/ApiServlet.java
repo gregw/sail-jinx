@@ -1439,7 +1439,6 @@ public class ApiServlet extends HttpServlet
         m.put("latitude", a.latitude());
         m.put("longitude", a.longitude());
         m.put("limitBySunset", a.limitBySunset());
-        m.put("v0knots", a.v0knots());
         return m;
     }
 

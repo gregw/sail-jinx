@@ -397,7 +397,7 @@ class JsonStoreTest
         first.start();
         first.putSeriesConfig("s-1",
             new JinxConfig.Algorithm(List.of(7.0, 5.0, 3.0, 1.0), 75, 4, "17:30",
-                -34.5678, 150.4321, true, 6.3));
+                -34.5678, 150.4321, true));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
@@ -407,7 +407,6 @@ class JsonStoreTest
         assertThat(read.dnfAllowance(), equalTo(4));
         assertThat(read.earliestStart(), equalTo("17:30"));
         assertThat(read.limitBySunset(), is(true));
-        assertThat(read.v0knots(), equalTo(6.3));
     }
 
     // --- Adjustments and audit -----------------------------------------------

@@ -27,7 +27,7 @@ import static org.hamcrest.Matchers.hasSize;
 class PursuitHandicapEngineTest
 {
     private static final JinxConfig.Algorithm DEFAULT_ALG = new JinxConfig.Algorithm(
-        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 5, "18:00", -33.8000, 151.2833, false, 6.0);
+        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 5, "18:00", -33.8000, 151.2833, false);
 
     private static final double TOLERANCE = 0.01;
 
@@ -191,23 +191,24 @@ class PursuitHandicapEngineTest
     }
 
     /**
-     * newTcf is derived from the configured V₀ ({@code Algorithm.v0knots}) and
-     * the race's actual course distance (median over finishers of
-     * {@code TCF × V₀ × elapsed/60}).
+     * newTcf is anchored to the race that was actually sailed: the median over finishers
+     * of {@code TCF × elapsed}, the length of the race in "minutes of a 1.000-TCF boat".
      *
-     * <p>Worked example fleet: 7 finishers @ 85,90,…,115 min + 1 DNF, all
-     * TCF=1.0. With V₀ = 6.0 kn (DEFAULT_ALG), median over finishers' inferred
-     * D_i = TCF × V₀ × E/60 (i.e. 8.5,9.0,9.5,10.0,10.5,11.0,11.5) is
-     * 10.0 nm. p1 gets reward ≈ 1.711 (see {@link #winnerRewardScalesWithOwnElapsed}),
-     * so net = 5 − 1.711 = 3.289:
+     * <p>Worked example fleet: 7 finishers @ 85,90,…,115 min + 1 DNF, all TCF=1.0, so
+     * the median of {@code TCF × E} is 100. p1 gets reward ≈ 1.711 (see
+     * {@link #winnerRewardScalesWithOwnElapsed}), so net = 5 − 1.711 = 3.289:
      * <pre>
-     *   tMinutesPerUnitTcf = 60 × 10.0 / 6.0 = 100
+     *   tMinutesPerUnitTcf = 100
      *   newTcf = 1.0 / (1 − 3.289 × 1.0 / 100)
      *          = 1.0 / (1 − 0.03289) ≈ 1.0340
      * </pre>
+     *
+     * <p>The expected value is unchanged from when this was written in terms of V₀ and a
+     * course in nautical miles — V₀ = 6.0 gave {@code 60 × 10.0 / 6.0 = 100}, the same
+     * number by a longer route. That is the whole reason V₀ could go.
      */
     @Test
-    void newTcfUsesConfiguredVZero()
+    void newTcfIsAnchoredToTheRaceActuallySailed()
     {
         List<Competitor> boats = workedExampleFleet();
         Race race = race(90);
@@ -221,11 +222,11 @@ class PursuitHandicapEngineTest
     }
 
     /**
-     * Direction-and-magnitude check across the V₀-based formula: positive Δs
-     * raises TCF, negative lowers it, and DSQ boats stay frozen.
+     * Direction-and-magnitude check across the TCF conversion: positive Δs raises TCF,
+     * negative lowers it, and DSQ boats stay frozen.
      */
     @Test
-    void vZeroModeKeepsDsqFrozenAndPreservesDirection()
+    void tcfConversionKeepsDsqFrozenAndPreservesDirection()
     {
         List<Competitor> boats = List.of(
             boat("a", "A", "1", 1.0),

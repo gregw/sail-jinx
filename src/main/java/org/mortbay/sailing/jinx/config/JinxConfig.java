@@ -38,7 +38,7 @@ public record JinxConfig(
         if (club == null)
             club = new Club(null, null, null, null);
         if (algorithm == null)
-            algorithm = new Algorithm(null, 0, 0, null, null, null, false, null);
+            algorithm = new Algorithm(null, 0, 0, null, null, null, false);
         if (server == null)
             server = new Server(0);
     }
@@ -93,11 +93,16 @@ public record JinxConfig(
      * Series Configure form (stored per-series in
      * {@code data/store/series-config/{seriesId}.json}).
      *
-     * <p>{@code v0knots} is V₀ — the speed (knots) at which a 1.000-TCF boat is
-     * assumed to sail. It converts a target race duration into a course length
-     * ({@code course = slowestTcf × V₀ × hours}) and anchors the post-race TCF
-     * adjustment. {@code limitBySunset} caps the race duration so the slowest
-     * boat is expected to finish by sunset on the race date.
+     * <p>{@code limitBySunset} caps the race duration so the slowest boat is expected
+     * to finish by sunset on the race date.
+     *
+     * <p>There was a {@code v0knots} here — V₀, the speed of a notional 1.000-TCF boat.
+     * It had two jobs and has neither. Sizing a course from a target duration went when
+     * course length did; and in the post-race TCF conversion it cancelled out, because
+     * {@code D_race} was derived from it and then divided by it again. A setting that
+     * cannot change an answer is worse than no setting: somebody tunes it and believes
+     * the result. Old files that still carry the key load fine — both mappers ignore
+     * unknown properties.
      */
     public record Algorithm(
         @JsonProperty("penaltyList") List<Double> penaltyList,
@@ -106,8 +111,7 @@ public record JinxConfig(
         @JsonProperty("earliestStart") String earliestStart,
         @JsonProperty("latitude") Double latitude,
         @JsonProperty("longitude") Double longitude,
-        @JsonProperty("limitBySunset") boolean limitBySunset,
-        @JsonProperty("v0knots") Double v0knots)
+        @JsonProperty("limitBySunset") boolean limitBySunset)
     {
         public Algorithm
         {
@@ -123,8 +127,6 @@ public record JinxConfig(
                 latitude = -33.8000;
             if (longitude == null)
                 longitude = 151.2833;
-            if (v0knots == null || v0knots <= 0)
-                v0knots = 5.5;
         }
     }
 

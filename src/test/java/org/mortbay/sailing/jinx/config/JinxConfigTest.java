@@ -35,7 +35,7 @@ class JinxConfigTest
               latitude: -34.1234
               longitude: 150.9876
               limitBySunset: true
-              v0knots: 6.2
+              v0knots: 6.2                # retired key — must be ignored, not fatal
             server:
               port: 9090
             """);
@@ -53,7 +53,6 @@ class JinxConfigTest
         assertThat(config.algorithm().latitude(), closeTo(-34.1234, 1e-9));
         assertThat(config.algorithm().longitude(), closeTo(150.9876, 1e-9));
         assertThat(config.algorithm().limitBySunset(), is(true));
-        assertThat(config.algorithm().v0knots(), closeTo(6.2, 1e-9));
         assertThat(config.server().port(), equalTo(9090));
     }
 
@@ -96,7 +95,6 @@ class JinxConfigTest
         assertThat(config.algorithm().latitude(), closeTo(-33.8000, 1e-9));
         assertThat(config.algorithm().longitude(), closeTo(151.2833, 1e-9));
         assertThat(config.algorithm().limitBySunset(), is(false));
-        assertThat(config.algorithm().v0knots(), closeTo(5.5, 1e-9));
 
         assertThat(config.server().port(), equalTo(8080));
     }
@@ -164,7 +162,6 @@ class JinxConfigTest
         JinxConfig config = JinxConfig.load(file);
 
         assertThat(config.algorithm().penaltyList(), contains(6.0, 4.0, 2.0));
-        assertThat(config.algorithm().v0knots(), closeTo(5.5, 1e-9));
         assertThat(config.club().timezone(), equalTo("Australia/Sydney"));
         assertThat(config.server().port(), equalTo(8080));
     }

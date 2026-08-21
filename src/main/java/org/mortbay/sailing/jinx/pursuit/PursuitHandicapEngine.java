@@ -157,31 +157,36 @@ public class PursuitHandicapEngine implements HandicapEngine
             weightSum += weights[i];
         }
 
-        // §7 — convert Δs back into TCF deltas, V₀-anchored:
-        //   D_race ≈ median over finishers of (TCF × V₀ × E/60) nm
-        //   newTcf = oldTcf / (1 − net × oldTcf × V₀ / (60 × D_race))
-        // V₀ is the configured speed of a 1.000-TCF boat (Algorithm.v0knots).
+        // §7 — convert Δs back into TCF deltas:
+        //   newTcf = oldTcf / (1 − net × oldTcf / tMinutesPerUnitTcf)
         // No fleet-wide anchor correction is applied here: the next race's
         // start-time processing pass over the updated TCFs is what brings
         // the new slowest boat back to t_earliest.
 
-        // V₀-anchored "minutes for a 1.000 TCF boat over D_race". If no
-        // finishers, the penalty pool is empty so all nets are zero and the
-        // denominator is 1 regardless — any positive value works.
-        double v0 = config.v0knots();
-        double dRaceNm;
+        // The scale the adjustment is measured against: the median over finishers of
+        // TCF × elapsed, i.e. how long the race was in "minutes of a 1.000-TCF boat".
+        // Anchored to what actually happened rather than to the pre-race target.
+        //
+        // The wiki writes this by way of a course length in nautical miles, D_race =
+        // median(TCF × V₀ × E/60), and then divides by V₀ again. V₀ is a positive
+        // constant, so it passes straight through the median and cancels — it never
+        // reached the answer, which is why it is no longer configured. Written out
+        // directly here; see vZeroCancelsOutSoItChangesNothing.
+        //
+        // With no finishers the penalty pool is empty, so every net is zero and the
+        // denominator is 1 whatever this is — any positive value will do.
+        double tMinutesPerUnitTcf;
         if (finishers.isEmpty())
         {
-            dRaceNm = 1.0;
+            tMinutesPerUnitTcf = 60.0;
         }
         else
         {
-            List<Double> dEstimates = new ArrayList<>(finishers.size());
+            List<Double> perBoat = new ArrayList<>(finishers.size());
             for (Entry f : finishers)
-                dEstimates.add(f.boat().tcf() * v0 * f.elapsedMinutes() / 60.0);
-            dRaceNm = median(dEstimates);
+                perBoat.add(f.boat().tcf() * f.elapsedMinutes());
+            tMinutesPerUnitTcf = median(perBoat);
         }
-        double tMinutesPerUnitTcf = 60.0 * dRaceNm / v0;
 
         List<Adjustment> adjustments = new ArrayList<>(boats.size());
         for (int i = 0; i < participants.size(); i++)

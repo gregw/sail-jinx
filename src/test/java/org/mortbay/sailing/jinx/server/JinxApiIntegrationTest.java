@@ -65,7 +65,7 @@ class JinxApiIntegrationTest
               idealRaceDuration: 90
               dnfAllowance: 5
               earliestStart: "18:00"
-              v0knots: 5.5
+              v0knots: 5.5                # retired key — must be ignored, not fatal
             server:
               port: 0
             """);
@@ -94,7 +94,8 @@ class JinxApiIntegrationTest
         assertThat(cfg.path("version").asText(), not(equalTo("")));
         assertThat(cfg.path("club").path("domain").asText(), equalTo("test.org.au"));
         assertThat(cfg.path("club").path("longName").asText(), equalTo("Test Yacht Club"));
-        assertThat(cfg.path("algorithm").path("v0knots").asDouble(), closeTo(5.5, 1e-9));
+        // Retired: a setting that could not change an answer. Gone from the payload.
+        assertThat(cfg.path("algorithm").has("v0knots"), is(false));
         assertThat(cfg.path("storeErrors").size(), equalTo(0));
     }
 
@@ -428,7 +429,7 @@ class JinxApiIntegrationTest
         // The race page shows the Spin column only for a mixed series, so the policy has
         // to travel with the bundle — there is nowhere else the page could learn it.
         assertThat(bundle.path("spinnakerPolicy").asText(), equalTo("MIXED"));
-        assertThat(bundle.path("algorithm").path("v0knots").asDouble(), closeTo(5.5, 1e-9));
+        assertThat(bundle.path("algorithm").path("idealRaceDuration").asInt(), equalTo(90));
         assertThat(bundle.path("entrants").path("entrants").size(), equalTo(1));
         assertThat(bundle.path("startSheet").path("starts").size(), equalTo(1));
         assertThat(bundle.path("locked").asBoolean(), is(false));
@@ -524,12 +525,12 @@ class JinxApiIntegrationTest
         assertThat(before.path("config").path("idealRaceDuration").asInt(), equalTo(90));
 
         post("/api/series/" + seriesId + "/config",
-            "{\"penaltyList\":[10,5],\"idealRaceDuration\":60,\"v0knots\":6.5}");
+            "{\"penaltyList\":[10,5],\"idealRaceDuration\":60,\"dnfAllowance\":7}");
 
         JsonNode after = get("/api/series/" + seriesId + "/config");
         assertThat(after.path("isCustom").asBoolean(), is(true));
         assertThat(after.path("config").path("idealRaceDuration").asInt(), equalTo(60));
-        assertThat(after.path("config").path("v0knots").asDouble(), closeTo(6.5, 1e-9));
+        assertThat(after.path("config").path("dnfAllowance").asInt(), equalTo(7));
         // Defaults still travel alongside so the form can offer "restore".
         assertThat(after.path("defaults").path("idealRaceDuration").asInt(), equalTo(90));
 

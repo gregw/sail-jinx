@@ -20,7 +20,6 @@ algorithm:
   dnfAllowance: 5                  # minutes added to the slowest finisher
   earliestStart: "18:00"           # the slowest boat's gun
   limitBySunset: false             # cap the duration so the fleet finishes by sundown
-  v0knots: 5.5                     # V0: speed (kn) of a 1.000-TCF boat
 
 server:
   port: 8080

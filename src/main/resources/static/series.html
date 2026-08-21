@@ -82,9 +82,6 @@
       <label for="cfg-earliest">Earliest start</label>
       <input id="cfg-earliest" placeholder="18:00">
 
-      <label for="cfg-v0">V₀ (knots of a 1.0000-TCF boat)</label>
-      <input id="cfg-v0" type="number" step="0.1" min="0.1">
-
       <label for="cfg-sunset">Cap duration at sunset</label>
       <input id="cfg-sunset" type="checkbox">
     </div>
@@ -274,7 +271,6 @@
     document.getElementById('cfg-duration').value = c.idealRaceDuration;
     document.getElementById('cfg-dnf').value = c.dnfAllowance;
     document.getElementById('cfg-earliest').value = c.earliestStart;
-    document.getElementById('cfg-v0').value = c.v0knots;
     document.getElementById('cfg-sunset').checked = !!c.limitBySunset;
   }
 
@@ -293,7 +289,6 @@
       idealRaceDuration: Number(document.getElementById('cfg-duration').value),
       dnfAllowance: Number(document.getElementById('cfg-dnf').value),
       earliestStart: document.getElementById('cfg-earliest').value.trim(),
-      v0knots: Number(document.getElementById('cfg-v0').value),
       limitBySunset: document.getElementById('cfg-sunset').checked
     };
     const r = await postJson('/api/series/' + seriesPath(configSeriesId) + '/config', payload);
