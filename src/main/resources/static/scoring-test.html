@@ -329,6 +329,62 @@
     + '<td class="mono">' + esc(JSON.stringify(r.expected)) + '</td>'
     + '<td class="mono">' + esc(JSON.stringify(r.actual)) + '</td>'
     + '</tr>').join('');
+
+  // --- the per-race view -----------------------------------------------------
+  // How a race is arranged is remembered against that race, because a race officer
+  // switches back and forth: tonight's in start order, last week's in finishing order.
+  // These pin the arrangement a race gets when nobody has said yet.
+
+  const TODAY = '2026-06-05';
+
+  check('default view: places exist, so finishing order',
+    [{ key: 'place', dir: 1 }],
+    defaultRaceView({ hasPlaces: true, hasStarts: true,
+                      raceDate: TODAY, today: TODAY }).sort);
+  check('default view: no places but a start sheet, so start order',
+    [{ key: 'allocated', dir: 1 }],
+    defaultRaceView({ hasPlaces: false, hasStarts: true,
+                      raceDate: TODAY, today: TODAY }).sort);
+  check('default view: neither, so by name',
+    [{ key: 'name', dir: 1 }],
+    defaultRaceView({ hasPlaces: false, hasStarts: false,
+                      raceDate: TODAY, today: TODAY }).sort);
+
+  check('default view: details hidden, nothing else filtered out',
+    { 'hide-dnc': false, 'hide-finished': false, 'hide-details': true, 'hide-now': false },
+    defaultRaceView({ hasPlaces: false, hasStarts: true,
+                      raceDate: TODAY, today: TODAY }).filters);
+  // NOW stamps the clock. On any night but this one that is not what the page is for.
+  check('default view: NOW is hidden unless the race is today',
+    true,
+    defaultRaceView({ hasPlaces: true, hasStarts: true,
+                     raceDate: '2026-05-29', today: TODAY }).filters['hide-now']);
+  check('default view: no date is not today',
+    true,
+    defaultRaceView({ hasPlaces: false, hasStarts: false,
+                     raceDate: null, today: TODAY }).filters['hide-now']);
+
+  check('stored view wins over the default',
+    [{ key: 'name', dir: -1 }],
+    raceView({ sort: [{ key: 'name', dir: -1 }] },
+             { hasPlaces: true, hasStarts: true, raceDate: TODAY, today: TODAY }).sort);
+  check('a stored view fills its gaps from the default',
+    { 'hide-dnc': false, 'hide-finished': true, 'hide-details': true, 'hide-now': false },
+    raceView({ filters: { 'hide-finished': true } },
+             { hasPlaces: false, hasStarts: true, raceDate: TODAY, today: TODAY }).filters);
+  check('nothing stored is the default',
+    defaultRaceView({ hasPlaces: true, hasStarts: true, raceDate: TODAY, today: TODAY }),
+    raceView(null, { hasPlaces: true, hasStarts: true, raceDate: TODAY, today: TODAY }));
+  // Session storage is a string a person can edit and a version can outlive.
+  check('a stored sort naming a column that no longer exists is dropped',
+    [{ key: 'name', dir: 1 }],
+    raceView({ sort: [{ key: 'nonesuch', dir: 1 }, { key: 'name', dir: 1 }] },
+             { hasPlaces: false, hasStarts: false, raceDate: TODAY, today: TODAY }).sort);
+  check('a stored view of the wrong shape falls back rather than throwing',
+    defaultRaceView({ hasPlaces: false, hasStarts: false, raceDate: TODAY, today: TODAY }),
+    raceView('not an object',
+             { hasPlaces: false, hasStarts: false, raceDate: TODAY, today: TODAY }));
+
 </script>
 </body>
 </html>

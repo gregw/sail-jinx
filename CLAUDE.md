@@ -118,6 +118,23 @@ executes the same assertions from that same file against a stub DOM. The runner
 reads the page rather than copying it, so the two cannot drift: add a `check()` and
 it runs in both.
 
+**How a race is arranged is remembered per race, not per page.** `sail-jinx.raceViews`
+in session storage is a map from race id to `{sort, filters}`, because a race officer
+works across several races at once and wants each one differently — tonight's in start
+order with the NOW buttons out, last week's in finishing order with them gone. One
+setting for the page makes every switch between two races an argument about whose turn
+it is.
+
+The rules for a race nobody has arranged yet are `defaultRaceView` in `scoring.js`, not
+in the page, so `scoring-test.html` pins them: **places beat a start sheet, a start sheet
+beats nothing** (finishing order once there is one, otherwise the order the fleet goes
+off in, otherwise by name); details hidden and nothing else filtered, since a boat hidden
+by a default is a boat somebody forgets to look for; and **NOW hidden unless the race is
+today**, because those buttons stamp the wall clock and on any other night they are the
+one control on the page that can quietly write a wrong time. A view is stored only when
+somebody changes something, so a race that has never been arranged keeps getting the
+default as the race progresses.
+
 The NOW log under the entrants table is the one piece of race-night state that is
 deliberately **not** in the store: it is a per-tab scratchpad whose whole job is to
 undo a time stamped against the wrong boat, by dragging it onto the right one. A

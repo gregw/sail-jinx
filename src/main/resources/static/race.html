@@ -239,32 +239,61 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
   }
 
   /**
-   * The filter tick boxes, kept against <em>this race</em> rather than the tab.
+   * How this race is arranged: the sort order and the filter tick boxes, kept per race
+   * for the length of the tab.
    *
-   * <p>Leaving a race page and coming back — to print the start sheet, say — must not
-   * reset them; that is a view of the same race and the RO has already said how they
-   * want to look at it. Moving to a different race must, because the settings that suited
-   * a finished race are rarely the ones that suit the next one, and a filter carried
-   * silently across is a filter you forget is on.
+   * <p>One map from race id to view, rather than one setting for the page, because a
+   * race officer works across several races at once and wants each one differently:
+   * tonight's in start order with the NOW buttons out, last week's in finishing order
+   * with them gone. A single set of settings makes every switch between two races an
+   * argument about whose turn it is.
+   *
+   * <p>The rules for a race nobody has arranged yet are {@code defaultRaceView} in
+   * scoring.js, where scoring-test.html pins them.
    */
-  const FILTERS = ['hide-dnc', 'hide-finished', 'hide-details', 'hide-now'];
+  const VIEWS_KEY = 'sail-jinx.raceViews';
 
-  function filterKey() { return sessionKey() + '.filters'; }
-
-  function saveFilters() {
-    const v = {};
-    for (const id of FILTERS) v[id] = document.getElementById(id).checked;
-    try { sessionStorage.setItem(filterKey(), JSON.stringify(v)); } catch (_) {}
+  function allViews() {
+    try {
+      const v = JSON.parse(sessionStorage.getItem(VIEWS_KEY) || '{}');
+      return (v && typeof v === 'object') ? v : {};
+    } catch (_) { return {}; }
   }
 
-  function restoreFilters() {
-    let v = null;
-    try { v = JSON.parse(sessionStorage.getItem(filterKey()) || 'null'); } catch (_) {}
-    if (!v) return;
-    // Only known ids, and only booleans. Anything missing keeps the markup's own
-    // `checked` attribute, which is where the defaults are written.
-    for (const id of FILTERS)
-      if (typeof v[id] === 'boolean') document.getElementById(id).checked = v[id];
+  function saveView() {
+    const filters = {};
+    for (const id of RACE_VIEW_FILTERS) filters[id] = document.getElementById(id).checked;
+    const all = allViews();
+    all[raceId] = { sort: sortStack, filters };
+    try { sessionStorage.setItem(VIEWS_KEY, JSON.stringify(all)); } catch (_) {}
+  }
+
+  /**
+   * Put this race's view on the page — the remembered one, or the default for a race
+   * that has not been arranged.
+   *
+   * <p>Runs after the bundle is in and the scorer is built, because what the default is
+   * depends on what the race has: places beat a start sheet, a start sheet beats
+   * nothing, and NOW is only for tonight.
+   */
+  function applyView() {
+    const v = raceView(allViews()[raceId], {
+      hasPlaces: placeMap.size > 0,
+      hasStarts: !!(bundle && bundle.startSheet),
+      raceDate: bundle && bundle.race ? bundle.race.date : null,
+      today: todayLocal()
+    });
+    sortStack = v.sort;
+    for (const id of RACE_VIEW_FILTERS)
+      document.getElementById(id).checked = v.filters[id];
+    applyNowVisibility();
+  }
+
+  /** Today where the boats are, not in UTC: a twilight race is an evening event. */
+  function todayLocal() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
   }
 
   function hideNow() { return document.getElementById('hide-now').checked; }
@@ -557,6 +586,7 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
         if (!ev.shiftKey) sortStack = existing ? [existing] : [];
         if (existing) existing.dir = -existing.dir;
         else sortStack.push({ key, dir: 1 });
+        saveView();
         renderHead();
         renderEntrants();
       };
@@ -813,6 +843,8 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
         ids.splice(to, 0, ids.splice(from, 1)[0]);
         boatOrder = ids;
         dragId = null;
+        // Dragging cleared the sort, and that is an arrangement worth keeping too.
+        saveView();
         renderHead();
         touched();
       };
@@ -1655,6 +1687,7 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
     renderNowLog();
     restoreStartsUnlocked();
     rebuildScorer();
+    applyView();
     renderRace();
     renderDutyOptions();
     // Seeding and the JSON import both change the entrant list and then come back
@@ -1726,10 +1759,10 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
     document.getElementById('unlock-starts-btn').onclick = unlockStarts;
     // Hide design and Hide NOW change the column set, so the header has to be rebuilt
     // as well; the other two only change which rows show.
-    document.getElementById('hide-dnc').onchange = () => { saveFilters(); renderEntrants(); };
-    document.getElementById('hide-finished').onchange = () => { saveFilters(); renderEntrants(); };
+    document.getElementById('hide-dnc').onchange = () => { saveView(); renderEntrants(); };
+    document.getElementById('hide-finished').onchange = () => { saveView(); renderEntrants(); };
     document.getElementById('hide-details').onchange = () => {
-      saveFilters();
+      saveView();
       renderHead();
       renderEntrants();
     };
@@ -1738,7 +1771,7 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
       renderEntrants();
     };
     document.getElementById('hide-now').onchange = () => {
-      saveFilters();
+      saveView();
       applyNowVisibility();
       renderHead();
       renderEntrants();
@@ -1787,7 +1820,6 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
       if (isDirty()) { ev.preventDefault(); ev.returnValue = ''; }
     });
 
-    restoreFilters();
     await load();
     refreshAddSuggestions();
     updateAddButtons();

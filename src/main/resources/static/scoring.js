@@ -485,3 +485,73 @@ function stripSailPrefix(sail) {
 function sameSailNumber(a, b) {
   return stripSailPrefix(a) === stripSailPrefix(b) && stripSailPrefix(a) !== '';
 }
+
+// --- how a race is arranged --------------------------------------------------
+//
+// Not scoring, but it belongs beside it: what a race should look like when nobody has
+// said depends on what the race has — places, a start sheet, a date — and those are the
+// same facts the scorer is built from. Keeping the rules here rather than inside the
+// page means they are pinned by scoring-test.html, and the fallback chain is exactly the
+// kind of thing that rots silently when it lives in a render function.
+
+/** The tick boxes whose state is remembered, in the order they appear on the page. */
+const RACE_VIEW_FILTERS = ['hide-dnc', 'hide-finished', 'hide-details', 'hide-now'];
+
+/** Column keys a stored sort may name. Anything else is stale and is discarded. */
+const RACE_VIEW_SORT_KEYS = ['sail', 'name', 'design', 'spin', 'tcf', 'allocated',
+  'actualStart', 'late', 'finish', 'corrected', 'scoredFinish', 'elapsed', 'place',
+  'adjustment'];
+
+/**
+ * How to show a race nobody has arranged yet.
+ *
+ * <p>The sort follows what the race has reached: once there are places, the finishing
+ * order is the answer to every question being asked of the page; before that, the order
+ * the fleet goes off in is; and before there is a start sheet there is nothing to order
+ * by but the name.
+ *
+ * <p>Details are hidden because they are reference rather than capture. Nothing else is
+ * filtered out — a boat hidden by a default is a boat somebody forgets to look for.
+ *
+ * <p>NOW is hidden unless the race is today. Those buttons stamp the wall clock, so on
+ * any other night they are not merely useless but the one control on the page that can
+ * quietly write a wrong time.
+ *
+ * @param ctx {hasPlaces, hasStarts, raceDate, today} — dates as YYYY-MM-DD
+ */
+function defaultRaceView(ctx) {
+  const c = ctx || {};
+  const key = c.hasPlaces ? 'place' : c.hasStarts ? 'allocated' : 'name';
+  const filters = {};
+  for (const id of RACE_VIEW_FILTERS) filters[id] = false;
+  filters['hide-details'] = true;
+  filters['hide-now'] = !(c.raceDate && c.today && c.raceDate === c.today);
+  return { sort: [{ key, dir: 1 }], filters };
+}
+
+/**
+ * A remembered view, with anything it does not say taken from the default.
+ *
+ * <p>Merged rather than replaced, so a view stored before a tick box existed does not
+ * leave that box undefined, and a stored sort naming a column that has since gone does
+ * not leave the table unsorted.
+ */
+function raceView(stored, ctx) {
+  const base = defaultRaceView(ctx);
+  if (!stored || typeof stored !== 'object') return base;
+
+  const sort = Array.isArray(stored.sort)
+    ? stored.sort
+      .filter(s => s && RACE_VIEW_SORT_KEYS.includes(s.key))
+      .map(s => ({ key: s.key, dir: s.dir < 0 ? -1 : 1 }))
+    : [];
+
+  const filters = Object.assign({}, base.filters);
+  const from = (stored.filters && typeof stored.filters === 'object') ? stored.filters : {};
+  for (const id of RACE_VIEW_FILTERS)
+    if (typeof from[id] === 'boolean') filters[id] = from[id];
+
+  // An empty sort is a real arrangement — it is what a drag leaves behind — but only
+  // when the stored view actually said so.
+  return { sort: Array.isArray(stored.sort) ? sort : base.sort, filters };
+}
