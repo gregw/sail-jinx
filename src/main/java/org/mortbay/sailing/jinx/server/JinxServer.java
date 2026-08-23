@@ -156,8 +156,14 @@ public class JinxServer
         // The identity provider and its HTTP client are the server's to start and stop.
         server.addBean(oidc);
 
+        // The third argument is the ERROR PAGE, not the post-logout path — get the two the
+        // wrong way round and the error page is null, which is Jetty's signal to answer a
+        // failed callback with a bare 403 and no explanation. That is the one response in
+        // this whole flow a person setting the club up has to be able to read: a stale
+        // client secret, an expired code, a session lost to a restart and a stale browser
+        // tab all land here and are otherwise indistinguishable. AuthFilter renders it.
         OpenIdAuthenticator authenticator =
-            new OpenIdAuthenticator(oidc, auth.redirectPath(), null, "/auth/error");
+            new OpenIdAuthenticator(oidc, auth.redirectPath(), AuthFilter.ERROR_PATH, null);
         SecurityHandler security = new JinxSecurityHandler(auth);
         security.setAuthenticator(authenticator);
         security.setLoginService(new OpenIdLoginService(oidc));

@@ -75,6 +75,33 @@ allowedDomain: "myc.org.au"
 admins:
   - "commodore@myc.org.au"
 
+# --- When sign-in fails ----------------------------------------------------
+#
+# Google sends the browser back to redirectPath and the server refuses it. The page
+# you land on names the reason, and the same line is logged at WARN — on the Pi,
+# `journalctl -u sail-jinx -f`. What the common ones mean:
+#
+#   invalid_client            The clientSecret here is not the one the console holds.
+#                             Regenerating the secret in the console invalidates the
+#                             old one immediately; paste the new one and restart.
+#   redirect_uri_mismatch     The Authorised redirect URI does not match what the
+#                             server built. Google matches the whole string — scheme,
+#                             host, port, path. Behind a proxy this is nearly always
+#                             `forwardedHeaders: false` in config.yaml, which makes
+#                             the server build http://... from its own address.
+#   invalid_grant             The authorisation code was already used or has expired.
+#                             Usually a reloaded callback URL or a bookmarked one —
+#                             start again from the site root.
+#   invalid state parameter   The callback does not belong to any sign-in this server
+#                             started. Restarting the server discards its sessions, so
+#                             a login begun before a restart lands here; so does a tab
+#                             left open for hours. Start again from the site root.
+#
+# Turning on the OpenID debug log gets the whole exchange, and it does not print the
+# secret. Add to src/main/resources/jetty-logging.properties and restart:
+#
+#   org.eclipse.jetty.security.openid.LEVEL=DEBUG
+
 # Treat requests from this machine as an admin without signing in.
 #
 # For the club PC where the browser and the server are the same computer: it keeps

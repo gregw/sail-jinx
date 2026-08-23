@@ -434,7 +434,7 @@ The pieces, and why each exists:
 | `SignedIn` | reads the claims back off the session |
 | `ApiServlet.currentRole` | admin vs race officer, from `admins:` |
 
-Four things that are easy to get wrong:
+Five things that are easy to get wrong:
 
 1. **Jetty's authenticator alone is not access control.** It establishes that
    Google knows who you are — *any* Google account, personal Gmail included.
@@ -453,6 +453,14 @@ Four things that are easy to get wrong:
    caller does `if (denyIfNotAdmin(req, resp)) return;`, matching `rejectIfLocked`.
    Its predecessor wrote a 403 and returned void, so the caller did the work
    anyway — invisible while everyone was an admin.
+5. **`OpenIdAuthenticator`'s third argument is the error page**, and the fourth is
+   the post-logout path. Passing `null` for the error page is Jetty's signal to
+   answer a failed callback with a **bare 403 and no body** — which is what a wrong
+   client secret, an expired code, a session lost to a restart and a stale browser
+   tab all look like from the browser. `AuthFilter.ERROR_PATH` renders the reason
+   Jetty puts in the query and logs it at WARN, so the diagnosis is in
+   `journalctl` as well as on screen. `aFailedCallbackSaysWhyInsteadOfABare403`
+   pins it.
 
 `isAdmin()` in the browser is a **UI hint only**, so buttons match what they will
 do. The server checks the same thing and returns 403.

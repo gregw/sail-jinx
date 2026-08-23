@@ -195,4 +195,29 @@ class AuthIntegrationTest
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
             () -> JinxServer.start(tmp, 0));
     }
+
+    @Test
+    void aFailedCallbackSaysWhyInsteadOfABare403(@TempDir Path tmp) throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false);
+
+        // A callback carrying a state nobody issued. The anti-forgery check rejects it —
+        // but so does a stale client secret, an expired code and a session that went with
+        // a restart, and all four arrive here looking identical. Jetty answers a failed
+        // callback with a bare 403 unless an error page is configured, which leaves the
+        // person setting the club up with a status code and no way to tell those apart.
+        HttpResponse<String> cb = get("/auth/callback?state=nobody-issued-this&code=abc");
+        assertThat(cb.statusCode(), is(303));
+        String location = cb.headers().firstValue("location").orElse("");
+        assertThat(location, containsString("/auth/error"));
+
+        // The error page has to render for someone who is, by definition, not signed in.
+        HttpResponse<String> err = http.send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx)).resolve(location))
+                .GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+        assertThat(err.statusCode(), is(403));
+        assertThat(err.body(), containsString("invalid state parameter"));
+    }
 }
