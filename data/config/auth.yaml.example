@@ -12,6 +12,15 @@
 # Off by default. With this false, or with no auth.yaml at all, sail-jinx behaves as
 # it always has: no login, every request an admin. That is fine for the club PC on
 # one desk. It is not fine for anything reachable over a network.
+#
+# With it ON there are three tiers, and signing in is an invitation rather than a gate:
+#
+#   nobody signed in   reads every page and changes nothing
+#   a club account     runs a race night — entrants, times, start sheet, handicaps
+#   an admin below     owns the season — series, races, roster, fleet import
+#
+# So turning this on does not hide the club's results from members without accounts.
+# It decides who can change them.
 enabled: false
 
 # --- Google Workspace ------------------------------------------------------

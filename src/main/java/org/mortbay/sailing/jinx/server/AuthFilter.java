@@ -66,6 +66,15 @@ public class AuthFilter implements Filter
         HttpServletRequest req = (HttpServletRequest)request;
         HttpServletResponse resp = (HttpServletResponse)response;
 
+        // The security handler constrains this one path, so by the time the request gets
+        // here the login has happened. Its whole job was to trigger it; send the browser
+        // back to the app rather than leave it looking at a bare path.
+        if (req.getRequestURI().endsWith(JinxSecurityHandler.LOGIN_PATH))
+        {
+            resp.sendRedirect(req.getContextPath() + "/");
+            return;
+        }
+
         // A failed sign-in arrives here unauthenticated by definition — the security
         // handler lets the error path through precisely so this can answer it.
         if (req.getRequestURI().endsWith(ERROR_PATH))

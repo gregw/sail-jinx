@@ -24,6 +24,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.startsWith;
 
 /**
@@ -40,6 +41,76 @@ class AuthIntegrationTest
 
     private Server issuer;
     private Server jinx;
+
+    /**
+     * Who the stub issuer will say signed in, or null to refuse the client.
+     *
+     * <p>The id token it mints is unsigned, which is enough: Jetty's {@code JwtDecoder}
+     * base64-decodes the token and {@code OpenIdCredentials} checks the issuer, audience
+     * and expiry — never a signature. So a login can be completed offline, which is what
+     * makes the three tiers testable at all rather than only the anonymous one.
+     */
+    private volatile String signingInAs;
+
+    private String idToken(String email)
+    {
+        String claims = """
+            {"iss":"%s","aud":"test-client","exp":%d,"iat":%d,
+             "email":"%s","name":"A Sailor","hd":"myc.org.au"}"""
+            .formatted("http://localhost:" + port(issuer),
+                java.time.Instant.now().plusSeconds(600).getEpochSecond(),
+                java.time.Instant.now().getEpochSecond(), email);
+        java.util.Base64.Encoder b64 = java.util.Base64.getUrlEncoder().withoutPadding();
+        return b64.encodeToString("{\"alg\":\"none\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+            + "." + b64.encodeToString(claims.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+            // A non-empty third section: JwtDecoder splits on "." and String.split drops
+            // a trailing empty field, so "header.payload." arrives as two sections.
+            + ".not-a-signature";
+    }
+
+    /** A browser that keeps its session cookie, which the OIDC dance requires. */
+    private HttpClient browser()
+    {
+        return HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .cookieHandler(new java.net.CookieManager())
+            .build();
+    }
+
+    /** Drive the whole sign-in, as the browser does, and leave the session signed in. */
+    private void signIn(HttpClient browser, String email) throws Exception
+    {
+        signingInAs = email;
+        String base = "http://localhost:" + port(jinx);
+        HttpResponse<String> challenge = browser.send(HttpRequest.newBuilder()
+                .uri(URI.create(base + JinxSecurityHandler.LOGIN_PATH)).GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+        assertThat(challenge.statusCode(), is(303));
+        String state = challenge.headers().firstValue("location").orElseThrow()
+            .replaceAll(".*[?&]state=([^&]*).*", "$1");
+        HttpResponse<String> cb = browser.send(HttpRequest.newBuilder()
+                .uri(URI.create(base + "/auth/callback?state=" + state + "&code=a-code"))
+                .GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+        assertThat(cb.statusCode(), is(303));
+    }
+
+    private JsonNode whoami(HttpClient browser) throws Exception
+    {
+        return M.readTree(browser.send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx) + "/api/whoami")).GET().build(),
+            HttpResponse.BodyHandlers.ofString()).body());
+    }
+
+    private int postAs(HttpClient browser, String path, String body) throws Exception
+    {
+        return browser.send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx) + path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+            HttpResponse.BodyHandlers.ofString()).statusCode();
+    }
     private final HttpClient http = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .followRedirects(HttpClient.Redirect.NEVER)
@@ -85,11 +156,18 @@ class AuthIntegrationTest
             protected void doPost(HttpServletRequest req, HttpServletResponse resp)
                 throws java.io.IOException
             {
-                resp.setStatus(401);
                 resp.setContentType("application/json");
-                resp.getWriter().write(
-                    "{\"error\":\"invalid_client\","
-                        + "\"error_description\":\"Unauthorized\"}");
+                if (signingInAs == null)
+                {
+                    resp.setStatus(401);
+                    resp.getWriter().write(
+                        "{\"error\":\"invalid_client\","
+                            + "\"error_description\":\"Unauthorized\"}");
+                    return;
+                }
+                resp.getWriter().write("""
+                    {"access_token":"an-access-token","token_type":"Bearer",
+                     "id_token":"%s"}""".formatted(idToken(signingInAs)));
             }
         }), "/token");
         issuer.setHandler(ctx);
@@ -114,6 +192,8 @@ class AuthIntegrationTest
             clientSecret: "test-secret"
             allowedDomain: "myc.org.au"
             allowLoopback: %s
+            admins:
+              - "commodore@myc.org.au"
             """.formatted(issuerUrl, allowLoopback));
         jinx = JinxServer.start(dataRoot, 0);
         return jinx;
@@ -132,23 +212,35 @@ class AuthIntegrationTest
     }
 
     @Test
-    void withAuthOnEveryPathIsBehindTheLogin(@TempDir Path tmp) throws Exception
+    void anyoneMayLookAndOnlyASignInLetsThemTouch(@TempDir Path tmp) throws Exception
     {
         String issuerUrl = startStubIssuer();
         startJinx(tmp, issuerUrl, false);
 
-        // The API does not answer to a stranger — 303 to the provider, not data.
+        // The club's results are the point of publishing them. A visitor with no account
+        // reads the fleet, the seasons and the races without being asked who they are.
         HttpResponse<String> api = get("/api/boats");
-        assertThat(api.statusCode(), is(303));
-        assertThat(api.headers().firstValue("location").orElse(""),
-            startsWith(issuerUrl + "/authorize"));
+        assertThat(api.statusCode(), is(200));
+        assertThat(get("/races.html").statusCode(), is(200));
 
-        // …and neither does the app itself. There is no shell to render before login:
-        // everything this server holds belongs to the club.
-        HttpResponse<String> page = get("/races.html");
-        assertThat(page.statusCode(), is(303));
-        assertThat(page.headers().firstValue("location").orElse(""),
-            containsString("/authorize"));
+        // …and cannot change any of it. 401 rather than 403: there is a sign-in that
+        // would fix this, and the page needs to be able to tell the difference between
+        // "log in" and "you are logged in and still may not".
+        assertThat(postAs(browser(), "/api/series", "{\"name\":\"Mine Now\"}"), is(401));
+    }
+
+    @Test
+    void loopbackIsAnAnonymousVisitorUnlessAllowLoopbackSaysOtherwise(@TempDir Path tmp)
+        throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false);
+
+        // This matters more than it looks. Every request behind the club's reverse proxy
+        // arrives from 127.0.0.1, so a loopback exemption that ignores allowLoopback
+        // would hand the entire internet an administrator account.
+        assertThat(whoami(browser()).path("role").asText(), equalTo("VIEWER"));
+        assertThat(postAs(browser(), "/api/series", "{\"name\":\"Mine Now\"}"), is(401));
     }
 
     @Test
@@ -157,7 +249,8 @@ class AuthIntegrationTest
         String issuerUrl = startStubIssuer();
         startJinx(tmp, issuerUrl, false);
 
-        String location = get("/api/boats").headers().firstValue("location").orElse("");
+        String location = get(JinxSecurityHandler.LOGIN_PATH)
+            .headers().firstValue("location").orElse("");
         // Without email there is no address to check the club domain against, so the
         // scope is not cosmetic — the whole restriction rests on it.
         assertThat(location, containsString("scope="));
@@ -255,7 +348,8 @@ class AuthIntegrationTest
         String base = "http://localhost:" + port(jinx);
 
         HttpResponse<String> challenge = browser.send(HttpRequest.newBuilder()
-            .uri(URI.create(base + "/")).GET().build(), HttpResponse.BodyHandlers.ofString());
+            .uri(URI.create(base + JinxSecurityHandler.LOGIN_PATH)).GET().build(),
+            HttpResponse.BodyHandlers.ofString());
         assertThat(challenge.statusCode(), is(303));
         String state = challenge.headers().firstValue("location").orElseThrow()
             .replaceAll(".*[?&]state=([^&]*).*", "$1");
@@ -303,6 +397,81 @@ class AuthIntegrationTest
     private String post(String path, String body) throws Exception
     {
         return http.send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx) + path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+            HttpResponse.BodyHandlers.ofString()).body();
+    }
+
+    @Test
+    void aSignedInClubAccountRunsRaceNightButDoesNotOwnTheSeason(@TempDir Path tmp)
+        throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false);
+
+        // An admin lays the season out…
+        HttpClient commodore = browser();
+        signIn(commodore, "commodore@myc.org.au");
+        assertThat(whoami(commodore).path("role").asText(), equalTo("ADMIN"));
+        String seriesId = M.readTree(postBody(commodore, "/api/series",
+            "{\"name\":\"2026 Winter\"}")).path("series").path("id").asText();
+        String raceId = M.readTree(postBody(commodore, "/api/races",
+                "{\"seriesId\":\"" + seriesId + "\",\"date\":\"2026-06-05\"}"))
+            .path("race").path("id").asText();
+
+        // …and the race officer runs the night on it.
+        HttpClient officer = browser();
+        signIn(officer, "ro@myc.org.au");
+        assertThat(whoami(officer).path("role").asText(), equalTo("RACE_OFFICER"));
+
+        // Everything a race night needs, including the handicaps: processing a race is
+        // what a race officer is for. Adding a boat is on that list because a casual
+        // turning up is registered from the race page, not from the fleet screen.
+        assertThat(postAs(officer, "/api/boats",
+            "{\"sailNumber\":\"AUS9\",\"name\":\"Quick Silver\"}"), is(200));
+        assertThat(postAs(officer, "/api/races/" + raceId + "/entrants/seed", "{}"),
+            is(not(401)));
+        assertThat(postAs(officer, "/api/races/" + raceId + "/times",
+            "{\"times\":{}}"), is(200));
+
+        // The season's shape is not. 403, not 401 — signing in is not the answer here,
+        // and a page that offered a sign-in button would be lying about the fix.
+        assertThat(postAs(officer, "/api/series", "{\"name\":\"2027 Winter\"}"), is(403));
+        assertThat(postAs(officer, "/api/races",
+            "{\"seriesId\":\"" + seriesId + "\",\"date\":\"2026-06-12\"}"), is(403));
+        assertThat(postAs(officer, "/api/series/" + seriesId + "/roster",
+            "{\"entries\":[]}"), is(403));
+    }
+
+    @Test
+    void signingInIsAnInvitationRatherThanAGate(@TempDir Path tmp) throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false);
+
+        // Nothing demands a login any more, so there has to be a way to ask for one.
+        HttpResponse<String> login = get(JinxSecurityHandler.LOGIN_PATH);
+        assertThat(login.statusCode(), is(303));
+        assertThat(login.headers().firstValue("location").orElse(""),
+            startsWith(issuerUrl + "/authorize"));
+
+        // And it lands back on the app rather than on the bare login path.
+        HttpClient browser = browser();
+        signIn(browser, "ro@myc.org.au");
+        HttpResponse<String> after = browser.send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx) + JinxSecurityHandler.LOGIN_PATH))
+                .GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+        // 302 from sendRedirect, not the authenticator's 303: the login already happened
+        // and this is the filter handing the browser back to the app.
+        assertThat(after.statusCode(), is(302));
+        assertThat(after.headers().firstValue("location").orElse(""), containsString("/"));
+    }
+
+    private String postBody(HttpClient browser, String path, String body) throws Exception
+    {
+        return browser.send(HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:" + port(jinx) + path))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build(),

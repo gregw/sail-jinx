@@ -31,17 +31,17 @@
       <span id="target-note" class="hint"></span>
     </div>
     <div class="toolbar">
-      <button id="start-times-btn" class="primary" type="button">Compute start times</button>
-      <button id="unlock-starts-btn" type="button" style="display:none;">Unlock starts</button>
+      <button id="start-times-btn" class="primary" type="button" data-requires="officer">Compute start times</button>
+      <button id="unlock-starts-btn" type="button" data-requires="officer" style="display:none;">Unlock starts</button>
       <a id="report-starts-link" class="button-link" href="#" target="_blank">Start sheet ▸</a>
     </div>
   </section>
 
   <section id="handicap-panel" style="display:none;">
     <div class="toolbar">
-      <button id="process-btn" class="primary" type="button">Process handicaps</button>
+      <button id="process-btn" class="primary" type="button" data-requires="officer">Process handicaps</button>
       <a id="report-finish-link" class="button-link" href="#" target="_blank">Finish sheet ▸</a>
-      <button id="unlock-results-btn" type="button" style="display:none;">Unlock results</button>
+      <button id="unlock-results-btn" type="button" data-requires="officer" style="display:none;">Unlock results</button>
     </div>
   </section>
 
@@ -62,7 +62,7 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
            the four filters are: taking a boat out of a race is a repair, not a view. -->
       <label class="danger-toggle" title="Reveals a column for taking a boat out of this
 race altogether. For a boat entered by mistake — not for one that did not come, which is
-what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label>
+what Came is for."><input type="checkbox" id="allow-remove" data-requires="officer"> Allow remove</label>
     </div>
 
     <table id="entrants-table">
@@ -90,11 +90,11 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
       <input id="add-design" list="design-matches" placeholder="design" autocomplete="off">
       <datalist id="design-matches"></datalist>
       <label title="A casual races and is handicapped like anybody else, but is not carried into the next race."><input type="checkbox" id="add-casual"> casual</label>
-      <button id="add-existing-btn" type="button" disabled>Add from register</button>
-      <button id="add-new-btn" type="button" disabled>Add &amp; register</button>
-      <button id="add-oneoff-btn" type="button" disabled>One-off only</button>
-      <button id="add-clear-btn" type="button">Clear</button>
-      <button id="import-btn" type="button">Add entrants from JSON</button>
+      <button id="add-existing-btn" type="button" data-requires="officer" disabled>Add from register</button>
+      <button id="add-new-btn" type="button" data-requires="officer" disabled>Add &amp; register</button>
+      <button id="add-oneoff-btn" type="button" data-requires="officer" disabled>One-off only</button>
+      <button id="add-clear-btn" type="button" data-requires="officer">Clear</button>
+      <button id="import-btn" type="button" data-requires="officer">Add entrants from JSON</button>
       <span id="add-msg" class="hint"></span>
     </div>
 
@@ -127,8 +127,8 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
   </section>
 
   <div id="save-bar" class="save-bar" style="display:none;">
-    <button id="save-btn" class="primary" type="button">Save</button>
-    <button id="reset-btn" type="button">Reset</button>
+    <button id="save-btn" class="primary" type="button" data-requires="officer">Save</button>
+    <button id="reset-btn" type="button" data-requires="officer">Reset</button>
     <span id="save-summary"></span>
   </div>
 
@@ -152,6 +152,17 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
   let dirtyFlags = new Map();        // boatId -> {added:[], removed:[]}
   let adjustments = new Map();       // boatId -> Adjustment (from Process)
   let locked = false;
+
+  /**
+   * Whether this page is a record rather than a workbench.
+   *
+   * <p>A visitor with no account sees a race exactly as a locked one is seen: every value
+   * rendered, nothing typeable. Deliberately the same predicate, so there is one
+   * read-only rendering path rather than two that can drift apart — and so that adding a
+   * column cannot accidentally leave an input box in front of somebody who may not use
+   * it.
+   */
+  function readOnly() { return locked || !canEdit(); }
   let register = [];                 // the fleet register, for the add-boat fields
   let designNames = new Map();       // designId -> display name
   let scorer = null;
@@ -323,7 +334,7 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
       render: e => {
         if (e.entryType === 'ONE_OFF')
           return '<span class="tag" title="Not in the register — never seeded">one-off</span>';
-        if (locked) return e.entryType === 'CASUAL' ? '✓' : '';
+        if (readOnly()) return e.entryType === 'CASUAL' ? '✓' : '';
         return '<input type="checkbox" class="casual-input" data-id="' + esc(e.boatId) + '"'
           + (e.entryType === 'CASUAL' ? ' checked' : '')
           + ' title="Casual — will not be seeded into the next race">';
@@ -339,7 +350,7 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
       get: e => tcfOf(e),
       render: e => {
         // A TCF is what the stagger was computed from, so it closes with the starts.
-        if (startsLocked() || !isAdmin()) return esc(fmtTcf(tcfOf(e)));
+        if (startsLocked() || readOnly()) return esc(fmtTcf(tcfOf(e)));
         const dirty = dirtyTcf.has(e.boatId);
         return '<input type="number" step="0.0001" class="tcf-input' + (dirty ? ' dirty' : '')
           + '" data-id="' + esc(e.boatId) + '" value="' + esc(fmtTcf(tcfOf(e))) + '">';
@@ -353,7 +364,7 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
       get: e => timesFor(e.boatId).came ? 1 : 0,
       render: e => {
         const t = timesFor(e.boatId);
-        if (locked) return t.came ? '✓' : '';
+        if (readOnly()) return t.came ? '✓' : '';
         const duty = String(dutyBoatId) === String(e.boatId);
         return '<input type="checkbox" class="came-input" data-id="' + esc(e.boatId) + '"'
           + ((t.came && !duty) ? ' checked' : '') + (duty ? ' disabled' : '') + '>';
@@ -440,7 +451,7 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
 
   function timeInput(e, field) {
     const t = timesFor(e.boatId);
-    if (locked) return esc(t[field] || '');
+    if (readOnly()) return esc(t[field] || '');
     return '<input type="text" class="time-input" placeholder="HH:MM:SS" data-id="'
       + esc(e.boatId) + '" data-field="' + field + '" value="' + esc(t[field] || '') + '"'
       + (t.came ? '' : ' disabled') + '>';
@@ -448,7 +459,7 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
 
   function nowButton(e, field) {
     const t = timesFor(e.boatId);
-    if (locked || !t.came) return '';
+    if (readOnly() || !t.came) return '';
     return '<button type="button" class="now-btn" data-id="' + esc(e.boatId)
       + '" data-field="' + field + '">NOW</button>';
   }
@@ -1310,7 +1321,8 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
   // --- save ------------------------------------------------------------------
 
   function updateSaveBar() {
-    document.getElementById('save-bar').style.display = (isDirty() && !locked) ? '' : 'none';
+    document.getElementById('save-bar').style.display =
+      (isDirty() && !locked && canEdit()) ? '' : 'none';
     const n = entrants.filter(e => timesFor(e.boatId).finish).length;
     document.getElementById('save-summary').textContent =
       n + ' finish time' + (n === 1 ? '' : 's') + ' recorded';
@@ -1548,7 +1560,8 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
 
     document.getElementById('f-earliest').value = (r.earliestStart || '').slice(0, 5);
     document.getElementById('f-target').value = fmtHHMM(r.targetElapsedMinutes);
-    const fixed = startsLocked();
+    // A visitor has nothing to fix: read-only reads the same as already-computed.
+    const fixed = startsLocked() || readOnly();
     document.getElementById('start-times-btn').disabled = fixed;
     ['f-earliest', 'f-target'].forEach(id => {
       document.getElementById(id).disabled = fixed;
@@ -1556,7 +1569,7 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
     // Offered only where it would do something: not before there is a sheet to unlock,
     // and not on a locked race, where unlocking the results is the way back.
     document.getElementById('unlock-starts-btn').style.display =
-      (fixed && !locked) ? '' : 'none';
+      (fixed && !locked && canEdit()) ? '' : 'none';
     // The add-a-boat form goes with them: a boat added after the sheet is published has
     // no gun, and leaving the form there quietly implies it would get one.
     document.getElementById('add-entrant-bar').style.display = fixed ? 'none' : '';
@@ -1591,7 +1604,8 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
     }
 
     applyNowVisibility();
-    document.getElementById('unlock-results-btn').style.display = locked ? '' : 'none';
+    document.getElementById('unlock-results-btn').style.display =
+      (locked && canEdit()) ? '' : 'none';
     document.getElementById('process-btn').disabled = locked;
 
     if (locked) {
@@ -1612,6 +1626,10 @@ what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label
   // --- load ------------------------------------------------------------------
 
   async function load() {
+    // Before anything renders: canEdit() answers from a cached whoami, and a page that
+    // drew itself first would show a visitor a full set of input boxes until something
+    // else happened to redraw it.
+    await getWhoami();
     const r = await fetchJson('/api/races/' + encodeURIComponent(raceId));
     if (!r.ok) {
       setCtrlMsg('banner-err', 'Could not load race: ' + errorOf(r));

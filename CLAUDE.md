@@ -418,6 +418,34 @@ Off unless `data/config/auth.yaml` exists and says `enabled: true`. With it off,
 every request is an admin and there is no session handler, no security handler and
 no outbound call — exactly what the server did before a login existed.
 
+**With it on, a login is an invitation rather than a gate.** Three tiers:
+
+| Tier | Who | May |
+|---|---|---|
+| `VIEWER` | anybody, signed in or not | read every page and every GET |
+| `RACE_OFFICER` | a club-domain account | run a race night: entrants, times, start sheet, handicaps, unlock, registering a boat |
+| `ADMIN` | listed in `admins:` | the season: series, races, roster, series config, fleet import |
+
+The split between the last two is **the season versus the night**. Processing
+handicaps is a race officer's job — it is what running a race *is*. Deciding that
+there is a race, and who is in the series, is not. Registering a boat is a race
+officer's because a casual turning up is added from the race page, which creates
+the register entry as it goes; importing a whole fleet is not.
+
+Three consequences worth knowing:
+
+- **`ApiServlet.denyUnless` answers 401 to a visitor and 403 to a race officer.**
+  The codes are the difference between "sign in and this will work" and "signing in
+  will not help", and the page puts a sign-in button in front of exactly one of them.
+- **`JinxSecurityHandler` constrains one path.** Everything is `Constraint.ALLOWED`
+  except `/auth/login`, which is `ANY_USER` — with nothing constrained, nothing would
+  ever trigger the OIDC dance and the sign-in link would have nowhere to point.
+  `AuthFilter` sends the browser back to `/` once the login lands.
+- **Signing in with a non-club Google account costs you the read access you had.**
+  `AuthFilter` 403s it, with a sign-out link, rather than silently demoting it to
+  viewer — being told the account is wrong beats a page that mysteriously does
+  nothing.
+
 **`auth.yaml` is gitignored; `auth.yaml.example` beside it is committed.** The
 example documents the Google Cloud console setup and must never carry a real
 secret. If one is ever pushed, revoking the client is the fix — rewriting history
@@ -449,6 +477,12 @@ Six things that are easy to get wrong:
    internet. It is off by default and exists for one case: the club PC with the
    browser on the same machine, so a race night survives an internet outage —
    with auth on, the server needs Google reachable at startup and at every login.
+   **The check lives in `SignedIn`, and it must test `auth.allowLoopback()`, not
+   just the address.** It did not, once. That was survivable only while every path
+   required a login, because an unauthenticated request never reached the servlet;
+   the moment anonymous reads were allowed it would have made every visitor on the
+   Pi an administrator. `loopbackIsAnAnonymousVisitorUnlessAllowLoopbackSaysOtherwise`
+   pins it.
 4. **A guard must stop the handler.** `denyIfNotAdmin` returns a boolean and every
    caller does `if (denyIfNotAdmin(req, resp)) return;`, matching `rejectIfLocked`.
    Its predecessor wrote a 403 and returned void, so the caller did the work
@@ -474,8 +508,20 @@ Six things that are easy to get wrong:
    removal in the constructor is undone before the first request.
    `aRefusedClientSecretSaysSoRatherThanBlamingTheProtocol` pins it.
 
-`isAdmin()` in the browser is a **UI hint only**, so buttons match what they will
-do. The server checks the same thing and returns 403.
+`isAdmin()` and `canEdit()` in the browser are a **UI hint only**, so buttons match
+what they will do. The server checks the same thing and refuses.
+
+Controls carry `data-requires="officer"` or `data-requires="admin"`, and
+`common.js applyRoleGates()` hides the ones this caller may not use — hidden rather
+than greyed out, because a disabled button invites a visitor to wonder what they are
+missing. Pages call it again after rendering table rows, which are built long after
+page load. `tools/check-scripts.mjs` rejects a `data-requires` value it does not
+know, since an unrecognised one would fall through to the weakest tier and quietly
+offer an admin's button to everybody.
+
+`race.html` does not gate cell by cell: `readOnly()` is `locked || !canEdit()`, so a
+visitor sees a race exactly as a locked one is seen. One read-only rendering path,
+not two that can drift.
 
 ### Deployment
 

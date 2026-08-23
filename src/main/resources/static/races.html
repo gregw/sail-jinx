@@ -43,7 +43,7 @@
       three races on the same day.
     </p>
     <div class="toolbar">
-      <button id="add-btn" class="primary" type="button">Add</button>
+      <button id="add-btn" class="primary" type="button" data-requires="admin">Add</button>
       <span id="add-msg" class="hint"></span>
     </div>
   </section>
@@ -125,8 +125,12 @@
         .map(s => '<option value="' + esc(s.id) + '"'
           + (s.id === seriesId ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('');
 
-    // Races belong to a series, so one has to be chosen before any can be added.
-    document.getElementById('add-panel').style.display = seriesId ? '' : 'none';
+    // Races belong to a series, so one has to be chosen before any can be added — and
+    // adding one is the admin's, so a visitor is not shown an empty form with no button.
+    getWhoami().then(() => {
+      document.getElementById('add-panel').style.display =
+        (seriesId && isAdmin()) ? '' : 'none';
+    });
     const roster = document.getElementById('roster-link');
     roster.style.display = seriesId ? '' : 'none';
     roster.href = '/roster.html?seriesId=' + encodeURIComponent(seriesId);

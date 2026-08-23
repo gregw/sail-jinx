@@ -18,7 +18,7 @@
 
   <div class="toolbar">
     <label><input type="checkbox" id="show-archived"> Show archived</label>
-    <button id="add-btn" class="primary" type="button">New series</button>
+    <button id="add-btn" class="primary" type="button" data-requires="admin">New series</button>
   </div>
 
   <section id="new-panel" style="display:none;">
@@ -158,9 +158,9 @@
         + '<td class="num-cell"><a href="/roster.html?seriesId=' + encodeURIComponent(s.id) + '">'
         + roster + '</a></td>'
         + '<td class="actions-cell">'
-        + '<button type="button" class="link-btn edit-btn" data-id="' + esc(s.id) + '">Edit</button> '
-        + '<button type="button" class="link-btn cfg-btn" data-id="' + esc(s.id) + '">Handicap settings</button> '
-        + '<button type="button" class="link-btn arch-btn" data-id="' + esc(s.id) + '">'
+        + '<button type="button" class="link-btn edit-btn" data-requires="admin" data-id="' + esc(s.id) + '">Edit</button> '
+        + '<button type="button" class="link-btn cfg-btn" data-requires="admin" data-id="' + esc(s.id) + '">Handicap settings</button> '
+        + '<button type="button" class="link-btn arch-btn" data-requires="admin" data-id="' + esc(s.id) + '">'
         + (s.archived ? 'Unarchive' : 'Archive') + '</button>'
         + '</td></tr>';
     }).join('');
@@ -174,6 +174,8 @@
     document.querySelectorAll('.arch-btn').forEach(b => {
       b.onclick = () => toggleArchive(b.dataset.id);
     });
+    // The rows were built just now, so their per-row controls have not been gated yet.
+    applyRoleGates();
   }
 
   async function toggleArchive(id) {

@@ -35,9 +35,10 @@ public record SignedIn(String email, String name, boolean admin, String domain)
     /**
      * Read the signed-in account off the request.
      *
-     * <p>With authentication off, or on a loopback request that the security handler let
-     * through unauthenticated, this is {@link #ANONYMOUS_ADMIN} — the behaviour sail-jinx
-     * had before there was a login at all.
+     * <p>With authentication off — or on a loopback request when {@code allowLoopback}
+     * says so — this is {@link #ANONYMOUS_ADMIN}, the behaviour sail-jinx had before
+     * there was a login at all. Otherwise an unsigned request is {@link #NOBODY}, which
+     * is a reader rather than a reject.
      */
     public static SignedIn of(HttpServletRequest req, AuthConfig auth)
     {
@@ -47,10 +48,13 @@ public record SignedIn(String email, String name, boolean admin, String domain)
         Map<String, Object> claims = claims(req);
         if (claims == null)
         {
-            // Authenticated by the container but with no claims to read means the
-            // loopback exemption let this through; anything else is not signed in.
-            return req.getUserPrincipal() == null && !isLoopback(req)
-                ? NOBODY : ANONYMOUS_ADMIN;
+            // Nobody is signed in. That is an ordinary visitor, not an error — and it is
+            // an ordinary visitor even over loopback, unless the club has explicitly
+            // asked for the exemption. That condition used to be missing, which was
+            // harmless only while every path required a login: behind the club's reverse
+            // proxy every request in the world arrives from 127.0.0.1, so an
+            // unconditional exemption is an administrator account handed to the internet.
+            return auth.allowLoopback() && isLoopback(req) ? ANONYMOUS_ADMIN : NOBODY;
         }
         String email = str(claims.get("email"));
         String lower = email == null ? null : email.toLowerCase(java.util.Locale.ENGLISH);

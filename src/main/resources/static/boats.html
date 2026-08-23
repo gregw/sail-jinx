@@ -28,8 +28,8 @@
 
   <div class="toolbar">
     <label><input type="checkbox" id="show-retired"> Show retired</label>
-    <button id="add-btn" class="primary" type="button">Add boat</button>
-    <button id="import-btn" type="button">Import fleet (JSON)</button>
+    <button id="add-btn" class="primary" type="button" data-requires="officer">Add boat</button>
+    <button id="import-btn" type="button" data-requires="admin">Import fleet (JSON)</button>
   </div>
 
   <section id="import-panel" style="display:none;">
@@ -111,6 +111,8 @@
     let html = rows.map(b => editingId === b.id ? editRow(b) : viewRow(b)).join('');
     if (editingId === '') html += editRow(null);
     tbody.innerHTML = html;
+    // Row buttons are built here, long after the page-load pass.
+    applyRoleGates();
     wireRows();
   }
 
@@ -124,7 +126,7 @@
           : '<span class="hint" title="Not known yet — a later import can fill it in">—</span>') + '</td>'
       + '<td class="mono id-cell" title="Built from sail number, name and design, so it changes if the design is later filled in">' + esc(b.id) + '</td>'
       + '<td class="notes-cell">' + esc(b.notes) + '</td>'
-      + '<td><button type="button" class="link-btn edit-btn" data-id="' + esc(b.id) + '">Edit</button></td>'
+      + '<td><button type="button" class="link-btn edit-btn" data-requires="officer" data-id="' + esc(b.id) + '">Edit</button></td>'
       + '</tr>';
   }
 

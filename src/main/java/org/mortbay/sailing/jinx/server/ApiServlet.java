@@ -84,11 +84,31 @@ import org.slf4j.LoggerFactory;
  * </pre>
  *
  * <h2>Authorisation</h2>
- * There is none. See {@link #currentRole} — the admin / race-officer split
- * survives as a concept so the UI can gate destructive actions, but every
- * request is currently treated as an admin because the app runs on one machine
- * on one desk. This has to change before it is hosted anywhere with a network
- * around it.
+ * Three tiers, and the first one is the point: <b>every GET above answers anybody</b>.
+ * A club publishes its results, and a season that can only be read by people with
+ * accounts is a season nobody reads.
+ *
+ * <pre>
+ *   VIEWER        no account          every GET
+ *   RACE_OFFICER  a club account      + everything a race night needs:
+ *                                       entrants, times, start sheet, handicaps,
+ *                                       unlock, and registering a boat
+ *   ADMIN         listed in admins:   + what a race night runs on:
+ *                                       series, races, roster, series config,
+ *                                       fleet import
+ * </pre>
+ *
+ * <p>The split between the last two is <em>the season versus the night</em>. Processing
+ * handicaps is a race officer's job — it is what running a race means. Deciding that
+ * there is a race, and who is in the series, is not.
+ *
+ * <p>Registering a boat sits with the race officer for one concrete reason: a casual
+ * turning up is added from the race page, which creates the register entry as it goes.
+ * Loading a whole fleet from a sailing-pf export is a different act and stays with the
+ * admin.
+ *
+ * <p>With {@code auth.yaml} absent or off, everyone is an ADMIN — one machine on one
+ * desk, which is what this was before it was hosted. See {@link #denyUnless}.
  */
 public class ApiServlet extends HttpServlet
 {
@@ -148,28 +168,42 @@ public class ApiServlet extends HttpServlet
      *
      * <p>With {@code auth.yaml} absent or off this is always {@link Role#ADMIN}, which is
      * what sail-jinx did before it had a login: one machine on one desk is the security
-     * boundary. With authentication on, an account named in {@code admins} is an admin and
-     * everyone else in the club domain is a race officer — they can capture a night's
-     * times but not rewrite the season's handicaps.
+     * boundary.
      *
-     * <p>Nobody signed in is a race officer rather than an admin. It should be
-     * unreachable — the security handler admits no unauthenticated request — but a
-     * failure here should narrow what a caller can do, not widen it.
+     * <p>With authentication on there are three answers, and the first of them is the one
+     * that shapes the app: <b>nobody signed in is a {@link Role#VIEWER}, not a refusal</b>.
+     * A club's results are published to be read, so every page and every GET answers a
+     * stranger. A club account is a {@link Role#RACE_OFFICER} and can run a race night
+     * end to end. An account named in {@code admins} is an {@link Role#ADMIN} and owns
+     * what a race night runs on — the series, the races, the roster.
      */
     Role currentRole(HttpServletRequest req)
     {
         if (auth == null || !auth.enabled())
             return Role.ADMIN;
-        return SignedIn.of(req, auth).admin() ? Role.ADMIN : Role.RACE_OFFICER;
+        SignedIn who = SignedIn.of(req, auth);
+        if (who.admin())
+            return Role.ADMIN;
+        return who.isSignedIn() ? Role.RACE_OFFICER : Role.VIEWER;
     }
 
-    /** What a caller is allowed to do. */
+    /**
+     * What a caller is allowed to do, in increasing order — {@link #atLeast} depends on
+     * the order, so a new tier goes in its rightful place rather than on the end.
+     */
     public enum Role
     {
-        /** Can do everything, including editing TCFs and processing handicaps. */
-        ADMIN,
-        /** Can capture times and results, but not touch handicaps. */
-        RACE_OFFICER
+        /** Anyone at all. Can read every page and change nothing. */
+        VIEWER,
+        /** A club account. Runs race night: entrants, times, start sheet, handicaps. */
+        RACE_OFFICER,
+        /** A club account named in {@code admins}. Owns the shape of the season. */
+        ADMIN;
+
+        public boolean atLeast(Role required)
+        {
+            return ordinal() >= required.ordinal();
+        }
     }
 
     @Override
@@ -243,7 +277,7 @@ public class ApiServlet extends HttpServlet
         Matcher m;
         // Longest patterns first: /entrants/seed would otherwise be shadowed.
         if ((m = RACE_ENTRANTS_SEED.matcher(path)).matches())
-            handleSeedEntrants(resp, m.group(1));
+            handleSeedEntrants(req, resp, m.group(1));
         else if ((m = RACE_ENTRANTS_IMPORT.matcher(path)).matches())
             handleImportEntrants(req, resp, m.group(1));
         else if ((m = RACE_ENTRANTS.matcher(path)).matches())
@@ -323,7 +357,7 @@ public class ApiServlet extends HttpServlet
      */
     private void handleSaveBoat(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
-        if (denyIfNotAdmin(req, resp))
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
             return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         String sailNumber = text(body, "sailNumber");
@@ -422,7 +456,7 @@ public class ApiServlet extends HttpServlet
     private void handleImportBoats(HttpServletRequest req, HttpServletResponse resp)
         throws Exception
     {
-        if (denyIfNotAdmin(req, resp))
+        if (denyUnless(req, resp, Role.ADMIN))
             return;
         FleetJson.Parsed parsed = FleetJson.parse(importBody(req));
         boolean dryRun = "true".equalsIgnoreCase(req.getParameter("dryRun"));
@@ -469,7 +503,7 @@ public class ApiServlet extends HttpServlet
     private void handleImportEntrants(HttpServletRequest req, HttpServletResponse resp,
                                       String raceId) throws Exception
     {
-        if (denyIfNotAdmin(req, resp))
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
             return;
         Race race = store.races().get(raceId);
         if (race == null)
@@ -638,7 +672,7 @@ public class ApiServlet extends HttpServlet
 
     private void handleSaveSeries(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
-        if (denyIfNotAdmin(req, resp))
+        if (denyUnless(req, resp, Role.ADMIN))
             return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         String name = text(body, "name");
@@ -697,7 +731,7 @@ public class ApiServlet extends HttpServlet
     private void handleSaveSeriesConfig(HttpServletRequest req, HttpServletResponse resp,
                                         String seriesId) throws Exception
     {
-        if (denyIfNotAdmin(req, resp))
+        if (denyUnless(req, resp, Role.ADMIN))
             return;
         // The compact constructor fills in a safe default for every missing or
         // invalid field, so a partial payload is fine.
@@ -739,7 +773,7 @@ public class ApiServlet extends HttpServlet
     private void handleSaveRoster(HttpServletRequest req, HttpServletResponse resp,
                                   String seriesId) throws Exception
     {
-        if (denyIfNotAdmin(req, resp))
+        if (denyUnless(req, resp, Role.ADMIN))
             return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         JsonNode entries = body.isArray() ? body : body.path("entries");
@@ -811,7 +845,7 @@ public class ApiServlet extends HttpServlet
      */
     private void handleSaveRace(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
-        if (denyIfNotAdmin(req, resp))
+        if (denyUnless(req, resp, Role.ADMIN))
             return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         String seriesId = text(body, "seriesId");
@@ -975,6 +1009,8 @@ public class ApiServlet extends HttpServlet
     private void handleSaveEntrants(HttpServletRequest req, HttpServletResponse resp, String raceId)
         throws Exception
     {
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
+            return;
         if (rejectIfLocked(resp, raceId))
             return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
@@ -1030,8 +1066,11 @@ public class ApiServlet extends HttpServlet
      * has times captured against it would be destructive, and the RO can add or
      * remove individual boats instead.
      */
-    private void handleSeedEntrants(HttpServletResponse resp, String raceId) throws Exception
+    private void handleSeedEntrants(HttpServletRequest req, HttpServletResponse resp,
+        String raceId) throws Exception
     {
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
+            return;
         Race race = store.races().get(raceId);
         if (race == null)
         {
@@ -1104,6 +1143,8 @@ public class ApiServlet extends HttpServlet
     private void handleComputeStartTimes(HttpServletRequest req, HttpServletResponse resp,
                                          String raceId) throws Exception
     {
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
+            return;
         Race race = store.races().get(raceId);
         if (race == null)
         {
@@ -1197,6 +1238,8 @@ public class ApiServlet extends HttpServlet
     private void handleSaveRaceTimes(HttpServletRequest req, HttpServletResponse resp, String raceId)
         throws Exception
     {
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
+            return;
         if (rejectIfLocked(resp, raceId))
             return;
         RaceTimes incoming = MAPPER.readValue(req.getInputStream(), RaceTimes.class);
@@ -1286,7 +1329,7 @@ public class ApiServlet extends HttpServlet
     private void handleProcessHandicaps(HttpServletRequest req, HttpServletResponse resp,
                                         String raceId) throws Exception
     {
-        if (denyIfNotAdmin(req, resp))
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
             return;
         Race race = store.races().get(raceId);
         JsonNode body = MAPPER.readTree(req.getInputStream());
@@ -1391,7 +1434,7 @@ public class ApiServlet extends HttpServlet
     private void handleSaveHandicaps(HttpServletRequest req, HttpServletResponse resp, String raceId)
         throws Exception
     {
-        if (denyIfNotAdmin(req, resp))
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
             return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         JsonNode arr = body.isArray() ? body : body.path("adjustments");
@@ -1470,7 +1513,7 @@ public class ApiServlet extends HttpServlet
     private void handleUnlockRace(HttpServletRequest req, HttpServletResponse resp, String raceId)
         throws Exception
     {
-        if (denyIfNotAdmin(req, resp))
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
             return;
         boolean removed = store.deleteAdjustments(raceId);
         if (removed)
@@ -1536,23 +1579,45 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
-     * True when this caller is not an admin, having already written the 403.
+     * True when this caller may not do this, having already written the refusal.
      *
      * <p>Returns rather than throws, and the caller must act on it —
-     * {@code if (denyIfNotAdmin(req, resp)) return;} — matching
-     * {@link #rejectIfLocked}. The previous version took no request, so it asked
-     * {@code currentRole(null)}, and wrote a 403 without stopping the handler: the caller
-     * read the status, ignored it, and did the work anyway. Harmless while every request
+     * {@code if (denyUnless(req, resp, Role.ADMIN)) return;} — matching
+     * {@link #rejectIfLocked}. An ancestor wrote a 403 and returned void, so the caller
+     * read the status, ignored it, and did the work anyway: harmless while every request
      * was an admin, and a hole the moment one was not.
+     *
+     * <p><b>401 for a visitor, 403 for a club account that is not an admin.</b> The codes
+     * are not decoration: they are the difference between "sign in and this will work"
+     * and "signing in will not help", and the page shows a sign-in button for exactly one
+     * of them. A blanket 403 would put a login button in front of a race officer who is
+     * already logged in.
      */
-    private boolean denyIfNotAdmin(HttpServletRequest req, HttpServletResponse resp)
+    private boolean denyUnless(HttpServletRequest req, HttpServletResponse resp, Role required)
         throws IOException
     {
-        if (currentRole(req) == Role.ADMIN)
+        Role role = currentRole(req);
+        if (role.atLeast(required))
             return false;
-        resp.setStatus(403);
-        writeJson(resp, mapOf("error", "admin required"));
+        if (role == Role.VIEWER)
+        {
+            resp.setStatus(401);
+            writeJson(resp, mapOf(
+                "error", "sign in with a " + clubDomainForMessage() + " account to do that",
+                "loginPath", JinxSecurityHandler.LOGIN_PATH));
+        }
+        else
+        {
+            resp.setStatus(403);
+            writeJson(resp, mapOf("error", "this needs an administrator"));
+        }
         return true;
+    }
+
+    private String clubDomainForMessage()
+    {
+        String domain = auth == null ? null : auth.allowedDomain();
+        return domain == null ? "club" : domain;
     }
 
     /**
@@ -1572,8 +1637,13 @@ public class ApiServlet extends HttpServlet
         out.put("email", who.email());
         out.put("name", who.name());
         out.put("admin", who.admin());
-        out.put("role", currentRole(req).name());
+        Role role = currentRole(req);
+        out.put("role", role.name());
+        // Named rather than derived in the page: what a role may do is the server's to
+        // say, and a page that worked it out from the name would be a second answer.
+        out.put("canEdit", role.atLeast(Role.RACE_OFFICER));
         out.put("logoutPath", "/auth/logout");
+        out.put("loginPath", JinxSecurityHandler.LOGIN_PATH);
         return out;
     }
 

@@ -91,13 +91,25 @@ for (const page of fs.readdirSync(dir).filter(f => f.endsWith('.html') && !f.sta
       if (!ids.has(m[1]) && !badIds.has(m[1])) badIds.set(m[1], idx + 1);
   });
 
-  if (missing.size || badIds.size) {
-    problems += missing.size + badIds.size;
+  // data-requires gates a control on the caller's role. A value applyRoleGates does not
+  // know falls through to the weakest tier, so a typo does not break anything visibly —
+  // it just quietly offers an admin's button to a race officer.
+  const ROLES = new Set(['officer', 'admin']);
+  const badRoles = new Map();
+  (html + raw).split('\n').forEach((line, idx) => {
+    for (const m of line.matchAll(/data-requires="([^"]*)"/g))
+      if (!ROLES.has(m[1]) && !badRoles.has(m[1])) badRoles.set(m[1], idx + 1);
+  });
+
+  if (missing.size || badIds.size || badRoles.size) {
+    problems += missing.size + badIds.size + badRoles.size;
     console.log(`  ${page}`);
     for (const [name, line] of missing)
       console.log(`     line ${line}: ${name}() — called but never defined`);
     for (const [id, line] of badIds)
       console.log(`     line ${line}: getElementById('${id}') — no such id in the markup`);
+    for (const [role, line] of badRoles)
+      console.log(`     line ${line}: data-requires="${role}" — not one of ${[...ROLES].join(', ')}`);
   }
 }
 console.log(problems ? `\n${problems} problem(s)` : '\nno undefined names or ids in any page');
