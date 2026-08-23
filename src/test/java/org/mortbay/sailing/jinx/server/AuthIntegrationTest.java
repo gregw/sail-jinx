@@ -76,6 +76,22 @@ class AuthIntegrationTest
                     """.formatted(base, base, base, base, base));
             }
         }), "/.well-known/openid-configuration");
+        // Google's token endpoint answers a bad client secret with 401 and a JSON body
+        // naming the problem — and no WWW-Authenticate header, since it is not offering
+        // a challenge. Reproduced exactly, because that combination is what breaks.
+        ctx.addServlet(new ServletHolder(new jakarta.servlet.http.HttpServlet()
+        {
+            @Override
+            protected void doPost(HttpServletRequest req, HttpServletResponse resp)
+                throws java.io.IOException
+            {
+                resp.setStatus(401);
+                resp.setContentType("application/json");
+                resp.getWriter().write(
+                    "{\"error\":\"invalid_client\","
+                        + "\"error_description\":\"Unauthorized\"}");
+            }
+        }), "/token");
         issuer.setHandler(ctx);
         issuer.start();
         return "http://localhost:" + port(issuer);
@@ -219,5 +235,46 @@ class AuthIntegrationTest
             HttpResponse.BodyHandlers.ofString());
         assertThat(err.statusCode(), is(403));
         assertThat(err.body(), containsString("invalid state parameter"));
+    }
+
+    @Test
+    void aRefusedClientSecretSaysSoRatherThanBlamingTheProtocol(@TempDir Path tmp)
+        throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false);
+
+        // A browser: it keeps the session cookie, so the callback belongs to the sign-in
+        // the challenge started and the anti-forgery check passes. Without that this test
+        // would fail on the state parameter and never reach the token exchange.
+        HttpClient browser = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .cookieHandler(new java.net.CookieManager())
+            .build();
+        String base = "http://localhost:" + port(jinx);
+
+        HttpResponse<String> challenge = browser.send(HttpRequest.newBuilder()
+            .uri(URI.create(base + "/")).GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(challenge.statusCode(), is(303));
+        String state = challenge.headers().firstValue("location").orElseThrow()
+            .replaceAll(".*[?&]state=([^&]*).*", "$1");
+
+        HttpResponse<String> cb = browser.send(HttpRequest.newBuilder()
+                .uri(URI.create(base + "/auth/callback?state=" + state + "&code=an-auth-code"))
+                .GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+        assertThat(cb.statusCode(), is(303));
+
+        HttpResponse<String> err = browser.send(HttpRequest.newBuilder()
+                .uri(URI.create(base).resolve(cb.headers().firstValue("location").orElseThrow()))
+                .GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+
+        // The provider said which of the two ends was wrong. Jetty's HttpClient turns an
+        // unchallenged 401 into a protocol violation and discards the body that says so,
+        // which sends whoever is registering the club's OAuth client looking at their
+        // reverse proxy instead of at their client secret.
+        assertThat(err.body(), containsString("invalid_client"));
     }
 }

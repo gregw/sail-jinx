@@ -81,9 +81,12 @@ admins:
 # you land on names the reason, and the same line is logged at WARN — on the Pi,
 # `journalctl -u sail-jinx -f`. What the common ones mean:
 #
-#   invalid_client            The clientSecret here is not the one the console holds.
-#                             Regenerating the secret in the console invalidates the
-#                             old one immediately; paste the new one and restart.
+#   invalid_client            The clientId/clientSecret pair here is not one Google
+#                             recognises. Regenerating the secret in the console
+#                             invalidates the old one immediately; paste the new one
+#                             and restart. Check for a stray space or a truncated
+#                             paste too — YAML keeps trailing whitespace inside
+#                             quotes.
 #   redirect_uri_mismatch     The Authorised redirect URI does not match what the
 #                             server built. Google matches the whole string — scheme,
 #                             host, port, path. Behind a proxy this is nearly always

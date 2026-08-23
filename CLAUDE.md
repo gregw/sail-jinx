@@ -434,7 +434,7 @@ The pieces, and why each exists:
 | `SignedIn` | reads the claims back off the session |
 | `ApiServlet.currentRole` | admin vs race officer, from `admins:` |
 
-Five things that are easy to get wrong:
+Six things that are easy to get wrong:
 
 1. **Jetty's authenticator alone is not access control.** It establishes that
    Google knows who you are — *any* Google account, personal Gmail included.
@@ -461,6 +461,18 @@ Five things that are easy to get wrong:
    Jetty puts in the query and logs it at WARN, so the diagnosis is in
    `journalctl` as well as on screen. `aFailedCallbackSaysWhyInsteadOfABare403`
    pins it.
+6. **The token exchange needs an `HttpClient` with `WWWAuthenticationProtocolHandler`
+   removed.** A refused client secret comes back from Google as *401 with a JSON body
+   saying `invalid_client` and no `WWW-Authenticate` header* — a refusal, not a
+   challenge. Jetty's client sees the 401, looks for the header it implies, and fails
+   the exchange with "HTTP protocol violation: Authentication challenge without
+   WWW-Authenticate header", **discarding the body that named the cause**. So the most
+   likely setup mistake reports itself as a transport fault. `JinxServer.tokenExchangeClient`
+   drops that handler — safe, since this client talks only to the token endpoint, which
+   authenticates by form parameters and never challenges. **Remove it after
+   `super.doStart()`**: `HttpClient` installs its default handlers as it starts, so a
+   removal in the constructor is undone before the first request.
+   `aRefusedClientSecretSaysSoRatherThanBlamingTheProtocol` pins it.
 
 `isAdmin()` in the browser is a **UI hint only**, so buttons match what they will
 do. The server checks the same thing and returns 403.

@@ -10,6 +10,8 @@ import jakarta.servlet.DispatcherType;
 import org.eclipse.jetty.ee10.servlet.FilterHolder;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
+import org.eclipse.jetty.client.HttpClient;
+import org.eclipse.jetty.client.WWWAuthenticationProtocolHandler;
 import org.eclipse.jetty.ee10.servlet.SessionHandler;
 import org.eclipse.jetty.security.SecurityHandler;
 import org.eclipse.jetty.security.openid.OpenIdAuthenticator;
@@ -146,13 +148,17 @@ public class JinxServer
      */
     private static void secure(ServletContextHandler context, AuthConfig auth, Server server)
     {
-        OpenIdConfiguration oidc =
-            new OpenIdConfiguration(auth.issuer(), auth.clientId(), auth.clientSecret());
-        // Google returns the address and the Workspace domain in these; without them
-        // there is nothing to check the club domain against. "openid" is not listed:
-        // OpenIdConfiguration already asks for it, and naming it again puts it in the
-        // request twice.
-        oidc.addScopes("email", "profile");
+        OpenIdConfiguration oidc = new OpenIdConfiguration.Builder()
+            .issuer(auth.issuer())
+            .clientId(auth.clientId())
+            .clientSecret(auth.clientSecret())
+            // Google returns the address and the Workspace domain in these; without them
+            // there is nothing to check the club domain against. "openid" is not listed:
+            // OpenIdConfiguration already asks for it, and naming it again puts it in the
+            // request twice.
+            .scopes("email", "profile")
+            .httpClient(tokenExchangeClient())
+            .build();
         // The identity provider and its HTTP client are the server's to start and stop.
         server.addBean(oidc);
 
@@ -178,6 +184,44 @@ public class JinxServer
         LOG.info("Authentication: {} via {}, redirect {}",
             auth.allowedDomain() == null ? "any account" : auth.allowedDomain() + " accounts",
             auth.issuer(), auth.redirectPath());
+    }
+
+    /**
+     * The client that redeems the authorisation code, with one handler taken out.
+     *
+     * <p>When the client id and secret do not match, Google's token endpoint answers
+     * <b>401 with a JSON body naming the problem</b> — {@code invalid_client} — and no
+     * {@code WWW-Authenticate} header, because it is reporting a refusal rather than
+     * offering a challenge. Jetty's {@code WWWAuthenticationProtocolHandler} sees a 401,
+     * looks for the header it implies, and fails the exchange with "HTTP protocol
+     * violation: Authentication challenge without WWW-Authenticate header" — discarding
+     * the body that says which end was wrong.
+     *
+     * <p>The result is that the one misconfiguration most likely to happen while
+     * registering a club's OAuth client reports itself as a transport fault, and sends
+     * whoever is setting it up to look at their reverse proxy. Removing the handler does
+     * not lose anything: this client talks to exactly one endpoint, which authenticates
+     * by form parameters and never challenges. The 401 then reaches
+     * {@code OpenIdCredentials.redeemAuthCode}, which parses the body and reports the
+     * provider's own error.
+     *
+     * <p>Otherwise built as {@code OpenIdConfiguration} would build it. The configuration
+     * takes ownership: it installs the client as a bean and starts and stops it.
+     */
+    private static HttpClient tokenExchangeClient()
+    {
+        return new HttpClient()
+        {
+            @Override
+            protected void doStart() throws Exception
+            {
+                super.doStart();
+                // After super.doStart(), not in the constructor: HttpClient installs its
+                // default protocol handlers as it starts, so anything removed earlier is
+                // put back before the first request.
+                getProtocolHandlers().remove(WWWAuthenticationProtocolHandler.NAME);
+            }
+        };
     }
 
     /** Build version, from the Maven-filtered {@code jinx.properties}. */
