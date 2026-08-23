@@ -130,8 +130,8 @@ public record JinxConfig(
      * <pre>
      *   Variant | penaltyScaling | givebackGamma
      *      A    | fixed          | 0.0
-     *      B    | fixed          | 1.0
-     *      C    | perHour        | 0.0   &lt;-- default
+     *      B    | fixed          | 1.0   &lt;-- default
+     *      C    | perHour        | 0.0
      *      D    | perHour        | 1.0
      * </pre>
      *
@@ -181,8 +181,8 @@ public record JinxConfig(
         }
     }
 
-    /** What the club gets when it says nothing: per-hour penalties, given back evenly. */
-    public static final Variant DEFAULT_VARIANT = Variant.C;
+    /** What the club gets when it says nothing: fixed penalties, shared by finish gap. */
+    public static final Variant DEFAULT_VARIANT = Variant.B;
 
     /**
      * Parameters for the Jinx pursuit handicap engine. Defaults are tuned to

@@ -21,12 +21,12 @@ algorithm:
   #
   #   variant | penaltyScaling | givebackGamma
   #      A    | fixed          | 0.0
-  #      B    | fixed          | 1.0
-  #      C    | perHour        | 0.0   <-- default
+  #      B    | fixed          | 1.0   <-- default
+  #      C    | perHour        | 0.0
   #      D    | perHour        | 1.0
-  variant: C
-  penaltyScaling: perHour          # perHour = a rate scaled by the measured duration
-  givebackGamma: 0.0               # 0 = even split, 1 = by gap behind the leader
+  variant: B
+  penaltyScaling: fixed            # fixed = the penaltyList minutes as written
+  givebackGamma: 1.0               # 0 = even split, 1 = by gap behind the leader
 
   penaltyList: [6, 4, 2]           # minutes for 1st, 2nd, 3rd — per hour under perHour
   dnfAllowance: 1                  # minutes past the last finisher a retirement scores

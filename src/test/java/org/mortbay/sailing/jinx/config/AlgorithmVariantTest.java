@@ -55,21 +55,22 @@ class AlgorithmVariantTest
     }
 
     @Test
-    void anAbsentAlgorithmBlockIsVariantC(@TempDir Path tmp) throws IOException
+    void anAbsentAlgorithmBlockIsVariantB(@TempDir Path tmp) throws IOException
     {
         Path file = tmp.resolve("config.yaml");
         Files.writeString(file, "club:\n  domain: \"myc.org.au\"\n");
         Algorithm a = JinxConfig.load(file).algorithm();
-        assertThat(a.penaltyScaling(), equalTo(PenaltyScaling.PER_HOUR));
-        assertThat(a.givebackGamma(), closeTo(0.0, 1e-12));
+        assertThat(a.penaltyScaling(), equalTo(PenaltyScaling.FIXED));
+        assertThat(a.givebackGamma(), closeTo(1.0, 1e-12));
+        assertThat(a.asVariant(), equalTo(java.util.Optional.of(Variant.B)));
     }
 
     @Test
-    void anAlgorithmBlockWithNeitherVariantNorKnobsIsC(@TempDir Path tmp) throws IOException
+    void anAlgorithmBlockWithNeitherVariantNorKnobsIsB(@TempDir Path tmp) throws IOException
     {
         Algorithm a = load(tmp, "  penaltyList: [5, 4, 3, 2, 1]");
-        assertThat(a.penaltyScaling(), equalTo(PenaltyScaling.PER_HOUR));
-        assertThat(a.givebackGamma(), closeTo(0.0, 1e-12));
+        assertThat(a.penaltyScaling(), equalTo(PenaltyScaling.FIXED));
+        assertThat(a.givebackGamma(), closeTo(1.0, 1e-12));
     }
 
     @Test
@@ -123,14 +124,15 @@ class AlgorithmVariantTest
     }
 
     @Test
-    void anUnreadableVariantOrScalingFallsBackToC(@TempDir Path tmp) throws IOException
+    void anUnreadableVariantOrScalingFallsBackToTheDefault(@TempDir Path tmp)
+        throws IOException
     {
         Algorithm a = load(tmp, "  variant: Q");
-        assertThat(a.penaltyScaling(), equalTo(PenaltyScaling.PER_HOUR));
-        assertThat(a.givebackGamma(), closeTo(0.0, 1e-12));
+        assertThat(a.penaltyScaling(), equalTo(PenaltyScaling.FIXED));
+        assertThat(a.givebackGamma(), closeTo(1.0, 1e-12));
 
         assertThat(load(tmp, "  penaltyScaling: sideways").penaltyScaling(),
-            equalTo(PenaltyScaling.PER_HOUR));
+            equalTo(PenaltyScaling.FIXED));
     }
 
     @Test

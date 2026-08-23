@@ -222,22 +222,31 @@ class PursuitHandicapEngineTest
 
     /**
      * newTcf is anchored to the race that was actually sailed, under the default variant
-     * C: per-hour penalties, given back evenly.
+     * B: fixed penalties, given back by the gap behind the leader.
      *
      * <p>Worked example fleet: 7 finishers @ 85,90,…,115 min + 1 DNF, all TCF = 1.0.
      * <pre>
      *   raceDuration = median(85,90,95,100,105,110,115)      = 100 min
-     *   pool         = (5+4+3+2+1) × 100/60                  = 25.0 min
-     *   participants = 7 finishers + 1 DNF                   = 8
-     *   reward       = 25.0 / 8                              = 3.125  (γ = 0, even)
-     *   p1 penalty   = 5 × 100/60                            = 8.3333
-     *   p1 net       = 8.3333 − 3.125                        = 5.2083
+     *   pool         = 5+4+3+2+1                             = 15.0 min   (fixed)
+     *   dnf scores   = last finisher + dnfAllowance = 115+1  = 116 min
+     *   gaps         = 0,5,10,15,20,25,30 and 31 for the DNF
+     *   Σ gaps                                               = 136
+     *   p1 reward    = 15.0 × 0 / 136                        = 0.0        (γ = 1)
+     *   p1 penalty   = 5                                     = 5.0
+     *   p1 net       = 5.0 − 0.0                             = 5.0
      *   scale        = raceDuration × medianTcf = 100 × 1.0  = 100
-     *   newTcf       = 1.0 / (1 − 5.2083 / 100)              ≈ 1.05495
+     *   newTcf       = 1.0 / (1 − 5.0 / 100)                 = 1.052631…
      * </pre>
      *
-     * <p>Note the target elapsed time appears nowhere. The race is created with a target
-     * of 90; the arithmetic runs on the 100 the fleet actually took.
+     * <p>Two things this pins that the old variant-C version could not. <b>The winner
+     * pays its penalty in full</b> — at γ = 1 its gap is zero by definition, so it draws
+     * nothing back; under γ = 0 it took an even share and kept 3.125 of its 8.33.
+     * And <b>fixed penalties do not move with the night</b>: 5.0 is the penaltyList entry
+     * itself, where variant C would have scaled it by the measured duration.
+     *
+     * <p>Note the target elapsed time still appears nowhere. The race is created with a
+     * target of 90; the arithmetic runs on the 100 the fleet actually took, which under
+     * B reaches the answer through the TCF conversion rather than through the penalties.
      */
     @Test
     void newTcfIsAnchoredToTheRaceActuallySailed()
@@ -250,7 +259,7 @@ class PursuitHandicapEngineTest
             .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
             .findFirst().orElseThrow();
 
-        assertThat(p1.newTcf(), closeTo(1.05495, 0.00005));
+        assertThat(p1.newTcf(), closeTo(1.0 / 0.95, 1e-9));
     }
 
     /**

@@ -151,11 +151,11 @@ rather than approximating it.
 | Variant | `penaltyScaling` | `givebackGamma` |
 |---|---|---|
 | A | `fixed` | 0.0 |
-| B | `fixed` | 1.0 |
-| **C** | `perHour` | **0.0** — the default |
+| **B** | `fixed` | **1.0** — the default |
+| C | `perHour` | 0.0 |
 | D | `perHour` | 1.0 |
 
-`variant: C` is shorthand for setting both. Either knob may be set alone; an
+`variant: B` is shorthand for setting both. Either knob may be set alone; an
 explicit knob beats a variant that contradicts it, with a warning. `givebackGamma`
 is continuous, so the letters are corners of a square, not a menu — 0.35 is a real
 setting.
