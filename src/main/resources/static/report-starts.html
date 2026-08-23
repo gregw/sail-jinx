@@ -40,11 +40,23 @@
   // The sheet is printed and then read aloud, and which order that wants depends on the
   // job: start order to run the sequence, sail number or name to find a boat somebody is
   // asking about. So the columns sort, and the chosen order is what prints.
+  // The last four are blank on purpose: this sheet goes onto a clipboard, and what the
+  // RO writes on it is what gets typed back in afterwards. They are not sortable, because
+  // there is nothing in them to sort by — and a heading that reordered the fleet after
+  // somebody had started writing on the paper version would be worse than useless.
+  //
+  // Came is first of the four for the same reason it is first on the race page: it is
+  // ticked before the gun, and the two time boxes beside it stay empty for a boat that
+  // never came out.
   const COLUMNS = [
     { key: 'sail',   label: 'Sail #', cls: 'mono' },
     { key: 'name',   label: 'Boat',   cls: '' },
     { key: 'offset', label: 'Offset', cls: 'num-cell mono' },
-    { key: 'start',  label: 'Start',  cls: 'num-cell mono' }
+    { key: 'start',  label: 'Start',  cls: 'num-cell mono' },
+    { key: 'came',   label: 'Came',   cls: 'write-in write-in-tick', write: 'tick' },
+    { key: 'wStart', label: 'Actual<br>Start',  cls: 'write-in write-in-time', write: true },
+    { key: 'wFinish', label: 'Actual<br>Finish', cls: 'write-in write-in-time', write: true },
+    { key: 'notes',  label: 'Notes',  cls: 'write-in write-in-notes', write: true }
   ];
 
   let rows = [];
@@ -70,6 +82,7 @@
 
   function render() {
     document.getElementById('report-head').innerHTML = COLUMNS.map(c => {
+      if (c.write) return '<th class="' + c.cls + '">' + c.label + '</th>';
       const arrow = sortKey === c.key ? (sortDir > 0 ? ' ▲' : ' ▼') : '';
       return '<th class="sortable ' + c.cls + '" data-key="' + c.key + '">'
         + c.label + arrow + '</th>';
@@ -77,6 +90,11 @@
 
     document.getElementById('report-tbody').innerHTML = sorted().map(r =>
       '<tr>' + COLUMNS.map(c => {
+        // A drawn box rather than the ☐ character: the glyph is missing from enough
+        // print fonts to come out as a tofu square on somebody's club printer.
+        if (c.write === 'tick')
+          return '<td class="' + c.cls + '"><span class="tickbox"></span></td>';
+        if (c.write) return '<td class="' + c.cls + '"></td>';
         const v = c.key === 'offset'
           ? (r.offset == null ? '' : '+' + r.offset) : r[c.key];
         return '<td class="' + c.cls + '">' + esc(v) + '</td>';
@@ -101,7 +119,7 @@
     const note = document.getElementById('order-note');
     if (!sortKey) { note.textContent = 'in start order — click a heading to sort'; return; }
     const col = COLUMNS.find(c => c.key === sortKey);
-    note.textContent = 'sorted by ' + col.label.toLowerCase()
+    note.textContent = 'sorted by ' + col.label.replace('<br>', ' ').toLowerCase()
       + (sortDir > 0 ? '' : ', reversed') + ' — click the header again to return to start order';
   }
 

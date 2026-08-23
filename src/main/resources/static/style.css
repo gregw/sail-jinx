@@ -372,6 +372,22 @@ table.report-table td { padding: 7px 10px; border-bottom: 1px solid var(--line);
 table.report-table tbody tr:nth-child(even) td { background: none; }
 table.report-table tr:hover td { background: none; }
 
+/* Start-sheet write-in columns: blank space the RO fills in on the clipboard, so what
+   matters is that there is room to write and a rule to write on. Sized in em so they
+   hold their proportions at the 11pt the print rules drop the table to. */
+table.report-table th.write-in { text-align: left; }
+table.report-table td.write-in { border-left: 1px solid var(--line); }
+table.report-table td.write-in-time, table.report-table th.write-in-time { min-width: 5.5em; }
+table.report-table td.write-in-notes, table.report-table th.write-in-notes { min-width: 9em; }
+table.report-table td.write-in-tick, table.report-table th.write-in-tick { text-align: center; }
+/* Roomy enough to write a time into by hand, in the dark, on a moving boat. */
+table.report-table td.write-in { height: 1.9em; }
+
+.tickbox {
+  display: inline-block; width: 0.85em; height: 0.85em;
+  border: 1px solid var(--ink); border-radius: 2px; vertical-align: -0.05em;
+}
+
 .report-note {
   margin-top: 1.25rem; padding: 0.6rem 0.8rem;
   border-left: 3px solid var(--line-strong); color: var(--muted); font-size: 0.9rem;
@@ -391,6 +407,10 @@ table.report-table tr:hover td { background: none; }
   /* Repeat the header on every page — a fleet of forty can spill over. */
   table.report-table thead { display: table-header-group; }
   table.report-table tr { break-inside: avoid; }
+  /* Black, not the screen's grey: a rule you are meant to write on has to survive a
+     club printer that is low on toner. */
+  table.report-table td.write-in { border-left: 0.5pt solid #000; }
+  .tickbox { border-color: #000; }
 }
 
 /* --- CSV import ---------------------------------------------------------- */

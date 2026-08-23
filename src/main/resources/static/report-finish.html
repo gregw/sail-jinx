@@ -72,6 +72,12 @@
       get: r => r.sail,    text: r => esc(r.sail) },
     { key: 'name',         label: 'Boat', cls: '',
       get: r => r.name,    text: r => esc(r.name) },
+    // Blank until the handicaps are processed and saved, which is the only thing that
+    // puts an adjustment in the bundle. A dash would claim the boat was adjusted by
+    // nothing; a blank says the race has not been through the engine yet.
+    { key: 'adjustment',   label: 'Adjustment', cls: 'num-cell mono',
+      get: r => r.adjustment,
+      text: r => r.adjustment == null ? '' : esc(fmtSignedMinSec(r.adjustment)) },
     { key: 'late',         label: 'Late', cls: 'num-cell mono',
       get: r => r.late,    text: r => r.late == null ? '—' : esc(fmtSignedMinSec(r.late / 60)) },
     { key: 'startPlace',   label: 'Start<br>Place', cls: 'num-cell mono',
@@ -193,12 +199,18 @@
     // The scored elapsed carries the OCS penalty, so its ranking is the scratch one.
     const elapsedPlaces = scorer.places('scratch');
 
+    // Saved adjustments only — the same ones that lock the race. The sheet reports what
+    // was committed, not what the page last computed but nobody saved.
+    const adjustments = new Map((b.adjustments || []).map(a => [String(a.boatId), a]));
+
     rows = entrants.map(e => {
       const id = String(e.boatId);
+      const adj = adjustments.get(id);
       return {
         place: places.get(id) ?? null,
         sail: e.sailNumber || '',
         name: e.name || '',
+        adjustment: adj ? adj.netAdjustmentMinutes : null,
         corrected: scorer.correctedFinishSeconds(e),
         // Late only where a start was actually timed. Without one it falls back to the
         // allocated gun and would print a confident 0:00 for a boat nobody watched.
