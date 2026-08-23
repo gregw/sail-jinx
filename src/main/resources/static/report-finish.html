@@ -81,7 +81,12 @@
     { key: 'late',         label: 'Late', cls: 'num-cell mono',
       get: r => r.late,    text: r => r.late == null ? '—' : esc(fmtSignedMinSec(r.late / 60)) },
     { key: 'startPlace',   label: 'Start<br>Place', cls: 'num-cell mono',
-      get: r => r.startPlace, text: r => dash(r.startPlace) },
+      get: r => r.startPlace, text: r => dash(r.startPlace),
+      // Two different reasons leave a boat out of the start ranking: it crossed early,
+      // or nobody timed its start. The first still has a Late to show, the second has
+      // nothing at all, and lumping them together as one undifferentiated tail loses a
+      // distinction the sheet is already printing in the next column.
+      whenMissing: r => r.late },
     { key: 'elapsed',      label: 'Scored<br>Elapsed', cls: 'num-cell mono',
       get: r => r.elapsed, text: r => esc(fmtElapsed(r.elapsed)) },
     { key: 'elapsedPlace', label: 'Elapsed<br>Place', cls: 'num-cell mono',
@@ -98,6 +103,11 @@
   let sortKey = DEFAULT_SORT;
   let sortDir = 1;
 
+  const isEmpty = (v) => v == null || v === '';
+
+  const compare = (x, y) => (typeof x === 'number' && typeof y === 'number')
+    ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
+
   function sorted() {
     const col = COLUMNS.find(c => c.key === sortKey) || COLUMNS[0];
     return rows.slice().sort((a, b) => {
@@ -105,11 +115,21 @@
       // A missing value is not a small one. Boats with no place, no time or no start
       // sort to the bottom whichever way the column is turned — which is also what puts
       // the non-finishers below the fleet in the default order, without a second list.
-      const xe = x == null || x === '', ye = y == null || y === '';
-      if (xe || ye) return xe && ye ? 0 : (xe ? 1 : -1);
-      const cmp = (typeof x === 'number' && typeof y === 'number')
-        ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
-      return cmp * sortDir;
+      if (isEmpty(x) || isEmpty(y)) {
+        if (!isEmpty(x) || !isEmpty(y)) return isEmpty(x) ? 1 : -1;
+        if (!col.whenMissing) return 0;
+        // Both are in that tail, and the column has something to say about how the tail
+        // itself is arranged. Same rule one level down: a boat that has the fallback
+        // comes before one that has nothing.
+        const fx = col.whenMissing(a), fy = col.whenMissing(b);
+        if (isEmpty(fx) || isEmpty(fy))
+          return isEmpty(fx) && isEmpty(fy) ? 0 : (isEmpty(fx) ? 1 : -1);
+        // Not multiplied by sortDir, like the tail's own position is not: reversing the
+        // column reverses the ranked fleet, and leaves the boats that were never ranked
+        // arranged the one way they can be read.
+        return compare(fx, fy);
+      }
+      return compare(x, y) * sortDir;
     });
   }
 
