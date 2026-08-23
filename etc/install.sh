@@ -4,9 +4,11 @@
 #
 # Safe to re-run: upgrading is `git pull && sudo etc/install.sh`. The data directory
 # is never overwritten — config files are seeded only if missing, and the store is
-# left alone entirely.
+# left alone entirely. A service that was running is restarted at the end, and the
+# script exits non-zero if it does not come back.
 set -euo pipefail
 
+SERVICE_NAME=sail-jinx.service
 SERVICE_USER=sail-jinx
 INSTALL_DIR=/opt/sail-jinx
 DATA_DIR=/var/lib/sail-jinx
@@ -20,6 +22,18 @@ for cmd in java mvn rsync; do
         exit 1
     fi
 done
+
+# Is it already running? Asked before anything is touched, because the answer decides
+# whether this is an install or an upgrade — and `systemctl is-active` would say "active"
+# either way once the unit has been enabled below.
+#
+# Guarded with `if`: a non-zero exit here is the ordinary "not running" answer, and
+# `set -e` would take it for a failure.
+WAS_RUNNING=false
+if systemctl is-active --quiet "$SERVICE_NAME"; then
+    WAS_RUNNING=true
+    echo "==> $SERVICE_NAME is running — it will be restarted at the end."
+fi
 
 echo "==> Creating system user '$SERVICE_USER' (if not already present)…"
 if ! id "$SERVICE_USER" &>/dev/null; then
@@ -70,12 +84,40 @@ install -m 644 "$SRC_DIR/etc/sail-jinx.service" "$SERVICE_FILE"
 
 echo "==> Reloading systemd and enabling service…"
 systemctl daemon-reload
-systemctl enable sail-jinx.service
+systemctl enable "$SERVICE_NAME"
+
+# An upgrade restarts; a first install does not, because there is nothing to interrupt
+# and the operator may still have config to fill in — auth.yaml in particular.
+#
+# The rsync and the rebuild above have already replaced the source and the classes under
+# any running process. Java loads classes as it first needs them, so between those steps
+# and this restart a page nobody has visited yet can fail to load. That window is not
+# created here, it is closed here: the alternative is a stop-install-start that is down
+# for the whole build.
+if [ "$WAS_RUNNING" = true ]; then
+    echo "==> Restarting $SERVICE_NAME…"
+    systemctl restart "$SERVICE_NAME"
+    # Give it long enough to fail. With authentication on, startup includes the OpenID
+    # discovery call, so "came up" is a slower claim here than it looks.
+    sleep 3
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        echo "    running."
+    else
+        echo ""
+        echo "*** $SERVICE_NAME did not come back up. ***"
+        echo "    sudo systemctl status $SERVICE_NAME"
+        echo "    sudo journalctl -u $SERVICE_NAME -n 50"
+        exit 1
+    fi
+fi
 
 echo ""
 echo "Installation complete."
 echo ""
-echo "  Start:   sudo systemctl start sail-jinx"
+if [ "$WAS_RUNNING" != true ]; then
+    echo "  Start:   sudo systemctl start sail-jinx"
+fi
+echo "  Restart: sudo systemctl restart sail-jinx"
 echo "  Stop:    sudo systemctl stop sail-jinx"
 echo "  Status:  sudo systemctl status sail-jinx"
 echo "  Logs:    sudo journalctl -u sail-jinx -f"

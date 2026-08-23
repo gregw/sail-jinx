@@ -552,6 +552,10 @@ Two differences from sailing-pf's installer, both deliberate:
 - It **seeds config and never overwrites it**, so `git pull && sudo etc/install.sh`
   cannot revert the club's settings, its learned aliases or its OAuth client. The
   rsync excludes `data` entirely — `--delete` across it would take the store.
+- It **restarts the service only if it was already running**, checked before anything
+  is touched — after `systemctl enable` the unit would look active either way. A first
+  install is left stopped, since the operator still has `auth.yaml` to fill in. A
+  restart that does not come back exits non-zero rather than printing "complete".
 - The unit waits on `network-online.target`, not `network.target`. With
   authentication on, the OIDC discovery call happens during startup.
 
