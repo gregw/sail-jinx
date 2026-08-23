@@ -320,19 +320,36 @@ public record JinxConfig(
      * <p>Off by default, and it must stay off when the server is directly exposed: those
      * headers are just headers, and a client that sets its own would be deciding what the
      * server thinks its own address is.
+     *
+     * <p>{@code requestLog} is <b>on</b> by default and writes one line per request to the
+     * ordinary log — the journal, under systemd. It is on because the alternative was
+     * discovered the hard way: with only the application's own logging, a failing sign-in
+     * showed the attempt but not what the browser had asked for or been told, and the
+     * useful facts had to be inferred from the browser's address bar.
      */
     public record Server(
         @JsonProperty("port") int port,
-        @JsonProperty("forwardedHeaders") boolean forwardedHeaders)
+        @JsonProperty("forwardedHeaders") boolean forwardedHeaders,
+        @JsonProperty("requestLog") Boolean requestLog)
     {
         public Server
         {
             if (port <= 0) port = 8080;
+            // Boolean rather than boolean, and defaulted here: an absent YAML key
+            // deserialises a primitive to false, which would make "say nothing" the
+            // default for the one setting whose whole purpose is to say something.
+            // The compact constructor is what makes the accessor safe to unbox.
+            if (requestLog == null) requestLog = Boolean.TRUE;
         }
 
         public Server(int port)
         {
             this(port, false);
+        }
+
+        public Server(int port, boolean forwardedHeaders)
+        {
+            this(port, forwardedHeaders, Boolean.TRUE);
         }
     }
 }

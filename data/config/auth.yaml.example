@@ -32,6 +32,9 @@ enabled: false
 #         https://console.cloud.google.com/auth/clients
 #      (older: https://console.cloud.google.com/apis/credentials)
 #      Create client > application type "Web application".
+#      Leave "Authorised JavaScript origins" EMPTY. That field is for flows where
+#      script in the page calls Google directly; sail-jinx redirects the browser and
+#      then exchanges the code server-to-server, so no page origin is involved.
 #   3. Authorised redirect URI: the address the RACE OFFICER'S BROWSER uses, plus
 #      redirectPath below. Google matches it as a literal string, so it must agree
 #      exactly — scheme, host, port and path.

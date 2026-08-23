@@ -492,6 +492,16 @@ Two differences from sailing-pf's installer, both deliberate:
 - The unit waits on `network-online.target`, not `network.target`. With
   authentication on, the OIDC discovery call happens during startup.
 
+The server writes **one request-log line per request** to the same journal as
+everything else — `journalctl -u sail-jinx` — under its own logger,
+`org.mortbay.sailing.jinx.requests`, so `requests.LEVEL=WARN` in
+`jetty-logging.properties` silences it without silencing the app. `requestLog: false`
+under `server:` turns it off outright. It carries NCSA's fields but **not NCSA's
+timestamp**: the line already passes through the logging implementation's stamp and
+journald's, and a third is noise. It is on by default because the first question when
+anything in front of this server misbehaves — proxy, sign-in redirect — is whether the
+request arrived at all, and without it there was nothing that answered that.
+
 Two things that will bite on that deployment specifically:
 
 1. **Google rejects a plain `http://` redirect URI** for a web application —

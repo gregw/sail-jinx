@@ -188,7 +188,7 @@ public class ApiServlet extends HttpServlet
                 case "/series" -> writeJson(resp, sortedSeries());
                 case "/races" -> writeJson(resp, allRaces());
                 case "/audit" -> writeJson(resp, store.audit());
-                default -> doGetPath(path, resp);
+                default -> doGetPath(req, path, resp);
             }
         }
         catch (Exception e)
@@ -197,7 +197,8 @@ public class ApiServlet extends HttpServlet
         }
     }
 
-    private void doGetPath(String path, HttpServletResponse resp) throws Exception
+    private void doGetPath(HttpServletRequest req, String path,
+        HttpServletResponse resp) throws Exception
     {
         Matcher m;
         if ((m = SERIES_CONFIG.matcher(path)).matches())
@@ -209,7 +210,7 @@ public class ApiServlet extends HttpServlet
         else if ((m = RACE_TIMES.matcher(path)).matches())
             writeJson(resp, mapOf("raceId", m.group(1), "times", store.raceTimes(m.group(1))));
         else if ((m = RACE.matcher(path)).matches())
-            writeRaceBundle(resp, m.group(1));
+            writeRaceBundle(req, resp, m.group(1));
         else
             resp.sendError(404);
     }
@@ -887,7 +888,8 @@ public class ApiServlet extends HttpServlet
      * <p>One call rather than the eight the SailSys-era page made. There is no
      * longer a slow remote to parallelise around — it is all one local read.
      */
-    private void writeRaceBundle(HttpServletResponse resp, String raceId) throws Exception
+    private void writeRaceBundle(HttpServletRequest req, HttpServletResponse resp,
+        String raceId) throws Exception
     {
         Race race = store.races().get(raceId);
         if (race == null)
@@ -917,7 +919,9 @@ public class ApiServlet extends HttpServlet
         // The lifecycle is derived, never stored: saved adjustments lock the
         // race, and Unlock is deleting them. See Race's javadoc.
         out.put("locked", !adjustments.isEmpty());
-        out.put("role", currentRole(null));
+        // The request, not null: with a login configured the role is read off the
+        // session, and a handler that cannot say who is asking cannot answer this.
+        out.put("role", currentRole(req).name());
         Optional<Race> next = store.nextRaceInSeries(raceId);
         out.put("nextRaceId", next.map(Race::id).orElse(null));
         out.put("previousRaceId", previousRaceId(race));
@@ -1531,11 +1535,6 @@ public class ApiServlet extends HttpServlet
         return true;
     }
 
-    /**
-     * Role gate. Currently always passes — see {@link #currentRole}. Kept at
-     * every call site that will need it so that turning authentication on is a
-     * change in one place rather than an audit of the whole servlet.
-     */
     /**
      * True when this caller is not an admin, having already written the 403.
      *

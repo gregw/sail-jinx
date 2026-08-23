@@ -45,3 +45,13 @@ server:
   # it, a proxied login sends Google to http://localhost and fails. Never turn it on
   # for a directly-exposed server: those headers are whatever the client sent.
   forwardedHeaders: false
+
+  # One line per request in the ordinary log — on the Pi, `journalctl -u sail-jinx`.
+  # Client address, signed-in user, request line, status, bytes and milliseconds:
+  #
+  #   [10.19.25.5] - "GET /api/races/… HTTP/1.1" 200 4210 12ms
+  #
+  # On by default. It is what tells you whether a request reached this server at all,
+  # which is the first question whenever something in front of it — a reverse proxy,
+  # a sign-in redirect — is misbehaving. Set false for a quiet journal on the club PC.
+  requestLog: true

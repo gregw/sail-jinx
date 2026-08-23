@@ -277,4 +277,35 @@ class AuthIntegrationTest
         // reverse proxy instead of at their client secret.
         assertThat(err.body(), containsString("invalid_client"));
     }
+
+    @Test
+    void theRacePageLoadsWithAuthenticationOn(@TempDir Path tmp) throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        // Loopback, so this is an admin without a sign-in — but auth is ON, which is what
+        // matters: the role lookup only reads the session when there is a login to read.
+        startJinx(tmp, issuerUrl, true);
+
+        String seriesId = M.readTree(post("/api/series", "{\"name\":\"2026 Winter\"}"))
+            .path("series").path("id").asText();
+        String raceId = M.readTree(post("/api/races",
+                "{\"seriesId\":\"" + seriesId + "\",\"date\":\"2026-06-05\"}"))
+            .path("race").path("id").asText();
+
+        // The race bundle is the one response that reports the caller's role, and the
+        // only handler that asked for it without passing the request along. With the
+        // login off that was invisible: the role is decided before the request is read.
+        HttpResponse<String> bundle = get("/api/races/" + raceId);
+        assertThat(bundle.statusCode(), is(200));
+        assertThat(M.readTree(bundle.body()).path("role").asText(), equalTo("ADMIN"));
+    }
+
+    private String post(String path, String body) throws Exception
+    {
+        return http.send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx) + path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+            HttpResponse.BodyHandlers.ofString()).body();
+    }
 }

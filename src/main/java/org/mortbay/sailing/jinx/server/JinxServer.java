@@ -17,11 +17,13 @@ import org.eclipse.jetty.security.SecurityHandler;
 import org.eclipse.jetty.security.openid.OpenIdAuthenticator;
 import org.eclipse.jetty.security.openid.OpenIdConfiguration;
 import org.eclipse.jetty.security.openid.OpenIdLoginService;
+import org.eclipse.jetty.server.CustomRequestLog;
 import org.eclipse.jetty.server.ForwardedRequestCustomizer;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.Slf4jRequestLogWriter;
 import org.mortbay.sailing.jinx.config.AuthConfig;
 import org.mortbay.sailing.jinx.config.JinxConfig;
 import org.mortbay.sailing.jinx.identity.Aliases;
@@ -53,6 +55,27 @@ import org.slf4j.LoggerFactory;
 public class JinxServer
 {
     private static final Logger LOG = LoggerFactory.getLogger(JinxServer.class);
+
+    /**
+     * The logger the request log writes to.
+     *
+     * <p>Its own name, under the application's, so it inherits the app's level by default
+     * and can still be silenced on its own from {@code jetty-logging.properties} without
+     * touching anything else:
+     * {@code org.mortbay.sailing.jinx.requests.LEVEL=WARN}.
+     */
+    public static final String REQUEST_LOG_NAME = "org.mortbay.sailing.jinx.requests";
+
+    /**
+     * One line per request: who asked, what they asked for, what they got, how long it
+     * took.
+     *
+     * <p>NCSA's fields without NCSA's timestamp. The line passes through two things that
+     * date it already — the logging implementation's own stamp, and journald's — and a
+     * third copy is just noise in a terminal that is 80 columns wide when a race officer
+     * is reading it over someone's shoulder.
+     */
+    private static final String REQUEST_LOG_FORMAT = "%{client}a %u \"%r\" %s %O %{ms}Tms";
 
     public static void main(String[] args) throws Exception
     {
@@ -107,6 +130,12 @@ public class JinxServer
             // Google refuses it — see JinxConfig.Server.
             http.addCustomizer(new ForwardedRequestCustomizer());
             LOG.info("Trusting X-Forwarded-* headers — only correct behind a proxy");
+        }
+        if (config.server().requestLog())
+        {
+            Slf4jRequestLogWriter writer = new Slf4jRequestLogWriter();
+            writer.setLoggerName(REQUEST_LOG_NAME);
+            server.setRequestLog(new CustomRequestLog(writer, REQUEST_LOG_FORMAT));
         }
         ServerConnector connector =
             new ServerConnector(server, new HttpConnectionFactory(http));
