@@ -37,7 +37,7 @@ class HandicapVariantTest
 
     private static JinxConfig.Algorithm alg(PenaltyScaling scaling, double gamma)
     {
-        return new JinxConfig.Algorithm(PENALTIES, 90, 5, "18:00", -33.8, 151.2833,
+        return new JinxConfig.Algorithm(PENALTIES, 90, 1, "18:00", -33.8, 151.2833,
             false, null, scaling, gamma, false);
     }
 
@@ -55,9 +55,14 @@ class HandicapVariantTest
     /** A boat, its TCF, and the minutes it took. */
     private record Sailed(String id, double tcf, double minutes) {}
 
+    /**
+     * A scratch-race fixture: every boat off the same gun, so finish order IS elapsed
+     * order. Fine for the penalty ladder and for conservation, and it is what most of
+     * this file needs — but see {@link #pursuit} for the giveback, which cannot be
+     * tested here at all.
+     */
     private static Map<String, Result> resultsOf(List<Sailed> fleet, double scale)
     {
-        // Finish order is elapsed order here: shortest elapsed is first across the line.
         List<Sailed> byElapsed = fleet.stream()
             .sorted((a, b) -> Double.compare(a.minutes(), b.minutes())).toList();
         Map<String, Result> out = new LinkedHashMap<>();
@@ -65,10 +70,56 @@ class HandicapVariantTest
         {
             Sailed s = byElapsed.get(i);
             long secs = Math.round(s.minutes() * scale * 60.0);
+            // Same gun for everyone, so the corrected finish and the elapsed agree.
             out.put(s.id(), new Result(s.id(), FinishStatus.FIN, LocalTime.MIDNIGHT,
-                LocalTime.MIDNIGHT.plusSeconds(secs), null, i + 1));
+                LocalTime.MIDNIGHT.plusSeconds(secs), null, i + 1, (int)secs));
         }
         return out;
+    }
+
+    /** A boat in a real pursuit race: when its gun went, and when it crossed. */
+    private record Sailing(String id, double tcf, String gun, String finish) {}
+
+    /**
+     * A genuine pursuit fixture, where finish order is NOT elapsed order.
+     *
+     * <p>This distinction is the whole point of the giveback change and it cannot be
+     * expressed with {@link #resultsOf}: there every boat shares a gun, so the finish
+     * gaps and the elapsed gaps are the same numbers and a test built on it would pass
+     * whichever quantity the engine used. Here the slow boat starts first and sails
+     * longest, so ranking by elapsed and ranking by finish give different answers.
+     */
+    private static Map<String, Result> pursuit(List<Sailing> fleet)
+    {
+        List<Sailing> byFinish = fleet.stream()
+            .sorted((a, b) -> a.finish().compareTo(b.finish())).toList();
+        Map<String, Result> out = new LinkedHashMap<>();
+        for (int i = 0; i < byFinish.size(); i++)
+        {
+            Sailing s = byFinish.get(i);
+            int gun = (int)LocalTime.parse(s.gun()).toSecondOfDay();
+            int fin = (int)LocalTime.parse(s.finish()).toSecondOfDay();
+            // actualStart/finish carry the elapsed, exactly as the servlet builds them;
+            // the real finish travels separately.
+            out.put(s.id(), new Result(s.id(), FinishStatus.FIN, LocalTime.MIDNIGHT,
+                LocalTime.MIDNIGHT.plusSeconds(fin - gun), null, i + 1, fin));
+        }
+        return out;
+    }
+
+    /**
+     * Slowest-rated boat first off the gun, fastest last — the stagger of wiki §4.
+     * They finish 0 / 2 / 5 / 8 / 10 minutes apart, and their elapsed times run the
+     * OTHER way, so the two orderings genuinely disagree.
+     */
+    private static List<Sailing> pursuitFleet()
+    {
+        return List.of(
+            new Sailing("slow", 0.90, "18:00:00", "19:40:00"),   // elapsed 100, delta 10
+            new Sailing("s2",   0.95, "18:05:00", "19:38:00"),   // elapsed  93, delta  8
+            new Sailing("mid",  1.00, "18:10:00", "19:35:00"),   // elapsed  85, delta  5
+            new Sailing("f2",   1.05, "18:15:00", "19:32:00"),   // elapsed  77, delta  2
+            new Sailing("fast", 1.10, "18:20:00", "19:30:00"));  // elapsed  70, delta  0
     }
 
     private static List<Competitor> competitors(List<Sailed> fleet)
@@ -134,18 +185,161 @@ class HandicapVariantTest
             assertThat(a.rewardMinutes(), closeTo(expected, 1e-12));
     }
 
+    /**
+     * At γ = 1 the pool is shared by how far behind the leader each boat finished.
+     *
+     * <p>The fleet finishes 0 / 2 / 5 / 8 / 10 minutes apart, so the shares run
+     * 0 / 2 / 5 / 8 / 10 twenty-fifths of the pool. The boat 10 minutes back gets exactly
+     * twice the boat 5 minutes back, and the winner gets nothing.
+     */
     @Test
-    void gammaOneWeightsTheGivebackByTimeOnTheCourse()
+    void gammaOneSharesThePoolByHowFarBehindTheLeaderTheyFinished()
     {
+        List<Competitor> boats = pursuitFleet().stream()
+            .map(s -> new Competitor(s.id(), s.tcf())).toList();
         Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(Variant.D))
-            .processResults(competitors(fleet()), race(), resultsOf(fleet(), 1.0)));
-        // 80 … 120 minutes, so the giveback runs the same way.
-        assertThat(out.get("a").rewardMinutes() < out.get("b").rewardMinutes(), is(true));
-        assertThat(out.get("b").rewardMinutes() < out.get("c").rewardMinutes(), is(true));
-        assertThat(out.get("d").rewardMinutes() < out.get("e").rewardMinutes(), is(true));
-        // Exactly proportional to elapsed at γ = 1.
+            .processResults(boats, race(), pursuit(pursuitFleet())));
+
         double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
-        assertThat(out.get("e").rewardMinutes(), closeTo(pool * 120.0 / 500.0, 1e-9));
+        assertThat("the leader gets nothing back",
+            out.get("fast").rewardMinutes(), closeTo(0.0, 1e-12));
+        assertThat(out.get("f2").rewardMinutes(),   closeTo(pool * 2.0 / 25.0, 1e-9));
+        assertThat(out.get("mid").rewardMinutes(),  closeTo(pool * 5.0 / 25.0, 1e-9));
+        assertThat(out.get("s2").rewardMinutes(),   closeTo(pool * 8.0 / 25.0, 1e-9));
+        assertThat(out.get("slow").rewardMinutes(), closeTo(pool * 10.0 / 25.0, 1e-9));
+
+        // The property in one line: twice as far back, twice as much back.
+        assertThat(out.get("slow").rewardMinutes(),
+            closeTo(2 * out.get("mid").rewardMinutes(), 1e-9));
+    }
+
+    /**
+     * The giveback follows the finish gaps and NOT the elapsed times.
+     *
+     * <p>In this fleet the two run opposite ways: the slow boat sailed longest (100 min)
+     * and finished last, the fast boat sailed least (70 min) and won. Under the old
+     * elapsed weighting the slow boat drew the largest share for having been on the water
+     * longest — which in a pursuit race is a fact about its rating, not its sailing. This
+     * pins the difference: if the engine ever went back to elapsed, the leader would stop
+     * being the one that gets nothing.
+     */
+    @Test
+    void theGivebackFollowsFinishGapsNotElapsedTimes()
+    {
+        List<Competitor> boats = pursuitFleet().stream()
+            .map(s -> new Competitor(s.id(), s.tcf())).toList();
+        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(Variant.D))
+            .processResults(boats, race(), pursuit(pursuitFleet())));
+
+        // Elapsed order is slow(100) > s2(93) > mid(85) > f2(77) > fast(70): the exact
+        // reverse of the finish order. The shares follow the finish order.
+        assertThat(out.get("fast").rewardMinutes() < out.get("f2").rewardMinutes(), is(true));
+        assertThat(out.get("f2").rewardMinutes() < out.get("mid").rewardMinutes(), is(true));
+        assertThat(out.get("mid").rewardMinutes() < out.get("s2").rewardMinutes(), is(true));
+        assertThat(out.get("s2").rewardMinutes() < out.get("slow").rewardMinutes(), is(true));
+
+        // …and the whole pool still comes back.
+        assertThat(out.values().stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum(),
+            closeTo(0.0, 1e-9));
+    }
+
+    /**
+     * γ is a dial with no step in it. At γ = 0 the split is even; at γ = 1 it is the
+     * finish gap; in between it is a real blend, computed as
+     * {@code (1−γ)·mean(delta) + γ·delta} rather than {@code delta^γ}.
+     *
+     * <p>The exponent form would have put a cliff at the origin: {@code 0^γ} is 0 for
+     * every γ above zero, so the leader would drop from an even share to nothing the
+     * instant the dial left 0, and "0.35 is a real setting" would stop being true.
+     */
+    @Test
+    void gammaIsContinuousFromEvenToGapWeighted()
+    {
+        List<Competitor> boats = pursuitFleet().stream()
+            .map(s -> new Competitor(s.id(), s.tcf())).toList();
+        Map<String, Result> results = pursuit(pursuitFleet());
+
+        double previous = Double.MAX_VALUE;
+        for (double gamma : new double[]{0.0, 0.01, 0.25, 0.5, 0.75, 0.99, 1.0})
+        {
+            Map<String, Adjustment> out = byId(
+                new PursuitHandicapEngine(alg(PenaltyScaling.PER_HOUR, gamma))
+                    .processResults(boats, race(), results));
+            double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
+            double leader = out.get("fast").rewardMinutes();
+
+            // The leader's share falls smoothly from an even split to nothing.
+            assertThat("γ=" + gamma, leader, closeTo(pool * (1 - gamma) / 5.0, 1e-9));
+            assertThat("γ=" + gamma + " must not step", leader < previous + 1e-12, is(true));
+            previous = leader;
+            assertThat("γ=" + gamma + " conserves",
+                out.values().stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum(),
+                closeTo(0.0, 1e-9));
+        }
+    }
+
+    /**
+     * A dead heat has no gaps to share by, so the pool is split evenly.
+     *
+     * <p>Not an error case: with the whole fleet on the same second there is nothing to
+     * separate them, and an even split is the only answer that treats them alike.
+     */
+    @Test
+    void aDeadHeatFallsBackToAnEvenSplit()
+    {
+        List<Sailing> tied = List.of(
+            new Sailing("a", 1.0, "18:00:00", "19:30:00"),
+            new Sailing("b", 1.0, "18:05:00", "19:30:00"),
+            new Sailing("c", 1.0, "18:10:00", "19:30:00"));
+        List<Competitor> boats = tied.stream()
+            .map(s -> new Competitor(s.id(), s.tcf())).toList();
+
+        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(Variant.D))
+            .processResults(boats, race(), pursuit(tied)));
+        double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
+        for (Adjustment a : out.values())
+            assertThat(a.rewardMinutes(), closeTo(pool / 3.0, 1e-9));
+    }
+
+    /**
+     * Retirements draw the largest share, and this is how large.
+     *
+     * <p>A DNF is scored at the last finisher plus {@code dnfAllowance}, so in gap terms
+     * its delta is the fleet's whole spread plus that allowance. The allowance is one
+     * minute, and the reason it is not five is visible here: this fleet finishes within
+     * ten minutes end to end, so a five-minute allowance made a retirement's gap half
+     * again the last boat home's — 37.5% of the pool to one boat that did not finish,
+     * and two of them taking most of it between them. At one minute a retirement draws
+     * 30.6%, a shade over the last boat home.
+     *
+     * <p>The knob does two jobs on very different scales: against a 90-minute elapsed
+     * time five minutes was a nudge, against a ten-minute fleet spread it was larger than
+     * the spread itself. This test exists to keep that visible — if the shares ever look
+     * wrong after a stormy night, this is the number to revisit, not the weighting.
+     */
+    @Test
+    void retirementsDrawTheLargestShareAndThisIsHowLarge()
+    {
+        List<Sailing> raced = pursuitFleet();
+        Map<String, Result> results = new LinkedHashMap<>(pursuit(raced));
+        results.put("quit", new Result("quit", FinishStatus.DNF, null, null, null));
+
+        List<Competitor> boats = new ArrayList<>(raced.stream()
+            .map(s -> new Competitor(s.id(), s.tcf())).toList());
+        boats.add(new Competitor("quit", 1.0));
+
+        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(Variant.D))
+            .processResults(boats, race(), results));
+        double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
+
+        // Deltas are 0/2/5/8/10 for the finishers and 10+1 = 11 for the retirement.
+        assertThat(out.get("quit").rewardMinutes(), closeTo(pool * 11.0 / 36.0, 1e-9));
+        // …which is 30.6% of the pool: more than the last boat home, but only just.
+        assertThat(out.get("quit").rewardMinutes(),
+            closeTo(1.1 * out.get("slow").rewardMinutes(), 1e-9));
+        // Still the largest single share, which is the intended shape.
+        for (String id : List.of("fast", "f2", "mid", "s2", "slow"))
+            assertThat(out.get("quit").rewardMinutes() > out.get(id).rewardMinutes(), is(true));
     }
 
     // --- knob 1, and why C is the default -----------------------------------
@@ -383,6 +577,77 @@ class HandicapVariantTest
             .findFirst().orElseThrow().rewardMinutes() > 0.0, is(true));
     }
 
+    /**
+     * A retirement is frozen: no penalty, no share of the pool, TCF untouched.
+     *
+     * <p>DNF and RET are not the same thing and must not be scored the same way. A boat
+     * that is <b>DNF</b> was still racing when the race ended — it ran out of time, which
+     * is a statement about its speed, so its handicap should ease. A boat that
+     * <b>retired</b> stopped for a reason that has nothing to do with its rating: gear
+     * broke, someone was hurt, they had to be somewhere. Easing its handicap for that
+     * would hand it a better start next week for having had a bad night, and repeated
+     * retirements would ratchet a boat's rating down without it ever sailing a race.
+     *
+     * <p>So RET sits with DSQ, DNC and DNS: out of the placings, out of the giveback, out
+     * of the measured duration, and out of the arithmetic entirely.
+     */
+    @Test
+    void aRetirementIsFrozenBecauseItSaysNothingAboutTheBoatsSpeed()
+    {
+        List<Sailing> raced = pursuitFleet();
+        Map<String, Result> results = new LinkedHashMap<>(pursuit(raced));
+        results.put("gear", new Result("gear", FinishStatus.RET, null, null, null));
+
+        List<Competitor> boats = new ArrayList<>(raced.stream()
+            .map(s -> new Competitor(s.id(), s.tcf())).toList());
+        boats.add(new Competitor("gear", 1.0));
+
+        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(Variant.D))
+            .processResults(boats, race(), results));
+
+        Adjustment ret = out.get("gear");
+        assertThat("a retirement keeps its handicap", ret.newTcf(), equalTo(ret.oldTcf()));
+        assertThat(ret.rewardMinutes(), closeTo(0.0, 1e-12));
+        assertThat(ret.penaltyMinutes(), closeTo(0.0, 1e-12));
+        assertThat(ret.finishPosition(), is((Integer)null));
+
+        // …and it takes nothing from the boats that did race: they are scored exactly as
+        // if it had stayed on the mooring.
+        Map<String, Adjustment> without = byId(new PursuitHandicapEngine(alg(Variant.D))
+            .processResults(raced.stream().map(s -> new Competitor(s.id(), s.tcf())).toList(),
+                race(), pursuit(raced)));
+        for (Sailing sail : raced)
+        {
+            assertThat("retirement must not move " + sail.id(),
+                out.get(sail.id()).newTcf(), closeTo(without.get(sail.id()).newTcf(), 1e-12));
+        }
+    }
+
+    /**
+     * A DNF is not frozen — it ran out of time, and that is about its speed.
+     *
+     * <p>The pair with {@link #aRetirementIsFrozenBecauseItSaysNothingAboutTheBoatsSpeed}:
+     * these two statuses used to be handled identically and now differ, so both halves
+     * are pinned.
+     */
+    @Test
+    void aDnfIsStillHandicappedBecauseRunningOutOfTimeIsAboutSpeed()
+    {
+        List<Sailing> raced = pursuitFleet();
+        Map<String, Result> results = new LinkedHashMap<>(pursuit(raced));
+        results.put("slowcoach", new Result("slowcoach", FinishStatus.DNF, null, null, null));
+
+        List<Competitor> boats = new ArrayList<>(raced.stream()
+            .map(s -> new Competitor(s.id(), s.tcf())).toList());
+        boats.add(new Competitor("slowcoach", 1.0));
+
+        Adjustment dnf = byId(new PursuitHandicapEngine(alg(Variant.D))
+            .processResults(boats, race(), results)).get("slowcoach");
+
+        assertThat(dnf.rewardMinutes() > 0.0, is(true));
+        assertThat("its handicap eases", dnf.newTcf() < dnf.oldTcf(), is(true));
+    }
+
     @Test
     void aDncBoatIsFrozenAndOutOfTheMedian()
     {
@@ -401,30 +666,31 @@ class HandicapVariantTest
     }
 
     @Test
-    void retirementsStayOutOfTheMeasuredDurationUnlessTheSwitchIsOn()
+    void nonFinishersStayOutOfTheMeasuredDurationUnlessTheSwitchIsOn()
     {
         List<Competitor> boats = new ArrayList<>(competitors(fleet()));
         boats.add(new Competitor("quit1", 1.0));
         boats.add(new Competitor("quit2", 1.0));
         boats.add(new Competitor("quit3", 1.0));
         Map<String, Result> results = new LinkedHashMap<>(resultsOf(fleet(), 1.0));
+        // DNF, not RET: a retirement is frozen and would never reach the median at all.
         for (String id : List.of("quit1", "quit2", "quit3"))
-            results.put(id, new Result(id, FinishStatus.RET, null, null, null));
+            results.put(id, new Result(id, FinishStatus.DNF, null, null, null));
 
         // Off: the median is the finishers' own, 100 minutes.
         Map<String, Adjustment> off = byId(new PursuitHandicapEngine(alg(Variant.C))
             .processResults(boats, race(), results));
         assertThat(off.get("a").penaltyMinutes(), closeTo(5.0 * 100.0 / 60.0, 1e-9));
 
-        // On: three retirements join the sample at 120 + 5, so eight values
-        // (80, 90, 100, 110, 120, 125, 125, 125) put the median at 115 rather than 100.
-        JinxConfig.Algorithm withDnf = new JinxConfig.Algorithm(PENALTIES, 90, 5, "18:00",
+        // On: three retirements join the sample at 120 + 1, so eight values
+        // (80, 90, 100, 110, 120, 121, 121, 121) put the median at 115 rather than 100.
+        JinxConfig.Algorithm withDnf = new JinxConfig.Algorithm(PENALTIES, 90, 1, "18:00",
             -33.8, 151.2833, false, Variant.C, null, null, true);
         Map<String, Adjustment> on = byId(new PursuitHandicapEngine(withDnf)
             .processResults(boats, race(), results));
         assertThat(on.get("a").penaltyMinutes(), closeTo(5.0 * 115.0 / 60.0, 1e-9));
 
-        // Retired boats draw from the pool either way — they sailed.
+        // Boats that ran out of time draw from the pool either way — they sailed.
         assertThat(off.get("quit1").rewardMinutes() > 0.0, is(true));
         assertThat(off.get("quit1").penaltyMinutes(), closeTo(0.0, 1e-12));
     }

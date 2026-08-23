@@ -1301,6 +1301,12 @@ public class ApiServlet extends HttpServlet
 
         List<Competitor> boats = new ArrayList<>(boatsNode.size());
         Map<String, Result> results = new LinkedHashMap<>(boatsNode.size());
+        // All finishers carry a corrected finish or none of them do. A mixture would be
+        // far worse than the absence: the boats without one would sit at a few minutes
+        // past midnight while the rest sat at a real time of day, so the fleet's gaps
+        // would come out as the ~19 hours between those two frames — near-identical for
+        // everybody, quietly flattening the giveback to an even split with no error.
+        boolean missingCorrectedFinish = false;
         for (JsonNode b : boatsNode)
         {
             String boatId = text(b, "boatId");
@@ -1323,6 +1329,12 @@ public class ApiServlet extends HttpServlet
             // The engine reads elapsed as finish − actualStart. We only have
             // the precomputed elapsed minutes here, so encode it as midnight
             // plus that many seconds and let the Duration maths come out right.
+            //
+            // These two are NOT wall-clock times and must not be read as such — only
+            // their difference means anything. The real finish travels separately, as
+            // correctedFinishSeconds, because reconstructing a start from it would put
+            // a race finishing near midnight on the wrong side of the wrap and hand the
+            // engine a negative elapsed time.
             LocalTime startT = LocalTime.MIDNIGHT;
             LocalTime finishT = null;
             if (status == FinishStatus.FIN && b.has("elapsedMinutes"))
@@ -1330,7 +1342,21 @@ public class ApiServlet extends HttpServlet
 
             Integer finishPosition = b.hasNonNull("finishPosition")
                 ? b.path("finishPosition").asInt() : null;
-            results.put(boatId, new Result(boatId, status, startT, finishT, null, finishPosition));
+            Integer correctedFinish = b.hasNonNull("correctedFinishSeconds")
+                ? b.path("correctedFinishSeconds").asInt() : null;
+            if (status == FinishStatus.FIN && correctedFinish == null)
+                missingCorrectedFinish = true;
+            results.put(boatId, new Result(boatId, status, startT, finishT, null,
+                finishPosition, correctedFinish));
+        }
+
+        if (missingCorrectedFinish)
+        {
+            LOG.warn("process-handicaps for {}: at least one finisher has no "
+                + "correctedFinishSeconds, so the whole fleet falls back to elapsed order "
+                + "for the giveback. Expected only from an out-of-date page.", raceId);
+            results.replaceAll((id, r) -> new Result(r.boatId(), r.status(), r.actualStart(),
+                r.finish(), r.penaltyMinutes(), r.finishPosition(), null));
         }
 
         Race forEngine = new Race(raceId, race == null ? null : race.seriesId(), 0, "",

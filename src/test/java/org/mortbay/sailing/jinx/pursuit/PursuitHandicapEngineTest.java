@@ -27,7 +27,7 @@ import static org.hamcrest.Matchers.hasSize;
 class PursuitHandicapEngineTest
 {
     private static final JinxConfig.Algorithm DEFAULT_ALG = new JinxConfig.Algorithm(
-        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 5, "18:00", -33.8000, 151.2833, false,
+        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 1, "18:00", -33.8000, 151.2833, false,
         null, null, null, false);
 
     private static final double TOLERANCE = 0.01;
@@ -39,7 +39,7 @@ class PursuitHandicapEngineTest
     private static PursuitHandicapEngine engine(JinxConfig.PenaltyScaling scaling, double gamma)
     {
         return new PursuitHandicapEngine(new JinxConfig.Algorithm(
-            List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 5, "18:00", -33.8000, 151.2833, false,
+            List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 1, "18:00", -33.8000, 151.2833, false,
             null, scaling, gamma, false));
     }
 
@@ -100,24 +100,29 @@ class PursuitHandicapEngineTest
     }
 
     /**
-     * Spec §6.3: every participating boat picks up reward proportional to
-     * its own elapsed^γ — no special "winner anchor" treatment. The
-     * 1st-place finisher gets a small share because their elapsed is the
-     * smallest; the back of the fleet picks up larger shares because
-     * their elapsed (or DNF effective elapsed) is larger.
+     * Spec §6.3 at an intermediate γ: half an even split, half shared by the gap behind
+     * the leader.
      *
-     * <p>This is the γ knob at 0.5 — an intermediate value, between the even split of
-     * A/C and the fully elapsed-weighted B/D — with fixed penalties so the pool is a
-     * round 15. Named explicitly rather than taken from the default, which is γ = 0.
+     * <p>γ = 0.5 with fixed penalties, so the pool is a round 15. The worked-example
+     * fleet all start together, so the gaps are just the elapsed times less the winner's
+     * 85 minutes — 0, 5, 10, 15, 20, 25, 30, and 35 for the DNF (last finisher's 30 plus
+     * the 5-minute allowance).
      *
-     * <p>Worked-example fleet, penaltyScaling fixed, gamma=0.5:
-     * weights = √elapsed = √[85,90,95,100,105,110,115,120(dnf)]
-     *         ≈ [9.220, 9.487, 9.747, 10.000, 10.247, 10.488, 10.724, 10.954]
-     * Σweights ≈ 80.867; pool = 5+4+3+2+1 = 15.
-     * p1 reward = 15 × 9.220 / 80.867 ≈ 1.711.
+     * <pre>
+     *   mean gap = 140 / 8                       = 17.5
+     *   wᵢ       = 0.5 × 17.5 + 0.5 × gapᵢ
+     *   w(p1)    = 8.75 + 0            = 8.75    (gap 0)
+     *   Σw       = 8 × 8.75 + 0.5 × 140          = 140
+     *   p1 reward = 15 × 8.75 / 140              = 0.9375
+     *   p1 net    = 5 − 0.9375                   = 4.0625
+     * </pre>
+     *
+     * <p>The leader keeps half an even share at γ = 0.5 and loses it smoothly as γ rises
+     * — the property the blend exists for. Under the exponent form it would have been
+     * zero here, and zero at γ = 0.01 too.
      */
     @Test
-    void winnerRewardScalesWithOwnElapsed()
+    void anIntermediateGammaIsHalfEvenAndHalfGapWeighted()
     {
         List<Competitor> boats = workedExampleFleet();
         Race race = race(90);
@@ -129,8 +134,15 @@ class PursuitHandicapEngineTest
             .findFirst().orElseThrow();
 
         assertThat(first.penaltyMinutes(), closeTo(5.0, TOLERANCE));
-        assertThat(first.rewardMinutes(), closeTo(1.711, TOLERANCE));
-        assertThat(first.netAdjustmentMinutes(), closeTo(3.289, TOLERANCE));
+        assertThat(first.rewardMinutes(), closeTo(0.9375, TOLERANCE));
+        assertThat(first.netAdjustmentMinutes(), closeTo(4.0625, TOLERANCE));
+
+        // Exactly half of the even share it would get at γ = 0.
+        Adjustment even = engine(JinxConfig.PenaltyScaling.FIXED, 0.0)
+            .processResults(boats, race, results).stream()
+            .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
+            .findFirst().orElseThrow();
+        assertThat(first.rewardMinutes(), closeTo(even.rewardMinutes() / 2.0, TOLERANCE));
     }
 
     /**
@@ -155,8 +167,9 @@ class PursuitHandicapEngineTest
     }
 
     /**
-     * Spec §5: DNF/RET boats share an effective elapsed time of the slowest
-     * finisher + dnfAllowance, so they receive identical rewards.
+     * Spec §5: DNF boats share an effective elapsed time of the slowest finisher +
+     * dnfAllowance, so they receive identical rewards. RET does not — see
+     * {@code HandicapVariantTest.aRetirementIsFrozenBecauseItSaysNothingAboutTheBoatsSpeed}.
      */
     @Test
     void dnfBoatsShareEqualReward()
@@ -172,12 +185,14 @@ class PursuitHandicapEngineTest
             "p1", fin("p1", start, start.plusMinutes(60)),
             "p2", fin("p2", start, start.plusMinutes(80)),
             "dnfA", new Result("dnfA", FinishStatus.DNF, start, null, null),
-            "dnfB", new Result("dnfB", FinishStatus.RET, start, null, null));
+            "dnfB", new Result("dnfB", FinishStatus.DNF, start, null, null));
 
         Map<String, Adjustment> byId = engine.processResults(boats, race, results).stream()
             .collect(Collectors.toMap(Adjustment::boatId, a -> a));
 
-        // Both DNF/RET boats see the same elapsed-time treatment.
+        // Both boats ran out of time, so both get the same effective treatment.
+        // Deliberately two DNFs and not one of each: a RET is frozen and gets nothing —
+        // see aRetirementIsFrozenBecauseItSaysNothingAboutTheBoatsSpeed.
         assertThat(byId.get("dnfA").rewardMinutes(),
             closeTo(byId.get("dnfB").rewardMinutes(), TOLERANCE));
         // Both should have no fixed penalty.
@@ -236,6 +251,61 @@ class PursuitHandicapEngineTest
             .findFirst().orElseThrow();
 
         assertThat(p1.newTcf(), closeTo(1.05495, 0.00005));
+    }
+
+    /**
+     * Every gun lands on a whole minute, rounded to the nearest one.
+     *
+     * <p>The offset from the earliest start has always rounded to nearest — 4.81 minutes
+     * is a 5-minute offset, not a 4-minute one. What did not was the earliest start
+     * itself: {@code plusMinutes} on an 18:00:40 gun gave every boat in the fleet a
+     * start at :40 past, and the pages print {@code HH:MM}, so every one of them
+     * displayed 40 seconds early. A gun is a whole minute (wiki §4); it is rounded here
+     * so the printed sheet and the stored time cannot disagree.
+     */
+    @Test
+    void everyGunLandsOnAWholeMinute()
+    {
+        List<Competitor> boats = List.of(
+            boat("a", "A", "1", 1.0000),
+            boat("b", "B", "2", 0.9480),
+            boat("c", "C", "3", 0.9000));
+
+        // 29 seconds stays put, 30 rounds up — the boundary, stated once.
+        assertThat(PursuitHandicapEngine.toNearestMinute(LocalTime.of(18, 0, 29)),
+            equalTo(LocalTime.of(18, 0)));
+        assertThat(PursuitHandicapEngine.toNearestMinute(LocalTime.of(18, 0, 30)),
+            equalTo(LocalTime.of(18, 1)));
+        assertThat(PursuitHandicapEngine.toNearestMinute(LocalTime.of(18, 0)),
+            equalTo(LocalTime.of(18, 0)));
+
+        // An earliest start carrying seconds — from config, or an older stored race.
+        Race race = new Race("r1", "s1", 1, "R1", LocalDate.of(2026, 5, 1),
+            LocalTime.of(18, 0, 40), 90, false);
+
+        for (StartTime st : engine.computeStartTimes(boats, race))
+        {
+            assertThat("gun must be a whole minute: " + st.startTime(),
+                st.startTime().getSecond(), equalTo(0));
+        }
+
+        Map<String, LocalTime> byId = engine.computeStartTimes(boats, race).stream()
+            .collect(Collectors.toMap(StartTime::boatId, StartTime::startTime));
+        // Median TCF is 0.9480, so tau runs 85.32 / 90.00 / 94.80 and the offsets from
+        // the slowest boat are 9.48 / 4.80 / 0. 18:00:40 rounds up to 18:01, and those
+        // offsets ride on top of it.
+        assertThat(byId.get("c"), equalTo(LocalTime.of(18, 1)));
+        assertThat(byId.get("b"), equalTo(LocalTime.of(18, 6)));   // offset 4.80 -> 5
+        assertThat(byId.get("a"), equalTo(LocalTime.of(18, 10)));  // offset 9.48 -> 9
+
+        // A gun already on the minute is left exactly where it is.
+        Race onTheMinute = new Race("r1", "s1", 1, "R1", LocalDate.of(2026, 5, 1),
+            LocalTime.of(18, 0), 90, false);
+        Map<String, LocalTime> clean = engine.computeStartTimes(boats, onTheMinute).stream()
+            .collect(Collectors.toMap(StartTime::boatId, StartTime::startTime));
+        assertThat(clean.get("c"), equalTo(LocalTime.of(18, 0)));
+        assertThat(clean.get("b"), equalTo(LocalTime.of(18, 5)));
+        assertThat(clean.get("a"), equalTo(LocalTime.of(18, 9)));
     }
 
     /**

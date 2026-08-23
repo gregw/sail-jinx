@@ -138,6 +138,10 @@ public record JinxConfig(
      * <p>A convenience only. The knobs are what the engine reads, and either may be set
      * on its own; naming a variant is a shorthand for setting both. Gamma is continuous,
      * so A/B/C/D are corners of a square rather than a list of alternatives.
+     *
+     * <p>γ = 0 splits the penalty pool evenly; γ = 1 shares it by how far behind the
+     * leader each boat finished, so the first boat home gets nothing back. In between is
+     * a genuine blend — see {@code PursuitHandicapEngine.givebacks}.
      */
     public enum Variant
     {
@@ -195,6 +199,13 @@ public record JinxConfig(
      * that disagrees with it, with a warning, because the specific setting is the one
      * somebody went to the trouble of writing.
      *
+     * <p>{@code dnfAllowance} is how far past the last finisher a boat that retired is
+     * scored, in minutes. One minute, not five: the knob now does two jobs on very
+     * different scales. Against a 90-minute elapsed time five minutes is a nudge, but
+     * against the <em>gap</em> the giveback shares by — a fleet finishing within ten
+     * minutes of each other — five minutes was larger than the whole fleet's spread, and
+     * two retirements took most of the pool between them.
+     *
      * <p>{@code dnfInRaceDuration} decides whether boats that retired contribute their
      * allowance-derived elapsed time to the measured duration. Off by default: a stormy
      * night is exactly when retirements cluster, and their times are an allowance rather
@@ -240,7 +251,7 @@ public record JinxConfig(
             if (defaultRaceDuration <= 0)
                 defaultRaceDuration = 90;
             if (dnfAllowance <= 0)
-                dnfAllowance = 5;
+                dnfAllowance = 1;
             if (earliestStart == null || earliestStart.isBlank())
                 earliestStart = "18:00";
             if (latitude == null)
@@ -268,9 +279,10 @@ public record JinxConfig(
                 penaltyScaling = base.penaltyScaling();
             if (givebackGamma == null)
                 givebackGamma = base.givebackGamma();
-            // γ is an exponent between "even" and "elapsed-weighted". Outside that range
-            // it is not a stronger opinion, it is a typo, so it is clamped rather than
-            // obeyed — an exponent of 12 would hand the whole pool to one boat.
+            // γ blends between "even" and "shared by the gap behind the leader". Outside
+            // 0..1 it is not a stronger opinion, it is a typo, so it is clamped rather
+            // than obeyed: a γ above 1 would give the leader a negative share and take
+            // time off the boats that finished behind it.
             if (givebackGamma < 0.0 || givebackGamma > 1.0)
             {
                 LOG.warn("algorithm.givebackGamma {} is outside 0.0..1.0 — clamping",

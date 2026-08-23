@@ -90,7 +90,7 @@ class JinxConfigTest
         // Algorithm defaults (wiki §10)
         assertThat(config.algorithm().penaltyList(), equalTo(List.of(5.0, 4.0, 3.0, 2.0, 1.0)));
         assertThat(config.algorithm().defaultRaceDuration(), equalTo(90));
-        assertThat(config.algorithm().dnfAllowance(), equalTo(5));
+        assertThat(config.algorithm().dnfAllowance(), equalTo(1));
         assertThat(config.algorithm().earliestStart(), equalTo("18:00"));
         // Manly Yacht Club ground truth — defaults are tuned to the originating
         // use case; another club overrides via config.yaml.

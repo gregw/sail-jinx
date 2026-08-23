@@ -14,9 +14,16 @@ import java.time.LocalTime;
  * <p>{@code penaltyMinutes} is the optional protest/umpire scoring penalty applied
  * before the algorithm runs. It is additive to the boat's elapsed time.
  *
+ * <p>{@code correctedFinishSeconds} is the boat's corrected finish as seconds since
+ * midnight — the finish with any early-start head start given back, and deliberately
+ * without the OCS penalty. It is what the giveback measures its gaps from. It has to be
+ * carried explicitly because {@code finish} and {@code actualStart} do not survive the
+ * trip: the server rebuilds them from a precomputed elapsed time, so their difference is
+ * right but their absolute values are not, and in a pursuit race finish order is not
+ * elapsed order. Null for a boat that did not finish.
+ *
  * <p>{@code finishPosition} is the authoritative race place (1-based, with 1 the
- * winner) that the engine uses to assign penalties from {@code penaltyList} and
- * to identify the "winner" for gap-based redistribution. When {@code null} the
+ * winner) that the engine uses to assign penalties from {@code penaltyList}. When {@code null} the
  * engine falls back to sorting finishers by elapsed time — preserves backwards
  * compatibility with callers that don't carry a place, but in production this
  * should always be supplied because elapsed-sort doesn't agree with finish
@@ -28,13 +35,21 @@ public record Result(
     LocalTime actualStart,
     LocalTime finish,
     Double penaltyMinutes,
-    Integer finishPosition)
+    Integer finishPosition,
+    Integer correctedFinishSeconds)
 {
     /** Backwards-compatible constructor for callers that don't supply a position. */
     public Result(String boatId, FinishStatus status, LocalTime actualStart,
                   LocalTime finish, Double penaltyMinutes)
     {
-        this(boatId, status, actualStart, finish, penaltyMinutes, null);
+        this(boatId, status, actualStart, finish, penaltyMinutes, null, null);
+    }
+
+    /** For callers that carry a place but no corrected finish. */
+    public Result(String boatId, FinishStatus status, LocalTime actualStart,
+                  LocalTime finish, Double penaltyMinutes, Integer finishPosition)
+    {
+        this(boatId, status, actualStart, finish, penaltyMinutes, finishPosition, null);
     }
     /**
      * Derived elapsed time, or null when either timestamp is missing. The algorithm

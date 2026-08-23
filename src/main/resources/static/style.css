@@ -232,6 +232,19 @@ input.hhmm-input { width: auto; min-width: 7.5rem; }
 #race-entrants > h2 { margin-bottom: 0.35rem; }
 #race-entrants > .filters { margin-bottom: 0.9rem; }
 
+/* Removing an entrant is a repair, not part of the night's work. The toggle that
+   reveals it reads as a warning, and the button itself is small and quiet — it is only
+   ever on screen because somebody deliberately asked for it. */
+.filters label.danger-toggle { color: var(--err-fg); }
+td.remove-cell { text-align: center; padding-left: 4px; padding-right: 4px; }
+button.remove-btn {
+  border: 1px solid transparent; background: none; color: var(--muted);
+  cursor: pointer; line-height: 1; padding: 2px 6px; border-radius: 3px;
+}
+button.remove-btn:hover {
+  color: #fff; background: var(--err-fg); border-color: var(--err-fg);
+}
+
 /* NOW log: every NOW click, in a list that can be dragged back onto a time box. */
 #now-log { margin: 0.5rem 0 1rem; }
 #now-log .toolbar { margin: 0.4rem 0 0.2rem; }

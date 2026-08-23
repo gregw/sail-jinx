@@ -1,6 +1,7 @@
 package org.mortbay.sailing.jinx.pursuit;
 
 import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -48,11 +49,19 @@ public class PursuitHandicapEngine implements HandicapEngine
             if (tau[i] > tauMax) tauMax = tau[i];
         }
 
+        // A gun is a whole minute (wiki §4). Both roundings here are to the NEAREST one:
+        // an offset of 4.81 minutes is a five-minute offset, and an earliest start that
+        // carries seconds is moved to the minute it is closest to rather than the one
+        // below it. The second matters because every page prints HH:MM — an 18:00:40
+        // earliest start used to put the whole fleet 40 seconds behind what the start
+        // sheet said.
+        LocalTime firstGun = toNearestMinute(tEarliest);
+
         List<StartTime> out = new ArrayList<>(boats.size());
         for (int i = 0; i < boats.size(); i++)
         {
             long minutesAfterEarliest = Math.round(tauMax - tau[i]);
-            LocalTime startTime = tEarliest.plusMinutes(minutesAfterEarliest);
+            LocalTime startTime = firstGun.plusMinutes(minutesAfterEarliest);
             out.add(new StartTime(boats.get(i).boatId(), boats.get(i).tcf(), tau[i], startTime));
         }
         return out;
@@ -133,9 +142,10 @@ public class PursuitHandicapEngine implements HandicapEngine
         // handicap depend on a guess made before the race instead of on the race.
 
         // §5 — classify, and assign an effective elapsed time.
-        record Entry(Competitor boat, double elapsedMinutes, Integer position) {}
+        record Entry(Competitor boat, double elapsedMinutes, Integer position,
+                     Integer correctedFinishSeconds) {}
         List<Entry> finishers = new ArrayList<>();
-        List<Competitor> dnfRet = new ArrayList<>();
+        List<Competitor> dnf = new ArrayList<>();
         List<Competitor> frozen = new ArrayList<>();
         for (Competitor b : boats)
         {
@@ -153,11 +163,21 @@ public class PursuitHandicapEngine implements HandicapEngine
                     if (d == null)
                         frozen.add(b);
                     else
-                        finishers.add(new Entry(b, d.toMillis() / 60_000.0, r.finishPosition()));
+                        finishers.add(new Entry(b, d.toMillis() / 60_000.0, r.finishPosition(),
+                            r.correctedFinishSeconds()));
                 }
-                case DNF, RET -> dnfRet.add(b);
-                // DSQ, DNC, DNS: seeded, but with no time of their own. Frozen, and out
-                // of the placings, the giveback and the measured duration alike.
+                // Still racing when the race ended: it ran out of time, which is a
+                // statement about the boat's speed, so its handicap eases.
+                case DNF -> dnf.add(b);
+                // DSQ, DNC, DNS and RET: frozen, and out of the placings, the giveback
+                // and the measured duration alike.
+                //
+                // RET belongs here and not with DNF, though the two look alike on the
+                // results sheet. A boat that RETIRED stopped for a reason that says
+                // nothing about its rating — gear broke, someone was hurt, they had to be
+                // somewhere. Easing its handicap for that would reward a bad night with a
+                // better start, and a boat that retired often would ratchet its way down
+                // the fleet without ever sailing a race.
                 default -> frozen.add(b);
             }
         }
@@ -176,6 +196,26 @@ public class PursuitHandicapEngine implements HandicapEngine
             .mapToDouble(Entry::elapsedMinutes).max().orElse(0.0);
         double dnfElapsed = slowestFinisher + config.dnfAllowance();
 
+        // How far behind the first boat home each finisher crossed, in minutes.
+        //
+        // Taken over THIS pass's finishers, which matters: with casuals in the race the
+        // algorithm runs twice, and the series pass must measure from the first series
+        // boat rather than from a visitor who happened to win.
+        //
+        // Without a corrected finish — an out-of-date page, or a caller that predates the
+        // field — elapsed stands in for it. That is right for a scratch race, where the
+        // two orderings are the same, and is the best available answer for a pursuit one.
+        boolean haveFinishTimes = !finishers.isEmpty()
+            && finishers.stream().allMatch(f -> f.correctedFinishSeconds() != null);
+        java.util.function.ToDoubleFunction<Entry> mark = haveFinishTimes
+            ? f -> f.correctedFinishSeconds() / 60.0
+            : Entry::elapsedMinutes;
+        double firstHome = finishers.stream().mapToDouble(mark).min().orElse(0.0);
+        double lastHome = finishers.stream().mapToDouble(mark).max().orElse(0.0);
+        // A retirement is scored at the last finisher plus the allowance, in gap terms
+        // exactly as it is in elapsed terms.
+        double dnfGap = (lastHome - firstHome) + config.dnfAllowance();
+
         // §6.1 — the measured duration: the median of what the fleet actually sailed.
         // This one number scales the penalties AND anchors the TCF conversion below, and
         // it has to be the same number in both places — that identity is what makes the
@@ -185,7 +225,7 @@ public class PursuitHandicapEngine implements HandicapEngine
             durationSample.add(f.elapsedMinutes());
         if (config.dnfInRaceDuration())
         {
-            for (int i = 0; i < dnfRet.size(); i++)
+            for (int i = 0; i < dnf.size(); i++)
                 durationSample.add(dnfElapsed);
         }
         // With nothing measured there is nothing to award: the pool below comes out empty,
@@ -194,7 +234,11 @@ public class PursuitHandicapEngine implements HandicapEngine
         double raceDuration = durationSample.isEmpty() ? 60.0 : median(durationSample);
 
         // Participants: seeded finishers in finish order, then seeded DNF/RET.
-        record Participant(Competitor boat, Integer position, double elapsed, double penalty) {}
+        // `gap` is minutes behind the first boat home — what the giveback is shared by.
+        // Separate from `elapsed`, which still drives the measured duration and the
+        // penalty scaling: in a pursuit race the two are different orderings entirely.
+        record Participant(Competitor boat, Integer position, double elapsed,
+                           double gap, double penalty) {}
         List<Participant> participants = new ArrayList<>();
         for (int i = 0; i < finishers.size(); i++)
         {
@@ -206,16 +250,17 @@ public class PursuitHandicapEngine implements HandicapEngine
             // display; only the ladder closes up.
             double penalty = penaltyForRank(i + 1, raceDuration);
             participants.add(new Participant(e.boat(),
-                e.position() != null ? e.position() : (i + 1), e.elapsedMinutes(), penalty));
+                e.position() != null ? e.position() : (i + 1), e.elapsedMinutes(),
+                mark.applyAsDouble(e) - firstHome, penalty));
         }
-        for (Competitor b : dnfRet)
-            participants.add(new Participant(b, null, dnfElapsed, 0.0));
+        for (Competitor b : dnf)
+            participants.add(new Participant(b, null, dnfElapsed, dnfGap, 0.0));
 
         double pool = participants.stream().mapToDouble(Participant::penalty).sum();
 
         // §6.3 — giveback over every participant.
         double[] rewards = givebacks(pool, participants.stream()
-            .mapToDouble(Participant::elapsed).toArray());
+            .mapToDouble(Participant::gap).toArray());
 
         // §7 — net minutes back into TCF, against the same measured duration.
         //   newTcf = tcf / (1 − net × tcf / (raceDuration × tcfMed))
@@ -280,44 +325,61 @@ public class PursuitHandicapEngine implements HandicapEngine
     }
 
     /**
-     * Share the pool back over the participants.
+     * Share the pool back over the participants, by how far behind the leader each one
+     * finished.
      *
-     * <p>γ = 0 splits it evenly — every boat that turned up and raced gets the same
-     * credit for being there. γ = 1 weights by elapsed time, so a boat that spent longer
-     * on the course draws a larger share. In between is a blend, and legal.
+     * <p>γ = 0 splits the pool evenly — every boat that turned up and raced gets the same
+     * credit for being there. γ = 1 shares it by the finish gap, so the first boat home
+     * gets nothing and a boat ten minutes back gets twice one five minutes back. In
+     * between is a genuine blend:
      *
-     * <p>The even split is computed directly rather than as {@code elapsed^0}: they agree
-     * mathematically, but only if every elapsed time is positive, and a boat credited
-     * with zero elapsed would make {@code 0^0} decide the fleet's handicaps.
+     * <pre>
+     *   wᵢ = (1 − γ) × mean(gap) + γ × gapᵢ
+     * </pre>
      *
-     * <p>There is deliberately no "winner" anchor. In a pursuit race the boat in first
-     * place is the <em>slowest</em> in elapsed terms — it was given the biggest head
-     * start — so a gap-from-the-winner formula would invert the intent and pile the pool
-     * onto one boat.
+     * <p><b>A blend, not an exponent.</b> The obvious {@code gapᵢ^γ} has a cliff at the
+     * origin: {@code 0^γ} is zero for every γ above zero, so the leader would drop from a
+     * full even share to nothing the instant the dial left 0, and an intermediate γ would
+     * not be intermediate at all. The linear form agrees with the exponent at both ends
+     * and moves smoothly between them, which is what the knob is documented to do.
+     *
+     * <p><b>Gap, not elapsed.</b> Elapsed was the old measure and it is close to
+     * meaningless here. The stagger makes {@code elapsed = gap + τ + constant}, where τ
+     * depends only on a boat's rating, and τ spreads further across a fleet than a
+     * night's finishing does — so weighting by elapsed mostly rewarded low-rated boats
+     * for being low-rated, whatever they did on the water.
+     *
+     * <p><b>Measuring from the leader is safe here, and was not before.</b> An earlier
+     * draft of the spec anchored on the winner in <em>elapsed</em> terms,
+     * {@code elapsedᵢ − elapsed_winner}, which can go negative whenever a slow-rated boat
+     * wins — it was never implemented, and rightly. A finish gap cannot: the first boat
+     * home is the minimum by definition, so every gap is ≥ 0.
+     *
+     * <p>With every gap zero — a dead heat, or a single finisher — there is nothing to
+     * share by and the pool is split evenly. That is the answer, not a fallback from an
+     * error: boats that cannot be separated should not be separated.
      */
-    private double[] givebacks(double pool, double[] elapsed)
+    private double[] givebacks(double pool, double[] gaps)
     {
-        int n = elapsed.length;
+        int n = gaps.length;
         double[] out = new double[n];
         if (n == 0 || pool == 0.0)
             return out;
 
         double gamma = config.givebackGamma();
-        if (gamma == 0.0)
-        {
-            double even = pool / n;
-            for (int i = 0; i < n; i++)
-                out[i] = even;
-            return out;
-        }
+        double mean = 0.0;
+        for (double g : gaps)
+            mean += Math.max(0.0, g);
+        mean /= n;
 
         double weightSum = 0.0;
         double[] weights = new double[n];
         for (int i = 0; i < n; i++)
         {
-            weights[i] = Math.pow(Math.max(0.0, elapsed[i]), gamma);
+            weights[i] = (1.0 - gamma) * mean + gamma * Math.max(0.0, gaps[i]);
             weightSum += weights[i];
         }
+        // Every gap zero, so every weight zero whatever γ says.
         if (weightSum <= 0.0)
         {
             double even = pool / n;
@@ -328,6 +390,13 @@ public class PursuitHandicapEngine implements HandicapEngine
         for (int i = 0; i < n; i++)
             out[i] = pool * weights[i] / weightSum;
         return out;
+    }
+
+    /** The whole minute this time is closest to, rounding a half-minute up. */
+    static LocalTime toNearestMinute(LocalTime t)
+    {
+        LocalTime onTheMinute = t.truncatedTo(ChronoUnit.MINUTES);
+        return t.getSecond() >= 30 ? onTheMinute.plusMinutes(1) : onTheMinute;
     }
 
     private static double median(List<Double> values)

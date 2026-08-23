@@ -22,19 +22,23 @@
   <div id="report-state" class="banner banner-info">Loading…</div>
 
   <table id="report-table" class="report-table" style="display:none;">
-    <thead>
-      <tr>
-        <th class="num-cell">Pl</th><th>Sail #</th><th>Boat</th>
-        <th class="num-cell">Finish</th><th class="num-cell">Corrected</th><th>Flags</th>
-      </tr>
-    </thead>
+    <thead><tr id="report-head"></tr></thead>
     <tbody id="report-tbody"></tbody>
   </table>
 
+  <p class="report-note no-print" id="order-note"></p>
+
   <p class="report-note">
-    <strong>Corrected</strong> is the finish time with any head start from crossing
-    early given back. It does <em>not</em> include the OCS penalty — that is implied
-    by the OCS flag and applied when these results are entered.
+    <strong>Corrected Finish</strong> is the finish time with any head start from crossing
+    early given back, and <strong>nothing else</strong> — the 5-minute OCS penalty is not
+    in it. That penalty is implied by the OCS flag and applied when these results are
+    entered. <strong>Scored Elapsed</strong> is the other side of that split: time from the
+    boat's own gun with the penalty <em>included</em>, which is what decides Elapsed Place.
+  </p>
+  <p class="report-note">
+    <strong>Start Place</strong> ranks the starts: on the gun is best, then progressively
+    later. A boat that crossed <em>early</em> is not ranked — that is a penalty, not a
+    good start — and neither is one whose start was never timed.
   </p>
 
   <footer class="report-foot" id="report-foot"></footer>
@@ -44,6 +48,97 @@
 <script src="/scoring.js"></script>
 <script>
   const raceId = new URLSearchParams(location.search).get('raceId');
+
+  // The sheet is printed and read aloud, and which order that wants depends on the job:
+  // finish order to read out the result, sail number or name to answer "what did we get?",
+  // start place to see who was sharp off the line. So the columns sort, and the chosen
+  // order is what prints.
+  //
+  // `get` is the sort key and `text` is what shows. They are separate on purpose: a place
+  // sorts as a number and prints as an em dash when there isn't one, and a time sorts as
+  // seconds and prints as a clock.
+  const COLUMNS = [
+    { key: 'place',        label: 'Finished<br>Place', cls: 'num-cell mono',
+      get: r => r.place,   text: r => dash(r.place) },
+    { key: 'sail',         label: 'Sail #', cls: 'mono',
+      get: r => r.sail,    text: r => esc(r.sail) },
+    { key: 'name',         label: 'Boat', cls: '',
+      get: r => r.name,    text: r => esc(r.name) },
+    { key: 'corrected',    label: 'Corrected<br>Finish', cls: 'num-cell mono',
+      get: r => r.corrected, text: r => esc(fmtTimeOfDay(r.corrected)) },
+    { key: 'late',         label: 'Late', cls: 'num-cell mono',
+      get: r => r.late,    text: r => r.late == null ? '—' : esc(fmtSignedMinSec(r.late / 60)) },
+    { key: 'startPlace',   label: 'Start<br>Place', cls: 'num-cell mono',
+      get: r => r.startPlace, text: r => dash(r.startPlace) },
+    { key: 'elapsed',      label: 'Scored<br>Elapsed', cls: 'num-cell mono',
+      get: r => r.elapsed, text: r => esc(fmtElapsed(r.elapsed)) },
+    { key: 'elapsedPlace', label: 'Elapsed<br>Place', cls: 'num-cell mono',
+      get: r => r.elapsedPlace, text: r => dash(r.elapsedPlace) },
+    { key: 'flags',        label: 'Flags', cls: 'mono', sortable: false,
+      get: r => r.flags,   text: r => esc(r.flags) }
+  ];
+
+  // A boat with no place gets an em dash, not a blank: blank reads as "nobody filled this
+  // in", a dash as "this one has no place", which is the true statement.
+  const dash = (v) => v == null ? '—' : v;
+
+  // Finish order, which is the result. A third click on any column comes back here.
+  const DEFAULT_SORT = 'place';
+  let rows = [];
+  let sortKey = DEFAULT_SORT;
+  let sortDir = 1;
+
+  function sorted() {
+    const col = COLUMNS.find(c => c.key === sortKey) || COLUMNS[0];
+    return rows.slice().sort((a, b) => {
+      const x = col.get(a), y = col.get(b);
+      // A missing value is not a small one. Boats with no place, no time or no start
+      // sort to the bottom whichever way the column is turned — which is also what puts
+      // the non-finishers below the fleet in the default order, without a second list.
+      const xe = x == null || x === '', ye = y == null || y === '';
+      if (xe || ye) return xe && ye ? 0 : (xe ? 1 : -1);
+      const cmp = (typeof x === 'number' && typeof y === 'number')
+        ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
+      return cmp * sortDir;
+    });
+  }
+
+  function render() {
+    document.getElementById('report-head').innerHTML = COLUMNS.map(c => {
+      if (c.sortable === false) return '<th class="' + c.cls + '">' + c.label + '</th>';
+      const arrow = sortKey === c.key ? (sortDir > 0 ? ' ▲' : ' ▼') : '';
+      return '<th class="sortable ' + c.cls + '" data-key="' + c.key + '">'
+        + c.label + arrow + '</th>';
+    }).join('');
+
+    document.getElementById('report-tbody').innerHTML = sorted().map(r =>
+      '<tr' + (r.place == null ? ' class="unplaced"' : '') + '>'
+      + COLUMNS.map(c => '<td class="' + c.cls + '">' + c.text(r) + '</td>').join('')
+      + '</tr>').join('');
+
+    document.querySelectorAll('#report-head .sortable').forEach(th => {
+      th.onclick = () => {
+        const k = th.dataset.key;
+        // Clicking the active column reverses it; a third click returns to finish order,
+        // which is the one the result actually is.
+        if (sortKey !== k) { sortKey = k; sortDir = 1; }
+        else if (sortDir === 1) { sortDir = -1; }
+        else { sortKey = DEFAULT_SORT; sortDir = 1; }
+        render();
+      };
+    });
+    updateOrderNote();
+  }
+
+  function updateOrderNote() {
+    const col = COLUMNS.find(c => c.key === sortKey);
+    const label = col ? col.label.replace(/<br>/g, ' ').toLowerCase() : 'finish';
+    document.getElementById('order-note').textContent =
+      sortKey === DEFAULT_SORT && sortDir > 0
+        ? 'in finish order — click a heading to sort'
+        : 'sorted by ' + label + (sortDir > 0 ? '' : ', reversed')
+          + ' — click again to reverse, once more for finish order';
+  }
 
   (async () => {
     const state = document.getElementById('report-state');
@@ -90,33 +185,34 @@
       tcfOverrides: new Map()
     });
     const places = scorer.places('pursuit');
+    const startPlaces = scorer.latePlaces();
+    // The scored elapsed carries the OCS penalty, so its ranking is the scratch one.
+    const elapsedPlaces = scorer.places('scratch');
 
-    // Placed boats in order, then everyone else — the transcriber needs to see
-    // every entrant, not just the ones that scored.
-    const placed = entrants
-      .filter(e => places.has(String(e.boatId)))
-      .sort((x, y) => places.get(String(x.boatId)) - places.get(String(y.boatId)));
-    const unplaced = entrants.filter(e => !places.has(String(e.boatId)));
-
-    const row = (e, place) =>
-      '<tr' + (place == null ? ' class="unplaced"' : '') + '>'
-      + '<td class="num-cell mono">' + (place == null ? '—' : place) + '</td>'
-      + '<td class="mono">' + esc(e.sailNumber) + '</td>'
-      + '<td>' + esc(e.name) + '</td>'
-      + '<td class="num-cell mono">' + esc(fmtTimeOfDay(scorer.finishSeconds(e))) + '</td>'
-      + '<td class="num-cell mono">' + esc(fmtTimeOfDay(scorer.correctedFinishSeconds(e))) + '</td>'
-      + '<td class="mono">' + esc(scorer.flags(e).join(' ')) + '</td>'
-      + '</tr>';
-
-    document.getElementById('report-tbody').innerHTML =
-      placed.map(e => row(e, places.get(String(e.boatId)))).join('')
-      + unplaced.map(e => row(e, null)).join('');
+    rows = entrants.map(e => {
+      const id = String(e.boatId);
+      return {
+        place: places.get(id) ?? null,
+        sail: e.sailNumber || '',
+        name: e.name || '',
+        corrected: scorer.correctedFinishSeconds(e),
+        // Late only where a start was actually timed. Without one it falls back to the
+        // allocated gun and would print a confident 0:00 for a boat nobody watched.
+        late: scorer.actualStartSeconds(e) == null ? null : scorer.lateSeconds(e),
+        startPlace: startPlaces.get(id) ?? null,
+        elapsed: scorer.scoredElapsedSeconds(e),
+        elapsedPlace: elapsedPlaces.get(id) ?? null,
+        flags: scorer.flags(e).join(' ')
+      };
+    });
 
     state.style.display = 'none';
     document.getElementById('report-table').style.display = '';
+    render();
     document.getElementById('report-foot').textContent =
-      placed.length + ' placed of ' + entrants.length + ' entered   ·   '
-      + (cfg ? cfg.club.longName : '') + '   ·   generated ' + new Date().toLocaleString();
+      rows.filter(r => r.place != null).length + ' placed of ' + rows.length
+      + ' entered   ·   ' + (cfg ? cfg.club.longName : '')
+      + '   ·   generated ' + new Date().toLocaleString();
   })();
 </script>
 </body>

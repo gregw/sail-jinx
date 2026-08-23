@@ -58,6 +58,11 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
       <label>Duty boat
         <select id="duty-boat"><option value="">— none —</option></select>
       </label>
+      <!-- Deliberately last, deliberately off, and deliberately not remembered like
+           the four filters are: taking a boat out of a race is a repair, not a view. -->
+      <label class="danger-toggle" title="Reveals a column for taking a boat out of this
+race altogether. For a boat entered by mistake — not for one that did not come, which is
+what Came is for."><input type="checkbox" id="allow-remove"> Allow remove</label>
     </div>
 
     <table id="entrants-table">
@@ -222,21 +227,28 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     } catch (_) { return false; }
   }
 
-  // The filter tick boxes are a view preference rather than race data, so they are kept
-   // against the tab and not the race: opening the start sheet and coming back, or
-   // stepping to the next race, must not quietly put the design column back.
+  /**
+   * The filter tick boxes, kept against <em>this race</em> rather than the tab.
+   *
+   * <p>Leaving a race page and coming back — to print the start sheet, say — must not
+   * reset them; that is a view of the same race and the RO has already said how they
+   * want to look at it. Moving to a different race must, because the settings that suited
+   * a finished race are rarely the ones that suit the next one, and a filter carried
+   * silently across is a filter you forget is on.
+   */
   const FILTERS = ['hide-dnc', 'hide-finished', 'hide-details', 'hide-now'];
-  const FILTER_KEY = 'sail-jinx.race.filters';
+
+  function filterKey() { return sessionKey() + '.filters'; }
 
   function saveFilters() {
     const v = {};
     for (const id of FILTERS) v[id] = document.getElementById(id).checked;
-    try { sessionStorage.setItem(FILTER_KEY, JSON.stringify(v)); } catch (_) {}
+    try { sessionStorage.setItem(filterKey(), JSON.stringify(v)); } catch (_) {}
   }
 
   function restoreFilters() {
     let v = null;
-    try { v = JSON.parse(sessionStorage.getItem(FILTER_KEY) || 'null'); } catch (_) {}
+    try { v = JSON.parse(sessionStorage.getItem(filterKey()) || 'null'); } catch (_) {}
     if (!v) return;
     // Only known ids, and only booleans. Anything missing keeps the markup's own
     // `checked` attribute, which is where the defaults are written.
@@ -245,6 +257,8 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
   }
 
   function hideNow() { return document.getElementById('hide-now').checked; }
+
+  function allowRemove() { return document.getElementById('allow-remove').checked; }
 
   // Publishing a start sheet closes everything that feeds it — the two setup boxes, the
   // TCF column and the add-a-boat form. Every one of those changes a gun the fleet has
@@ -379,6 +393,12 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     { key: 'place', label: 'Place', cls: 'num-cell',
       get: e => placeMap.get(String(e.boatId)) ?? NaN,
       render: e => esc(placeMap.get(String(e.boatId)) ?? '') },
+    { key: 'remove', label: '', sortable: false, cls: 'remove-cell',
+      // Hidden unless Allow remove is ticked, and gone entirely once the results are
+      // locked — at that point the race is history and the way back is Unlock results.
+      render: e => '<button type="button" class="remove-btn" data-idx="'
+        + entrants.indexOf(e) + '" title="Remove '
+        + esc((e.sailNumber || '') + ' ' + (e.name || '')) + ' from this race">✕</button>' },
     { key: 'adjustment', label: 'Adjustment', cls: 'num-cell adjustment-cell',
       get: e => {
         const a = adjustments.get(String(e.boatId));
@@ -413,6 +433,7 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
       if (c.key === 'spin' && !isMixedSeries()) return false;
       if (DETAIL_COLS.includes(c.key)
           && document.getElementById('hide-details').checked) return false;
+      if (c.key === 'remove' && !(allowRemove() && !locked)) return false;
       return true;
     });
   }
@@ -437,6 +458,19 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
   let sortStack = [];   // [{key, dir}] — most significant first
 
   function orderedEntrants() {
+    return arrangedEntrants().filter(keepRow);
+  }
+
+  /**
+   * The fleet in its current order — sorted, or in the manual order, or as entered —
+   * but <em>unfiltered</em>.
+   *
+   * <p>Separate from {@link orderedEntrants} because freezing the current order into a
+   * manual one has to include the boats the filters are hiding. Building the manual
+   * order from the visible rows alone would drop every hidden boat to the bottom the
+   * moment the filter came off.
+   */
+  function arrangedEntrants() {
     let rows = entrants.slice();
     if (sortStack.length) {
       const cols = sortStack
@@ -463,7 +497,7 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
       const pos = new Map(boatOrder.map((id, i) => [String(id), i]));
       rows.sort((a, b) => (pos.get(String(a.boatId)) ?? 1e9) - (pos.get(String(b.boatId)) ?? 1e9));
     }
-    return rows.filter(keepRow);
+    return rows;
   }
 
   function isEmptyValue(v) {
@@ -590,6 +624,9 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
         logNow({ time, field, sail: e && e.sailNumber, name: e && e.name });
         touched();
       };
+    });
+    document.querySelectorAll('.remove-btn').forEach(btn => {
+      btn.onclick = () => removeEntrant(Number(btn.dataset.idx));
     });
     document.querySelectorAll('.flag-cell').forEach(td => {
       td.onclick = () => {
@@ -750,10 +787,15 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
         ev.preventDefault();
         tr.classList.remove('drag-over');
         if (!dragId || dragId === tr.dataset.id) return;
-        // Dragging establishes an explicit working order, which only means
-        // anything if we stop sorting by a column.
+        // Freeze what is on screen FIRST, then stop sorting.
+        //
+        // Dragging establishes an explicit working order, which only means anything once
+        // we stop sorting by a column — but clearing the sort before reading the order
+        // read back the *old* manual order instead of the sorted one the RO was looking
+        // at, so one drag re-shuffled the whole table. The seed for the manual order is
+        // the arrangement already on screen; the drag then moves exactly one boat.
+        const ids = arrangedEntrants().map(e => String(e.boatId));
         sortStack = [];
-        const ids = orderedEntrants().map(e => String(e.boatId));
         const from = ids.indexOf(dragId);
         const to = ids.indexOf(tr.dataset.id);
         if (from < 0 || to < 0) return;
@@ -1080,6 +1122,53 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     addResolved = null;
     refreshAddSuggestions();
     updateAddButtons();
+  }
+
+  /**
+   * Take a boat out of this race altogether.
+   *
+   * <p>For the exceptional case: a boat entered by mistake, or one entered twice. It is
+   * emphatically <em>not</em> how you record a boat that did not turn up — that boat
+   * stays in with Came unticked, which is what scores it DNC and keeps it in the series.
+   * The confirmation says so, because the two are easy to confuse and only one of them
+   * is reversible by ticking a box.
+   *
+   * <p>Removed by index rather than by boat id: a one-off entrant has no id, and two of
+   * them would be indistinguishable.
+   */
+  function removeEntrant(idx) {
+    const e = entrants[idx];
+    if (!e || locked)
+      return;
+
+    const who = [e.sailNumber, e.name].filter(Boolean).join(' ') || 'this boat';
+    const t = timesFor(e.boatId);
+    const lines = ['Remove ' + who + ' from this race?', '',
+      'This is for a boat entered by mistake. A boat that simply did not come should be '
+      + 'left in with its Came box unticked — that is what scores it DNC.'];
+    if (t.came || t.actualStart || t.finish)
+      lines.push('', 'It has times recorded against it, and they go with it.');
+    if (bundle && bundle.startSheet)
+      lines.push('', 'Start times are already published, so the printed start sheet will '
+        + 'no longer match this race.');
+    if (!confirm(lines.join('\n')))
+      return;
+
+    entrants.splice(idx, 1);
+    // A one-off has no id, so every one of them keys the same times entry. Dropping it
+    // would take the other one-offs' times with it.
+    if (e.boatId != null && !entrants.some(x => String(x.boatId) === String(e.boatId)))
+      delete timesMap[String(e.boatId)];
+    boatOrder = boatOrder.filter(id => String(id) !== String(e.boatId));
+    if (String(dutyBoatId) === String(e.boatId))
+      dutyBoatId = null;
+
+    renderDutyOptions();
+    // The column set can change with the last entrant out, so the header goes too.
+    renderHead();
+    touched();
+    setCtrlMsg('banner-warn', 'Removed ' + who + ' from this race. Save to commit it, '
+      + 'or Reset to put it back.');
   }
 
   function addEntrant(entrant) {
@@ -1623,6 +1712,10 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
     document.getElementById('hide-finished').onchange = () => { saveFilters(); renderEntrants(); };
     document.getElementById('hide-details').onchange = () => {
       saveFilters();
+      renderHead();
+      renderEntrants();
+    };
+    document.getElementById('allow-remove').onchange = () => {
       renderHead();
       renderEntrants();
     };

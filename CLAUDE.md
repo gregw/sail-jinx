@@ -112,8 +112,11 @@ browser decides *what to feed it*. That split is why `/process-handicaps` takes
 a client-supplied snapshot rather than reading the store: the client knows about
 unsaved edits and flag overrides.
 
-`static/scoring-test.html` is the executable specification for that module — 42
-assertions. Open the page to run them. Change `scoring.js`, run that page.
+`static/scoring-test.html` is the executable specification for that module — 54
+assertions. Open the page, **or run `node tools/run-scoring-test.mjs`**, which
+executes the same assertions from that same file against a stub DOM. The runner
+reads the page rather than copying it, so the two cannot drift: add a `check()` and
+it runs in both.
 
 The NOW log under the entrants table is the one piece of race-night state that is
 deliberately **not** in the store: it is a per-tab scratchpad whose whole job is to
@@ -139,6 +142,43 @@ rather than approximating it.
 explicit knob beats a variant that contradicts it, with a warning. `givebackGamma`
 is continuous, so the letters are corners of a square, not a menu — 0.35 is a real
 setting.
+
+**γ shares the pool by the finish gap, not by elapsed time.** At γ = 1 a boat's
+share is proportional to how far behind the leader it finished, so the first boat
+home gets nothing back and a boat ten minutes back gets twice one five minutes
+back. Elapsed was the old measure and was close to meaningless here: the stagger
+makes `elapsed = gap + τ + constant` where τ depends only on a boat's rating, and τ
+spreads further across a fleet than a night's finishing does — so it mostly rewarded
+low-rated boats for being low-rated.
+
+Two things about that which look like mistakes and are not:
+
+- **The weight is a linear blend, `(1−γ)·mean(gap) + γ·gap`, not `gap^γ`.** The
+  exponent has a cliff at the origin: `0^γ` is zero for every γ above zero, so the
+  leader would drop from a full even share to nothing the instant the dial left 0.
+  The blend agrees with the exponent at both ends and moves smoothly between them.
+- **Measuring from the leader is safe here even though the spec once forbade it.**
+  The old draft anchored on the winner in *elapsed* terms, which can go negative when
+  a slow-rated boat wins. A finish gap cannot: the first boat home is the minimum by
+  definition.
+
+**DNF and RET are handicapped differently, and used to be identical.** DNF means the
+boat was still racing when the race ended — it ran out of time, which is about its
+speed, so its handicap eases. RET means it stopped for a reason of its own (gear,
+injury, somewhere to be), which says nothing about its speed, so it is **frozen**
+alongside DSQ/DNC/DNS and takes no part in the arithmetic. Easing a retirement's
+handicap would reward a bad night with a better start, and a boat that retired often
+would ratchet down the fleet without ever sailing a race. Both halves are pinned by
+tests; do not re-merge the two cases.
+
+A DNF is scored at the last finisher plus `dnfAllowance`, so it draws the largest
+single share — intended, since a boat that did not finish is the one whose
+handicap should ease most. **`dnfAllowance` defaults to 1 minute, not 5**, because
+the knob does two jobs on very different scales: against a 90-minute elapsed time
+five minutes is a nudge, against a ten-minute fleet spread it is larger than the
+spread itself. At 5 a retirement took 37.5% of the pool (1.5× the last boat home);
+at 1 it takes 30.6% (1.1×). `retirementsDrawTheLargestShareAndThisIsHowLarge` pins
+those numbers so the tradeoff stays visible.
 
 Three things it is easy to get wrong here:
 
@@ -187,6 +227,20 @@ Two numbers with similar names and different jobs:
   places and feeds the engine.
 
 Both are tested. Do not "fix" one to match the other.
+
+The finish sheet prints them side by side deliberately: **Corrected Finish** is the
+transcribed number, without the penalty, and **Scored Elapsed** is beside it *with*
+the penalty. `scoredElapsedSeconds` is that second one, and `places('scratch')` —
+which ranks by it — is what the sheet's Elapsed Place column uses.
+
+Rankings all go through `rankBy`, so the sailing tie convention — ties share the
+better place, the next distinct key jumps past them — has one implementation.
+`places` and `latePlaces` differ only in their key and in who they leave out.
+**`latePlaces` leaves out two kinds of boat on purpose**: an OCS boat, because
+crossing early is a penalty rather than the best possible start, and a boat with no
+captured actual start, because `lateSeconds` falls back to the allocated gun and
+would otherwise report a confident `0:00` for a boat nobody timed. It is the Start
+Place column on the sheet.
 
 ---
 

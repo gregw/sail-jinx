@@ -103,10 +103,11 @@
     <p class="hint" style="max-width:46rem;">
       The two settings above the retirement box are the handicap variant. Penalties are
       either a flat number of minutes or a rate per hour of racing; the pool comes back
-      either evenly (γ = 0) or weighted by time on the course (γ = 1), with anything in
-      between allowed. The club default is <strong>C</strong> — per hour, given back
-      evenly — which is the combination that makes a long night and a short one apply the
-      same correction.
+      either evenly (γ = 0) or shared by how far behind the leader each boat finished
+      (γ = 1), with anything in between allowed. At γ = 1 the winner gets nothing back and
+      pays its penalty in full. The club default is <strong>C</strong> — per hour, given
+      back evenly — which is the combination that makes a long night and a short one apply
+      the same correction.
     </p>
     <div class="toolbar">
       <button id="cfg-save" class="primary" type="button">Save settings</button>
@@ -316,7 +317,7 @@
       VARIANT_KNOBS[k][0] === scaling && VARIANT_KNOBS[k][1] === gamma);
     document.getElementById('cfg-variant-note').textContent =
       hit ? 'variant ' + hit + (hit === 'C' ? ' (the default)' : '')
-          : '0 = even, 1 = weighted by elapsed — between the named variants';
+          : '0 = even, 1 = by gap behind the leader — between the named variants';
   }
 
   document.getElementById('cfg-scaling').onchange = showVariant;

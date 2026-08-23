@@ -236,6 +236,85 @@
   check('reformatTime pads', '08:05:00', reformatTime('8:5'));
   check('reformatTime rejects impossible times', null, reformatTime('25:00:00'));
 
+  // --- the finish sheet's extra rankings ------------------------------------
+  {
+    // slow on the gun, mid 12s late, fast 25s late.
+    const s = build({
+      slow: came('18:00:00', '19:46:10'),
+      mid:  came('18:07:12', '19:45:02'),
+      fast: came('18:15:25', '19:44:20')
+    });
+    check('late place: on the gun is best, then later',
+      ['slow', 'mid', 'fast'],
+      [...s.latePlaces().entries()].sort((a, b) => a[1] - b[1]).map(x => x[0]));
+    check('late place: the gun itself is 1st', 1, s.latePlaces().get('slow'));
+
+    check('elapsed place ranks the shortest scored elapsed first',
+      ['fast', 'mid', 'slow'],
+      [...s.places('scratch').entries()].sort((a, b) => a[1] - b[1]).map(x => x[0]));
+  }
+  {
+    // fast crosses 10s early — OCS. It must not take the best start of the night.
+    const s = build({
+      slow: came('18:00:00', '19:46:10'),
+      mid:  came('18:07:12', '19:45:02'),
+      fast: came('18:14:50', '19:44:20')
+    });
+    check('late place: an early start is a penalty, not a good start',
+      undefined, s.latePlaces().get('fast'));
+    check('late place: the rest are still ranked',
+      [1, 2], ['slow', 'mid'].map(id => s.latePlaces().get(id)));
+  }
+  {
+    // mid never had an actual start captured. lateSeconds falls back to allocated,
+    // which reads as a perfect zero — it must not be ranked on that.
+    const s = build({
+      slow: came('18:00:05', '19:46:10'),
+      mid:  came(null, '19:45:02'),
+      fast: came('18:15:25', '19:44:20')
+    });
+    check('late place: a boat nobody timed is unranked',
+      undefined, s.latePlaces().get('mid'));
+    check('late place: and does not displace the boats that were timed',
+      [1, 2], ['slow', 'fast'].map(id => s.latePlaces().get(id)));
+  }
+  {
+    // Two boats equally late share the place, and the next jumps past them.
+    const s = build({
+      slow: came('18:00:10', '19:46:10'),
+      mid:  came('18:07:10', '19:45:02'),
+      fast: came('18:15:25', '19:44:20')
+    });
+    check('late place: ties share the better place and the next jumps',
+      [1, 1, 3], ['slow', 'mid', 'fast'].map(id => s.latePlaces().get(id)));
+  }
+  {
+    // A boat that did not finish has no elapsed to rank.
+    const s = build({
+      slow: came('18:00:00', '19:46:10'),
+      mid:  came('18:07:00', null),
+      fast: came('18:15:00', '19:44:20')
+    });
+    check('elapsed place: a DNF is unranked',
+      undefined, s.places('scratch').get('mid'));
+    check('elapsed place: the finishers are still ranked',
+      [1, 2], ['fast', 'slow'].map(id => s.places('scratch').get(id)));
+  }
+  {
+    // The corrected/scored split, on the two numbers the finish sheet prints side by
+    // side: Corrected Finish gives the head start back and stops there, while Scored
+    // Elapsed also carries the 5-minute OCS penalty. Same race, same boat.
+    const s = build({
+      slow: came('17:59:55', '19:46:10'),
+      mid:  came('18:07:00', '19:45:02'),
+      fast: came('18:15:00', '19:44:20')
+    });
+    check('corrected finish gives back the head start only',
+      '19:46:15', fmtTimeOfDay(s.correctedFinishSeconds(E('slow'))));
+    check('scored elapsed also carries the OCS penalty',
+      '01:51:15', fmtElapsed(s.scoredElapsedSeconds(E('slow'))));
+  }
+
   // --- render ---------------------------------------------------------------
   const passed = results.filter(r => r.pass).length;
   const summary = document.getElementById('summary');

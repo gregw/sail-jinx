@@ -26,10 +26,10 @@ algorithm:
   #      D    | perHour        | 1.0
   variant: C
   penaltyScaling: perHour          # perHour = a rate scaled by the measured duration
-  givebackGamma: 0.0               # 0 = even split, 1 = weighted by elapsed
+  givebackGamma: 0.0               # 0 = even split, 1 = by gap behind the leader
 
   penaltyList: [6, 4, 2]           # minutes for 1st, 2nd, 3rd — per hour under perHour
-  dnfAllowance: 5                  # minutes added to the slowest finisher
+  dnfAllowance: 1                  # minutes past the last finisher a retirement scores
   dnfInRaceDuration: false         # keep retirements out of the measured duration
   defaultRaceDuration: 90          # pre-race target when a race does not say; start
                                    # times only, never the handicap arithmetic

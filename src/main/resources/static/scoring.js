@@ -284,6 +284,7 @@ function createScorer(state) {
     return (sf == null || s == null) ? null : Math.round(sf - s);
   }
 
+
   // What the handicap engine is given: actual sailing time, measured from the
   // effective start. A boat that started 30s late physically sailed 30s less
   // and the engine should see that (wiki §5.1).
@@ -325,6 +326,9 @@ function createScorer(state) {
    *   'scratch'           -> scored elapsed
    *   'tcf'               -> corrected time (TCF x scored elapsed)
    *
+   * 'scratch' is also what the finish sheet's Elapsed Place column ranks by: the
+   * scored elapsed, with the OCS penalty in it.
+   *
    * Boats carrying any UNPLACED_FLAGS are left out. Ties share the better
    * place and the next distinct key jumps past them, so three boats tied at
    * 5th are followed by 8th — the sailing convention. Keys are whole seconds,
@@ -332,13 +336,27 @@ function createScorer(state) {
    */
   function places(mode) {
     const excluded = new Set(UNPLACED_FLAGS);
+    return rankBy(e => {
+      if (flags(e).some(f => excluded.has(f))) return null;
+      if (mode === 'scratch') return scoredElapsedSeconds(e);
+      if (mode === 'tcf') return correctedSeconds(e);
+      return scoredFinishSeconds(e);
+    });
+  }
+
+  /**
+   * Rank the fleet by a key, smallest first. A null or non-finite key means unranked,
+   * and the boat is simply absent from the result.
+   *
+   * <p>Ties share the better place and the next distinct key jumps past them, so three
+   * boats tied at 5th are followed by 8th — the sailing convention. Keys are whole
+   * seconds, so equality is exact. Extracted so every ranking on the finish sheet uses
+   * the one implementation of that rule rather than three that could drift.
+   */
+  function rankBy(keyOf) {
     const ranked = [];
     for (const e of entrants) {
-      if (flags(e).some(f => excluded.has(f))) continue;
-      let k;
-      if (mode === 'scratch') k = scoredElapsedSeconds(e);
-      else if (mode === 'tcf') k = correctedSeconds(e);
-      else k = scoredFinishSeconds(e);
+      const k = keyOf(e);
       if (k == null || !Number.isFinite(k)) continue;
       ranked.push({ id: key(e), k });
     }
@@ -356,6 +374,25 @@ function createScorer(state) {
     });
     return out;
   }
+
+  /**
+   * How well each boat started, ranked: on the gun is best, then progressively later.
+   *
+   * <p>Two kinds of boat are deliberately unranked. **OCS**, because crossing early is
+   * not a better start than a perfect one — it is a penalty, and ranking it first would
+   * reward it. And any boat with **no captured actual start**: lateSeconds falls back to
+   * the allocated gun when no actual time was taken (wiki §5.1), which reads as exactly
+   * zero late, so ranking it would hand the best start of the night to a boat nobody
+   * timed.
+   */
+  function latePlaces() {
+    return rankBy(e => {
+      if (actualStartSeconds(e) == null || isOcs(e)) return null;
+      const l = lateSeconds(e);
+      return (l == null || l < 0) ? null : l;
+    });
+  }
+
 
   /**
    * The payload for POST /api/races/{id}/process-handicaps. Only boats that
@@ -376,6 +413,12 @@ function createScorer(state) {
         seeded: e.entryType === 'ROSTER',
         status: jinxStatus(e),
         elapsedMinutes: handicapElapsedMinutes(e),
+        // How far behind the leader a boat finished is what the giveback is shared by,
+        // and the engine cannot work it out from elapsed: in a pursuit race the boats
+        // start at different times, so finish order is not elapsed order. Sent as whole
+        // seconds, the same units correctedFinishSeconds already rounds to, so two boats
+        // showing the same corrected time get exactly the same share.
+        correctedFinishSeconds: correctedFinishSeconds(e),
         finishPosition: placeMap.get(key(e)) ?? null
       }));
   }
@@ -395,6 +438,7 @@ function createScorer(state) {
     scoredFinishSeconds,
     correctedFinishSeconds,
     scoredElapsedSeconds,
+    latePlaces,
     handicapElapsedSeconds,
     handicapElapsedMinutes,
     correctedSeconds,
