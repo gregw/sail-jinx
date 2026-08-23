@@ -21,7 +21,7 @@
 
   <table id="audit-table" style="display:none;">
     <thead>
-      <tr><th>When</th><th>Race</th><th>Action</th><th class="num-cell">Pool</th>
+      <tr><th>When</th><th>Race</th><th>Action</th><th>Who</th><th class="num-cell">Pool</th>
         <th class="num-cell">Boats</th><th>Notes</th></tr>
     </thead>
     <tbody id="audit-tbody"></tbody>
@@ -68,6 +68,10 @@
       + '<td><a href="/race.html?raceId=' + encodeURIComponent(e.raceId) + '">'
       + esc(raceNames.get(e.raceId) || e.raceId) + '</a></td>'
       + '<td>' + esc(e.action) + '</td>'
+      // No user is a real answer — the entry was written with no login configured — so
+      // it renders as the same dash a missing design does, not as a blank that reads
+      // like a column that failed to load.
+      + '<td>' + (e.user ? esc(e.user) : '<span class="hint">—</span>') + '</td>'
       + '<td class="num-cell">' + (e.penaltyPool ? e.penaltyPool.toFixed(1) : '') + '</td>'
       + '<td class="num-cell">' + ((e.adjustments || []).length || '') + '</td>'
       + '<td>' + esc(e.notes || '') + '</td>'

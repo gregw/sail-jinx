@@ -477,6 +477,28 @@ class JsonStoreTest
             contains("first", "second"));
     }
 
+    @Test
+    void anAuditLogWrittenBeforeItRecordedTheUserStillLoads(@TempDir Path tmp)
+        throws IOException
+    {
+        // Exactly what audit.json holds on a server installed before the field existed.
+        // The club's is the only copy of that history, so it has to survive the upgrade
+        // that added the column — a log that fails to load is a log that is gone.
+        Files.createDirectories(tmp.resolve("store"));
+        Files.writeString(tmp.resolve("store/audit.json"), """
+            [{"timestamp":"2026-06-05T10:00:00Z","raceId":"r-1","action":"save-handicaps",
+              "gamma":0.0,"penaltyPool":15.0,"adjustments":[],"notes":"before"}]""");
+
+        JsonStore store = new JsonStore(tmp);
+        store.start();
+
+        assertThat(store.loadErrors(), hasSize(0));
+        assertThat(store.audit(), hasSize(1));
+        assertThat(store.audit().get(0).notes(), equalTo("before"));
+        // Null, not "", and not a placeholder: nobody can be named for it.
+        assertThat(store.audit().get(0).user(), nullValue());
+    }
+
     // --- Durability ----------------------------------------------------------
     //
     // These matter more than they used to. With SailSys gone this store is the

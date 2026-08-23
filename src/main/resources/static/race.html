@@ -58,11 +58,6 @@ are reference rather than capture."><input type="checkbox" id="hide-details" che
       <label>Duty boat
         <select id="duty-boat"><option value="">— none —</option></select>
       </label>
-      <!-- Deliberately last, deliberately off, and deliberately not remembered like
-           the four filters are: taking a boat out of a race is a repair, not a view. -->
-      <label class="danger-toggle" title="Reveals a column for taking a boat out of this
-race altogether. For a boat entered by mistake — not for one that did not come, which is
-what Came is for."><input type="checkbox" id="allow-remove" data-requires="officer"> Allow remove</label>
     </div>
 
     <table id="entrants-table">
@@ -90,12 +85,27 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
       <input id="add-design" list="design-matches" placeholder="design" autocomplete="off">
       <datalist id="design-matches"></datalist>
       <label title="A casual races and is handicapped like anybody else, but is not carried into the next race."><input type="checkbox" id="add-casual"> casual</label>
-      <button id="add-existing-btn" type="button" data-requires="officer" disabled>Add from register</button>
-      <button id="add-new-btn" type="button" data-requires="officer" disabled>Add &amp; register</button>
-      <button id="add-oneoff-btn" type="button" data-requires="officer" disabled>One-off only</button>
-      <button id="add-clear-btn" type="button" data-requires="officer">Clear</button>
-      <button id="import-btn" type="button" data-requires="officer">Add entrants from JSON</button>
+      <button id="add-existing-btn" type="button" data-requires="admin" disabled>Add from register</button>
+      <button id="add-new-btn" type="button" data-requires="admin" disabled>Add &amp; register</button>
+      <button id="add-oneoff-btn" type="button" data-requires="admin" disabled>One-off only</button>
+      <button id="add-clear-btn" type="button" data-requires="admin">Clear</button>
+      <button id="import-btn" type="button" data-requires="admin">Add entrants from JSON</button>
       <span id="add-msg" class="hint"></span>
+    </div>
+
+    <!-- Below the add-a-boat form and shown only with it. Taking a boat out of a race is
+         a repair, not a view — it does not belong beside the filters, and it has no place
+         at all once the start sheet is published, which is the same moment adding a boat
+         stops making sense. Deliberately off, and deliberately not remembered like the
+         view is: it is turned on for one correction and off again.
+
+         data-requires sits on the label rather than the input, or hiding it from a
+         visitor would leave the words "Allow remove" beside nothing. -->
+    <div class="toolbar" id="allow-remove-bar">
+      <label class="danger-toggle" data-requires="admin" title="Reveals a column for
+taking a boat out of this race altogether. For a boat entered by mistake — not for one
+that did not come, which is what Came is for."><input type="checkbox" id="allow-remove">
+        Allow remove</label>
     </div>
 
     <div id="import-panel" style="display:none;">
@@ -1603,8 +1613,18 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
     document.getElementById('unlock-starts-btn').style.display =
       (fixed && !locked && canEdit()) ? '' : 'none';
     // The add-a-boat form goes with them: a boat added after the sheet is published has
-    // no gun, and leaving the form there quietly implies it would get one.
+    // no gun, and leaving the form there quietly implies it would get one. Allow remove
+    // goes with the form.
     document.getElementById('add-entrant-bar').style.display = fixed ? 'none' : '';
+    document.getElementById('allow-remove-bar').style.display = fixed ? 'none' : '';
+    // …and is switched off on the way out. A tick box that hides while it is still on
+    // leaves the Remove column on screen with nothing left that can take it away.
+    if (fixed && document.getElementById('allow-remove').checked)
+    {
+      document.getElementById('allow-remove').checked = false;
+      renderHead();
+      renderEntrants();
+    }
 
     const startsHref = '/report-starts.html?raceId=' + encodeURIComponent(raceId);
     const finishHref = '/report-finish.html?raceId=' + encodeURIComponent(raceId);
@@ -1722,6 +1742,8 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
     btn.textContent = 'Seed entrants';
     btn.className = 'primary';
     btn.style.marginLeft = '0.75rem';
+    // Seeding fills the race from the roster, which is the admin's list.
+    btn.setAttribute('data-requires', 'admin');
     btn.onclick = async () => {
       const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/entrants/seed', {});
       if (!r.ok) { setCtrlMsg('banner-err', 'Could not seed: ' + errorOf(r)); return; }
@@ -1729,6 +1751,7 @@ what Came is for."><input type="checkbox" id="allow-remove" data-requires="offic
       await load();
     };
     el.appendChild(btn);
+    applyRoleGates(el);
   }
 
   // --- boot ------------------------------------------------------------------

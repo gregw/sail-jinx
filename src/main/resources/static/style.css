@@ -235,7 +235,7 @@ input.hhmm-input { width: 5rem; }
 /* Removing an entrant is a repair, not part of the night's work. The toggle that
    reveals it reads as a warning, and the button itself is small and quiet — it is only
    ever on screen because somebody deliberately asked for it. */
-.filters label.danger-toggle { color: var(--err-fg); }
+label.danger-toggle { color: var(--err-fg); }
 td.remove-cell { text-align: center; padding-left: 4px; padding-right: 4px; }
 button.remove-btn {
   border: 1px solid transparent; background: none; color: var(--muted);

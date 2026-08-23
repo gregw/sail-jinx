@@ -426,14 +426,19 @@ class AuthIntegrationTest
         assertThat(whoami(officer).path("role").asText(), equalTo("RACE_OFFICER"));
 
         // Everything a race night needs, including the handicaps: processing a race is
-        // what a race officer is for. Adding a boat is on that list because a casual
-        // turning up is registered from the race page, not from the fleet screen.
-        assertThat(postAs(officer, "/api/boats",
-            "{\"sailNumber\":\"AUS9\",\"name\":\"Quick Silver\"}"), is(200));
-        assertThat(postAs(officer, "/api/races/" + raceId + "/entrants/seed", "{}"),
-            is(not(401)));
+        // what a race officer is for.
         assertThat(postAs(officer, "/api/races/" + raceId + "/times",
             "{\"times\":{}}"), is(200));
+
+        // But not who is in the race. Registering a boat, seeding the entrants from the
+        // roster, importing them, and adding or removing one by hand are all the same
+        // question — which boats this race is scored over — and it is the admin's.
+        assertThat(postAs(officer, "/api/boats",
+            "{\"sailNumber\":\"AUS9\",\"name\":\"Quick Silver\"}"), is(403));
+        assertThat(postAs(officer, "/api/races/" + raceId + "/entrants/seed", "{}"),
+            is(403));
+        assertThat(postAs(officer, "/api/races/" + raceId + "/entrants/import", "{}"),
+            is(403));
 
         // The season's shape is not. 403, not 401 — signing in is not the answer here,
         // and a page that offered a sign-in button would be lying about the fix.
@@ -476,5 +481,93 @@ class AuthIntegrationTest
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
             HttpResponse.BodyHandlers.ofString()).body();
+    }
+
+    @Test
+    void theAuditLogNamesWhoDidIt(@TempDir Path tmp) throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false);
+
+        HttpClient commodore = browser();
+        signIn(commodore, "commodore@myc.org.au");
+        String seriesId = M.readTree(postBody(commodore, "/api/series",
+            "{\"name\":\"2026 Winter\"}")).path("series").path("id").asText();
+        String raceId = M.readTree(postBody(commodore, "/api/races",
+                "{\"seriesId\":\"" + seriesId + "\",\"date\":\"2026-06-05\"}"))
+            .path("race").path("id").asText();
+
+        // The race officer, not the admin who laid the season out. An audit log that
+        // recorded the wrong one of those would be worse than one that recorded neither.
+        HttpClient officer = browser();
+        signIn(officer, "ro@myc.org.au");
+        assertThat(postAs(officer, "/api/races/" + raceId + "/save-handicaps",
+            "{\"adjustments\":[{\"boatId\":\"b1\",\"finishPosition\":1,"
+                + "\"penaltyMinutes\":5.0,\"rewardMinutes\":0.0,"
+                + "\"netAdjustmentMinutes\":5.0,\"oldTcf\":1.0,\"newTcf\":1.0526}]}"),
+            is(200));
+
+        JsonNode audit = M.readTree(browser().send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx) + "/api/audit")).GET().build(),
+            HttpResponse.BodyHandlers.ofString()).body());
+        assertThat(audit.size(), is(1));
+        assertThat(audit.get(0).path("action").asText(), equalTo("save-handicaps"));
+        assertThat(audit.get(0).path("user").asText(), equalTo("ro@myc.org.au"));
+
+        // Unlocking is the other thing that lands in the log, and it is the one somebody
+        // asks about afterwards: who threw the results away.
+        HttpResponse<String> del = officer.send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx)
+                    + "/api/races/" + raceId + "/adjustments"))
+                .DELETE().build(),
+            HttpResponse.BodyHandlers.ofString());
+        assertThat(del.statusCode(), is(200));
+        JsonNode after = M.readTree(browser().send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx) + "/api/audit")).GET().build(),
+            HttpResponse.BodyHandlers.ofString()).body());
+        assertThat(after.get(1).path("action").asText(), equalTo("unlock"));
+        assertThat(after.get(1).path("user").asText(), equalTo("ro@myc.org.au"));
+    }
+
+    @Test
+    void anOfficerMayEditAnEntrantButNotAddOrRemoveOne(@TempDir Path tmp) throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false);
+
+        HttpClient commodore = browser();
+        signIn(commodore, "commodore@myc.org.au");
+        String seriesId = M.readTree(postBody(commodore, "/api/series",
+            "{\"name\":\"2026 Winter\"}")).path("series").path("id").asText();
+        String raceId = M.readTree(postBody(commodore, "/api/races",
+                "{\"seriesId\":\"" + seriesId + "\",\"date\":\"2026-06-05\"}"))
+            .path("race").path("id").asText();
+        String boatId = M.readTree(postBody(commodore, "/api/boats",
+            "{\"sailNumber\":\"AUS9\",\"name\":\"Quick Silver\"}"))
+            .path("boat").path("id").asText();
+        String oneBoat = "{\"entrants\":[{\"boatId\":\"" + boatId + "\",\"tcf\":%s}]}";
+        assertThat(postAs(commodore, "/api/races/" + raceId + "/entrants",
+            oneBoat.formatted("1.0")), is(200));
+
+        HttpClient officer = browser();
+        signIn(officer, "ro@myc.org.au");
+
+        // The same boats, a different TCF: the race is still scored over the fleet the
+        // admin put in it, so this is running the race rather than composing it.
+        assertThat(postAs(officer, "/api/races/" + raceId + "/entrants",
+            oneBoat.formatted("1.05")), is(200));
+
+        // One boat fewer is a different race.
+        assertThat(postAs(officer, "/api/races/" + raceId + "/entrants",
+            "{\"entrants\":[]}"), is(403));
+
+        // …and so is one boat more. A registered one, so the refusal is the permission
+        // rather than the validation that rejects an unknown boat id for everybody.
+        String second = M.readTree(postBody(commodore, "/api/boats",
+            "{\"sailNumber\":\"A123\",\"name\":\"Slow Poke\"}"))
+            .path("boat").path("id").asText();
+        assertThat(postAs(officer, "/api/races/" + raceId + "/entrants",
+            "{\"entrants\":[{\"boatId\":\"" + boatId + "\",\"tcf\":1.0},"
+                + "{\"boatId\":\"" + second + "\",\"tcf\":1.0}]}"), is(403));
     }
 }

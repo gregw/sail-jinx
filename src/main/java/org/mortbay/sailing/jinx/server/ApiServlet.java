@@ -11,6 +11,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -90,22 +91,24 @@ import org.slf4j.LoggerFactory;
  *
  * <pre>
  *   VIEWER        no account          every GET
- *   RACE_OFFICER  a club account      + everything a race night needs:
- *                                       entrants, times, start sheet, handicaps,
- *                                       unlock, and registering a boat
- *   ADMIN         listed in admins:   + what a race night runs on:
- *                                       series, races, roster, series config,
- *                                       fleet import
+ *   RACE_OFFICER  a club account      + running a race night: times, the start
+ *                                       sheet, handicaps, unlock, and editing an
+ *                                       entrant's TCF, division or casual flag
+ *   ADMIN         listed in admins:   + what a race night runs on: series, races,
+ *                                       roster, series config, the fleet register,
+ *                                       and which boats are in a race at all
  * </pre>
  *
- * <p>The split between the last two is <em>the season versus the night</em>. Processing
- * handicaps is a race officer's job — it is what running a race means. Deciding that
- * there is a race, and who is in the series, is not.
+ * <p>The split between the last two is <em>composing versus running</em>. Deciding that
+ * there is a race, who is in the series, and which boats are scored in tonight's race is
+ * the admin's. Recording what those boats then did — including processing the handicaps,
+ * which is what running a race means — is the race officer's.
  *
- * <p>Registering a boat sits with the race officer for one concrete reason: a casual
- * turning up is added from the race page, which creates the register entry as it goes.
- * Loading a whole fleet from a sailing-pf export is a different act and stays with the
- * admin.
+ * <p>That line cuts through one endpoint rather than between two.
+ * {@code POST /api/races/{id}/entrants} sends the whole list, so that add, remove and
+ * edit cannot be separated on the way in; the role is therefore decided from the diff.
+ * Same set of boats, different values: race officer. A boat more or fewer: admin. See
+ * {@link #changesTheFleet}.
  *
  * <p>With {@code auth.yaml} absent or off, everyone is an ADMIN — one machine on one
  * desk, which is what this was before it was hosted. See {@link #denyUnless}.
@@ -357,7 +360,7 @@ public class ApiServlet extends HttpServlet
      */
     private void handleSaveBoat(HttpServletRequest req, HttpServletResponse resp) throws Exception
     {
-        if (denyUnless(req, resp, Role.RACE_OFFICER))
+        if (denyUnless(req, resp, Role.ADMIN))
             return;
         JsonNode body = MAPPER.readTree(req.getInputStream());
         String sailNumber = text(body, "sailNumber");
@@ -503,7 +506,7 @@ public class ApiServlet extends HttpServlet
     private void handleImportEntrants(HttpServletRequest req, HttpServletResponse resp,
                                       String raceId) throws Exception
     {
-        if (denyUnless(req, resp, Role.RACE_OFFICER))
+        if (denyUnless(req, resp, Role.ADMIN))
             return;
         Race race = store.races().get(raceId);
         if (race == null)
@@ -1005,6 +1008,17 @@ public class ApiServlet extends HttpServlet
      * <p>A row with no {@code boatId} is a one-off visitor. A row whose
      * {@code boatId} is not in the register is rejected rather than silently
      * turned into a one-off.
+     *
+     * <p><b>Two operations share this endpoint, and they need different permissions.</b>
+     * Which boats the race is scored over is the admin's; what those boats sailed on —
+     * their TCF, their division, whether they are casual — is the race officer's. So the
+     * role is decided from the diff rather than from the route: a list with the same
+     * boats in it is an edit, a list with a boat more or fewer is a different race.
+     *
+     * <p>Checked here rather than by splitting the endpoint because the client sends the
+     * whole list precisely so that add, remove and edit cannot be separated on the way
+     * in — see above. Splitting it to carry the permission would reintroduce the partial
+     * update that shape exists to prevent.
      */
     private void handleSaveEntrants(HttpServletRequest req, HttpServletResponse resp, String raceId)
         throws Exception
@@ -1047,6 +1061,12 @@ public class ApiServlet extends HttpServlet
         }
 
         RaceEntrants existing = store.entrants(raceId);
+        // The composition check, once the list has been parsed and the boat ids resolved:
+        // comparing the raw request to the store would compare a sail number typed in a
+        // browser against an id the registry minted.
+        if (changesTheFleet(raceId, entrants) && denyUnless(req, resp, Role.ADMIN))
+            return;
+
         RaceEntrants saved = new RaceEntrants(raceId, Instant.now(),
             tcfSourceOf(body.path("tcfSource"), existing),
             existing == null ? null : existing.sourceRaceId(),
@@ -1054,6 +1074,37 @@ public class ApiServlet extends HttpServlet
             entrants);
         store.putEntrants(saved);
         writeJson(resp, mapOf("ok", true, "raceId", raceId, "entrants", saved));
+    }
+
+    /**
+     * True when this list is a different set of boats from the one on file.
+     *
+     * <p>By boat id and as a set: reordering the entrants is the race officer's business
+     * — the race page's manual ordering saves through here — and so is editing any of
+     * them. Only membership is the admin's.
+     *
+     * <p>One-offs have no boat id, so they are counted rather than named. Adding or
+     * removing one still changes the count, and no two one-offs can be told apart by
+     * anything this endpoint receives.
+     */
+    private boolean changesTheFleet(String raceId, List<Entrant> proposed)
+    {
+        RaceEntrants existing = store.entrants(raceId);
+        List<Entrant> before = existing == null ? List.of() : existing.entrants();
+        if (idsOf(before).equals(idsOf(proposed)))
+            return countWithoutId(before) != countWithoutId(proposed);
+        return true;
+    }
+
+    private static Set<String> idsOf(List<Entrant> entrants)
+    {
+        return entrants.stream().map(Entrant::boatId).filter(id -> id != null && !id.isBlank())
+            .collect(java.util.stream.Collectors.toSet());
+    }
+
+    private static long countWithoutId(List<Entrant> entrants)
+    {
+        return entrants.stream().filter(e -> e.boatId() == null || e.boatId().isBlank()).count();
     }
 
     /**
@@ -1069,7 +1120,7 @@ public class ApiServlet extends HttpServlet
     private void handleSeedEntrants(HttpServletRequest req, HttpServletResponse resp,
         String raceId) throws Exception
     {
-        if (denyUnless(req, resp, Role.RACE_OFFICER))
+        if (denyUnless(req, resp, Role.ADMIN))
             return;
         Race race = store.races().get(raceId);
         if (race == null)
@@ -1463,7 +1514,7 @@ public class ApiServlet extends HttpServlet
         }
 
         store.appendAudit(new AuditEntry(Instant.now(), raceId, "save-handicaps",
-            0.0, adjustments.stream().mapToDouble(Adjustment::penaltyMinutes).sum(),
+            auditUser(req), 0.0, adjustments.stream().mapToDouble(Adjustment::penaltyMinutes).sum(),
             adjustments,
             next.map(r -> "carried to race " + r.number()).orElse("last race in series")));
 
@@ -1519,7 +1570,8 @@ public class ApiServlet extends HttpServlet
         if (removed)
         {
             store.appendAudit(new AuditEntry(Instant.now(), raceId, "unlock",
-                0.0, 0.0, List.of(), "adjustments discarded for reprocessing"));
+                auditUser(req), 0.0, 0.0, List.of(),
+                "adjustments discarded for reprocessing"));
         }
         writeJson(resp, mapOf("ok", true, "raceId", raceId, "unlocked", removed));
     }
@@ -1612,6 +1664,20 @@ public class ApiServlet extends HttpServlet
             writeJson(resp, mapOf("error", "this needs an administrator"));
         }
         return true;
+    }
+
+    /**
+     * Who to record against an audit entry, or null when nobody can be named.
+     *
+     * <p>Deliberately the signed-in address rather than {@link #currentRole}: the log
+     * answers "who unlocked race 4", and a role answers a different question. Null when
+     * authentication is off, and null too for the {@code allowLoopback} exemption — that
+     * request is an admin by configuration, not by identity, and there is no more honest
+     * name for it than none.
+     */
+    private String auditUser(HttpServletRequest req)
+    {
+        return auth == null || !auth.enabled() ? null : SignedIn.of(req, auth).email();
     }
 
     private String clubDomainForMessage()

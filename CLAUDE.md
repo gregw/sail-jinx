@@ -321,7 +321,7 @@ projects, not just a local regression.
 | `start-sheet/{raceId}.json` | the published stagger |
 | `race-times/{raceId}.json` | came / actual start / finish, as typed |
 | `adjustments/{raceId}.json` | saved handicap output — **also the race lock** |
-| `audit.json`, `journal/` | history |
+| `audit.json`, `journal/` | history — **and who did it**, when there is a login |
 
 ### What belongs to a boat, and what does not
 
@@ -440,14 +440,21 @@ no outbound call — exactly what the server did before a login existed.
 | Tier | Who | May |
 |---|---|---|
 | `VIEWER` | anybody, signed in or not | read every page and every GET |
-| `RACE_OFFICER` | a club-domain account | run a race night: entrants, times, start sheet, handicaps, unlock, registering a boat |
-| `ADMIN` | listed in `admins:` | the season: series, races, roster, series config, fleet import |
+| `RACE_OFFICER` | a club-domain account | run a race night: times, start sheet, handicaps, unlock, and editing an entrant's TCF, division or casual flag |
+| `ADMIN` | listed in `admins:` | series, races, roster, series config, the fleet register, and which boats are in a race at all |
 
-The split between the last two is **the season versus the night**. Processing
-handicaps is a race officer's job — it is what running a race *is*. Deciding that
-there is a race, and who is in the series, is not. Registering a boat is a race
-officer's because a casual turning up is added from the race page, which creates
-the register entry as it goes; importing a whole fleet is not.
+The split between the last two is **composing versus running**. Deciding that there
+is a race, who is in the series, and which boats tonight's race is scored over is the
+admin's. Recording what those boats did — including processing the handicaps, which
+is what running a race *is* — is the race officer's.
+
+**That line cuts through one endpoint rather than between two.**
+`POST /api/races/{id}/entrants` sends the whole list, deliberately, so that add,
+remove and TCF edit cannot be separated on the way in. So the role is decided from
+the **diff**: the same set of boat ids is an edit and needs a race officer; a boat
+more or fewer is a different race and needs an admin. `changesTheFleet` compares as a
+set, so reordering — which the race page's manual ordering saves through here — is an
+edit, not a composition change. One-offs have no id and are counted instead.
 
 Three consequences worth knowing:
 
@@ -524,6 +531,16 @@ Six things that are easy to get wrong:
    `super.doStart()`**: `HttpClient` installs its default handlers as it starts, so a
    removal in the constructor is undone before the first request.
    `aRefusedClientSecretSaysSoRatherThanBlamingTheProtocol` pins it.
+
+Saving handicaps and unlocking a race write an `AuditEntry` carrying the signed-in
+address. **A null user is a real answer**, not a gap: it means the entry was written
+with no login configured — the single-machine deployment, where every request is an
+admin and there is nobody to name. The `allowLoopback` exemption records null for the
+same reason: that request is an admin by configuration, not by identity. Writing
+`"local"` there would be a lie on a networked server running with auth off, which is a
+configuration that exists. `anAuditLogWrittenBeforeItRecordedTheUserStillLoads` pins
+that an `audit.json` from before the field still loads — the club's copy is the only
+one there is.
 
 `isAdmin()` and `canEdit()` in the browser are a **UI hint only**, so buttons match
 what they will do. The server checks the same thing and refuses.

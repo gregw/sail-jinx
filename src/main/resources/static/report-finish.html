@@ -57,15 +57,21 @@
   // `get` is the sort key and `text` is what shows. They are separate on purpose: a place
   // sorts as a number and prints as an em dash when there isn't one, and a time sorts as
   // seconds and prints as a clock.
+  // The first four are what gets transcribed into SailSys, in the order a person reads
+  // them off: the place, the time beside it, and the flag that qualifies the time. Sail
+  // number and boat name follow as the check that the right row is being read. Everything
+  // after that is the club's own interest and is not typed in anywhere.
   const COLUMNS = [
-    { key: 'place',        label: 'Finished<br>Place', cls: 'num-cell mono',
+    { key: 'place',        label: 'Place', cls: 'num-cell mono',
       get: r => r.place,   text: r => dash(r.place) },
+    { key: 'corrected',    label: 'Corrected<br>Finish', cls: 'num-cell mono',
+      get: r => r.corrected, text: r => esc(fmtTimeOfDay(r.corrected)) },
+    { key: 'flags',        label: 'Flags', cls: 'mono', sortable: false,
+      get: r => r.flags,   text: r => esc(r.flags) },
     { key: 'sail',         label: 'Sail #', cls: 'mono',
       get: r => r.sail,    text: r => esc(r.sail) },
     { key: 'name',         label: 'Boat', cls: '',
       get: r => r.name,    text: r => esc(r.name) },
-    { key: 'corrected',    label: 'Corrected<br>Finish', cls: 'num-cell mono',
-      get: r => r.corrected, text: r => esc(fmtTimeOfDay(r.corrected)) },
     { key: 'late',         label: 'Late', cls: 'num-cell mono',
       get: r => r.late,    text: r => r.late == null ? '—' : esc(fmtSignedMinSec(r.late / 60)) },
     { key: 'startPlace',   label: 'Start<br>Place', cls: 'num-cell mono',
@@ -73,9 +79,7 @@
     { key: 'elapsed',      label: 'Scored<br>Elapsed', cls: 'num-cell mono',
       get: r => r.elapsed, text: r => esc(fmtElapsed(r.elapsed)) },
     { key: 'elapsedPlace', label: 'Elapsed<br>Place', cls: 'num-cell mono',
-      get: r => r.elapsedPlace, text: r => dash(r.elapsedPlace) },
-    { key: 'flags',        label: 'Flags', cls: 'mono', sortable: false,
-      get: r => r.flags,   text: r => esc(r.flags) }
+      get: r => r.elapsedPlace, text: r => dash(r.elapsedPlace) }
   ];
 
   // A boat with no place gets an em dash, not a blank: blank reads as "nobody filled this
