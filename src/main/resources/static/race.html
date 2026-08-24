@@ -221,7 +221,9 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       entrants,
       times: timesMap,
       dutyBoatId,
-      boatOrder,
+      // boatOrder is deliberately absent. It is how the table is arranged, not
+      // something a boat did, so dragging a row must not make the page dirty and offer
+      // to save a change nobody made. It lives in the per-race view — see saveView.
       tcf: [...dirtyTcf.entries()].sort(),
       flags: [...dirtyFlags.entries()].sort()
     });
@@ -248,7 +250,6 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       if (Array.isArray(p.entrants)) entrants = p.entrants;
       timesMap = p.times || timesMap;
       dutyBoatId = p.dutyBoatId ?? dutyBoatId;
-      boatOrder = p.boatOrder || boatOrder;
       dirtyTcf = new Map(p.tcf || []);
       dirtyFlags = new Map(p.flags || []);
       return true;
@@ -281,7 +282,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     const filters = {};
     for (const id of RACE_VIEW_FILTERS) filters[id] = document.getElementById(id).checked;
     const all = allViews();
-    all[raceId] = { sort: sortStack, filters };
+    all[raceId] = { sort: sortStack, filters, order: boatOrder };
     try { sessionStorage.setItem(VIEWS_KEY, JSON.stringify(all)); } catch (_) {}
   }
 
@@ -301,6 +302,10 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       today: todayLocal()
     });
     sortStack = v.sort;
+    // Nothing dragged in this tab yet? Fall back to an order the store may still be
+    // carrying from before this became a view setting, so an existing one is not lost.
+    boatOrder = v.order.length ? v.order
+      : ((bundle && bundle.times && bundle.times.boatOrder) || []);
     for (const id of RACE_VIEW_FILTERS)
       document.getElementById(id).checked = v.filters[id];
     applyNowVisibility();
@@ -1014,11 +1019,13 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
         ids.splice(to, 0, ids.splice(from, 1)[0]);
         boatOrder = ids;
         dragId = null;
-        // Dragging cleared the sort, and that is an arrangement worth keeping too.
+        // An arrangement, not an edit: remembered like the column sort is, and pointedly
+        // not run through touched(), which would mark the page dirty and put a Save
+        // button in front of a change no boat had made.
         saveView();
         renderDutyOptions();
         renderHead();
-        touched();
+        renderEntrants();
       };
     });
   }
@@ -1423,7 +1430,10 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     // would take the other one-offs' times with it.
     if (e.boatId != null && !entrants.some(x => String(x.boatId) === String(e.boatId)))
       delete timesMap[String(e.boatId)];
+    // Out of the manual order too, and remembered — the order is a view setting now, so
+    // it does not ride along on the Save that commits the removal itself.
     boatOrder = boatOrder.filter(id => String(id) !== String(e.boatId));
+    saveView();
     if (String(dutyBoatId) === String(e.boatId))
       dutyBoatId = null;
 
@@ -1437,7 +1447,12 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
 
   function addEntrant(entrant) {
     entrants.push(entrant);
-    if (boatOrder.length) boatOrder.push(String(entrant.boatId));
+    // Onto the end of a manual order, if there is one; a boat that appeared out of
+    // nowhere in the middle of an order somebody built by hand is worse than last.
+    if (boatOrder.length) {
+      boatOrder.push(String(entrant.boatId));
+      saveView();
+    }
     clearAddFields();
     touched();
     renderDutyOptions();
@@ -1598,7 +1613,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     }
 
     const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/times', {
-      boatOrder, dutyBoatId: dutyBoatId || null, times: withFlags(timesMap)
+      dutyBoatId: dutyBoatId || null, times: withFlags(timesMap)
     });
     if (!r.ok) { setMsg('save-summary', 'Could not save times: ' + errorOf(r)); return false; }
 
@@ -2040,7 +2055,6 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     entrants = structuredClone((bundle.entrants && bundle.entrants.entrants) || []);
     timesMap = structuredClone((bundle.times && bundle.times.times) || {});
     dutyBoatId = (bundle.times && bundle.times.dutyBoatId) || null;
-    boatOrder = (bundle.times && bundle.times.boatOrder) || [];
     dirtyTcf = new Map();
     // Seeded from the store, not emptied: a flag the RO set is a fact about the race,
     // and it used to live only in this tab — so processing the results, which clears the

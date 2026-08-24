@@ -629,7 +629,7 @@ function defaultRaceView(ctx) {
   for (const id of RACE_VIEW_FILTERS) filters[id] = false;
   filters['hide-details'] = true;
   filters['hide-now'] = !(c.raceDate && c.today && c.raceDate === c.today);
-  return { sort: [{ key, dir: 1 }], filters };
+  return { sort: [{ key, dir: 1 }], filters, order: [] };
 }
 
 /**
@@ -638,6 +638,11 @@ function defaultRaceView(ctx) {
  * <p>Merged rather than replaced, so a view stored before a tick box existed does not
  * leave that box undefined, and a stored sort naming a column that has since gone does
  * not leave the table unsorted.
+ *
+ * <p>{@code order} is the manual order a drag leaves behind. It lives here rather than
+ * with the race because it is an arrangement, not a fact about the racing — the same
+ * reason the column sort does. Dragging a row used to mark the page dirty and offer a
+ * Save button for a change no boat had made.
  */
 function raceView(stored, ctx) {
   const base = defaultRaceView(ctx);
@@ -654,7 +659,14 @@ function raceView(stored, ctx) {
   for (const id of RACE_VIEW_FILTERS)
     if (typeof from[id] === 'boolean') filters[id] = from[id];
 
+  // A dragged order. Ids only: the list is a string in session storage, and a value
+  // that is not a boat id cannot match one, so it would silently sink every boat it
+  // was meant to place.
+  const order = Array.isArray(stored.order)
+    ? stored.order.filter(id => typeof id === 'string' && id !== '')
+    : [];
+
   // An empty sort is a real arrangement — it is what a drag leaves behind — but only
   // when the stored view actually said so.
-  return { sort: Array.isArray(stored.sort) ? sort : base.sort, filters };
+  return { sort: Array.isArray(stored.sort) ? sort : base.sort, filters, order };
 }

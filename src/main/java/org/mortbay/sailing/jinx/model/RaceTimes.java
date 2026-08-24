@@ -25,6 +25,19 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record RaceTimes(
     String raceId,
+    /**
+     * The race page's manual row order — <b>read, no longer written</b>.
+     *
+     * <p>Dragging a row is how the table is arranged, not something a boat did, so it
+     * marked the page dirty and offered to save a change nobody had made. The order
+     * moved to the per-race view in session storage, beside the column sort, which is
+     * remembered without being saved.
+     *
+     * <p>The field stays because races saved before that still carry one, and the page
+     * uses it to seed a tab that has not dragged anything yet. New saves leave it empty.
+     * {@code JsonStore.rewriteBoatId} still maintains it so an old order survives a
+     * design upgrade rather than half-pointing at a renamed boat.
+     */
     List<String> boatOrder,
     String dutyBoatId,
     Map<String, BoatTimes> times)

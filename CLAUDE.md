@@ -119,7 +119,8 @@ reads the page rather than copying it, so the two cannot drift: add a `check()` 
 it runs in both.
 
 **How a race is arranged is remembered per race, not per page.** `sail-jinx.raceViews`
-in session storage is a map from race id to `{sort, filters}`, because a race officer
+in session storage is a map from race id to `{sort, filters, order}` — where `order` is
+the manual row order a drag leaves behind — because a race officer
 works across several races at once and wants each one differently — tonight's in start
 order with the NOW buttons out, last week's in finishing order with them gone. One
 setting for the page makes every switch between two races an argument about whose turn
@@ -134,6 +135,12 @@ today**, because those buttons stamp the wall clock and on any other night they 
 one control on the page that can quietly write a wrong time. A view is stored only when
 somebody changes something, so a race that has never been arranged keeps getting the
 default as the race progresses.
+
+**A drag is an arrangement, not an edit.** The manual order used to live in
+`RaceTimes.boatOrder` and travel in `stateJson()`, so dragging a row marked the page
+dirty and put a Save button in front of a change no boat had made. It is a view setting
+now. The Java field survives as read-only legacy — old races still carry one and it
+seeds a tab that has not dragged anything yet.
 
 The NOW log under the entrants table is the one piece of race-night state that is
 deliberately **not** in the store: it is a per-tab scratchpad whose whole job is to

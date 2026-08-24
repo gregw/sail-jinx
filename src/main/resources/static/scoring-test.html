@@ -375,6 +375,22 @@
   check('nothing stored is the default',
     defaultRaceView({ hasPlaces: true, hasStarts: true, raceDate: TODAY, today: TODAY }),
     raceView(null, { hasPlaces: true, hasStarts: true, raceDate: TODAY, today: TODAY }));
+
+  // A dragged order is an arrangement of this race like any other, so it is remembered
+  // the same way — not saved, because nothing about the race changed.
+  check('default view: no manual order',
+    [], defaultRaceView({ hasPlaces: true, hasStarts: true,
+                          raceDate: TODAY, today: TODAY }).order);
+  check('a stored manual order is kept',
+    ['b', 'a', 'c'],
+    raceView({ order: ['b', 'a', 'c'] },
+             { hasPlaces: true, hasStarts: true, raceDate: TODAY, today: TODAY }).order);
+  check('a manual order of the wrong shape is discarded, not trusted',
+    [], raceView({ order: 'b,a,c' },
+                 { hasPlaces: true, hasStarts: true, raceDate: TODAY, today: TODAY }).order);
+  check('and so are the entries in it that are not boat ids',
+    ['a'], raceView({ order: ['a', 7, null] },
+                    { hasPlaces: true, hasStarts: true, raceDate: TODAY, today: TODAY }).order);
   // Session storage is a string a person can edit and a version can outlive.
   check('a stored sort naming a column that no longer exists is dropped',
     [{ key: 'name', dir: 1 }],
