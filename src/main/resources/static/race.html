@@ -57,7 +57,8 @@
       <label><input type="checkbox" id="hide-dnc"> Hide didn't come</label>
       <label><input type="checkbox" id="hide-finished"> Hide finished</label>
       <label title="Hides design, corrected finish and scored elapsed — the columns that
-are reference rather than capture."><input type="checkbox" id="hide-details" checked>
+are reference rather than capture. Once the start sheet is out, TCF joins them; while it
+is still editable it always shows."><input type="checkbox" id="hide-details" checked>
         Hide details</label>
       <label title="Hides the NOW buttons and the log of times they capture."><input
         type="checkbox" id="hide-now" checked> Hide NOW</label>
@@ -395,7 +396,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       get: e => tcfOf(e),
       render: e => {
         // A TCF is what the stagger was computed from, so it closes with the starts.
-        if (startsLocked() || readOnly()) return esc(fmtTcf(tcfOf(e)));
+        if (!tcfEditable()) return esc(fmtTcf(tcfOf(e)));
         const dirty = dirtyTcf.has(e.boatId);
         return '<input type="number" step="0.0001" class="tcf-input' + (dirty ? ' dirty' : '')
           + '" data-id="' + esc(e.boatId) + '" value="' + esc(fmtTcf(tcfOf(e))) + '">';
@@ -476,6 +477,22 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
   // Reference rather than capture: worth having, but not while boats are crossing.
   const DETAIL_COLS = ['design', 'corrected', 'elapsed'];
 
+  /**
+   * True while the TCF column is a box somebody can type in.
+   *
+   * <p>It is a detail column only once the start sheet is out. Until then it is the one
+   * number the whole stagger is computed from, and a control that can be hidden by a
+   * tick box is a control somebody will look for and fail to find. Afterwards it is
+   * reference — the handicap this race was sailed on — and belongs with the other
+   * columns that are worth having but not while boats are crossing.
+   *
+   * <p>Deliberately the same predicate the cell renderer uses, so the column cannot be
+   * hidden in one place and editable in the other.
+   */
+  function tcfEditable() {
+    return !(startsLocked() || readOnly());
+  }
+
   function isMixedSeries() {
     return !!bundle && bundle.spinnakerPolicy === 'MIXED';
   }
@@ -487,8 +504,9 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       if (c.key === 'adjustment' && adjustments.size === 0) return false;
       // Every boat in a one-way series answers the same, so the column says nothing.
       if (c.key === 'spin' && !isMixedSeries()) return false;
-      if (DETAIL_COLS.includes(c.key)
-          && document.getElementById('hide-details').checked) return false;
+      const detail = DETAIL_COLS.includes(c.key)
+        || (c.key === 'tcf' && !tcfEditable());
+      if (detail && document.getElementById('hide-details').checked) return false;
       if (c.key === 'remove' && !(allowRemove() && !locked)) return false;
       return true;
     });
@@ -864,22 +882,23 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     return a == null ? '' : fmtTimeOfDay(a + target).slice(0, 6);
   }
 
+  /**
+   * The NOW button in a column heading: take the time, and nothing else.
+   *
+   * <p>It used to write that time into every empty cell in the column. That is the wrong
+   * shape for what actually happens on the water — three boats cross together and the RO
+   * hits the button, then works out which three. Filling every blank cell answers a
+   * question nobody asked, and undoing it means finding and clearing each one it touched.
+   *
+   * <p>So the time goes to the log, where it can be dragged onto whichever boats it turns
+   * out to belong to, and a click that turns out to be wrong is one entry to discard.
+   * The log already knows how to displace a value back into itself, so nothing is lost
+   * either way.
+   */
   function stampColumn(field) {
     const now = localNow();
-    let n = 0;
-    for (const e of orderedEntrants()) {
-      const t = timesFor(e.boatId);
-      if (!t.came || t[field]) continue;
-      t[field] = now;
-      n++;
-    }
-    if (field === 'finish' && n) lastFinish = now;
-    if (n) logNow({ time: now, field,
-      note: (field === 'finish' ? 'finish' : 'start') + ' stamped' });
-    touched();
-    setCtrlMsg(n ? 'banner-ok' : 'banner-warn',
-      n ? 'Stamped ' + n + ' boat' + (n === 1 ? '' : 's') + ' at ' + now + '.'
-        : 'Nothing left to stamp.');
+    logNow({ time: now, field });
+    setCtrlMsg('banner-ok', 'Logged ' + now + ' — drag it onto the boats it belongs to.');
   }
 
   // --- drag to reorder -------------------------------------------------------
