@@ -229,7 +229,7 @@ a.build-err, .build-err { color: var(--err-fg); font-weight: 600; }
    title sits at half the usual gap from the nav, and each line below it 20% closer to
    the next. Every line saved here is a boat visible without scrolling. */
 .race-head { display: flex; align-items: center; gap: 0.75rem; }
-#race-page h1 { margin-top: 0.5rem; }
+#race-page h1 { margin: 0.25rem 0 0.25rem; }
 #race-page .banner { margin-bottom: 0.6rem; }
 #race-page .toolbar { margin: 0.6rem 0; }
 #race-page section { margin-top: 0.6rem; }
@@ -278,10 +278,20 @@ input.time-input.now-drop-target {
   outline: 2px solid var(--accent); outline-offset: -1px;
 }
 
+/* The notice box and the Save/Reset box occupy one slot, not two. The slot is sized by
+   the notice — with a floor deep enough for a row of buttons, so nothing on the page
+   moves when an edit makes the save box appear over it. */
+.notice-slot { position: relative; min-height: 2.5rem; margin-bottom: 0.6rem; }
+/* The gap below belongs to the slot, not to the notice inside it. On the banner it sat
+   inside the slot's height, so the overlay — which fills the slot — came out that much
+   taller than the box it is covering. The id selector is to beat #race-page .banner. */
+#race-page .notice-slot > .banner { margin-bottom: 0; }
+
 .save-bar {
-  position: sticky; top: 0; z-index: 20;
+  position: absolute; inset: 0; z-index: 20;
   display: flex; align-items: center; gap: 0.75rem;
-  padding: 0.7rem 1rem; margin-bottom: 0.6rem;
+  /* No vertical padding: the height is the slot's, and the buttons centre in it. */
+  padding: 0 0.85rem;
   background: var(--dirty-bg); border: 1px solid var(--dirty-bd);
   border-radius: var(--radius); box-shadow: var(--shadow-pop);
 }
@@ -291,8 +301,11 @@ input.time-input.now-drop-target {
    useful number of boats at once — see fitEntrantsHeight in race.html, which sets the
    height and decides whether to set one at all. The header sticks, or scrolling the
    fleet would mean scrolling the column names off the top of it. */
-.entrants-scroll { overflow: auto; }
-.entrants-scroll table { border-radius: 0; border-top: none; }
+/* Only as wide as the table. Left to itself the box fills the page and the table fills
+   the box, which put a stretch of empty cell between the last column and the scrollbar
+   — the bar is easier to reach where the table actually ends. */
+.entrants-scroll { overflow: auto; width: fit-content; max-width: 100%; }
+.entrants-scroll table { width: auto; border-radius: 0; border-top: none; }
 .entrants-scroll thead th {
   position: sticky; top: 0; z-index: 2;
   /* No background here on purpose: #entrants-table thead th already paints it brand,

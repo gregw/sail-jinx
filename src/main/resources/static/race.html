@@ -57,13 +57,17 @@
 
        The save bar sits over it, and is sticky, so it stays reachable once the page is
        scrolled past this point. -->
-  <div id="save-bar" class="save-bar" style="display:none;">
-    <button id="save-btn" class="primary" type="button" data-requires="officer">Save</button>
-    <button id="reset-btn" type="button" data-requires="officer">Reset</button>
-    <span id="save-summary"></span>
+  <div class="notice-slot">
+    <div id="ctrl-msg" class="banner banner-info">Loading…</div>
+    <!-- Laid over the notice, filling it exactly, so an unsaved change costs no height
+         and cannot be missed. What the notice was saying is nearly always about the
+         action before the edit, and it comes back the moment the edit is saved. -->
+    <div id="save-bar" class="save-bar" style="display:none;">
+      <button id="save-btn" class="primary" type="button" data-requires="officer">Save</button>
+      <button id="reset-btn" type="button" data-requires="officer">Reset</button>
+      <span id="save-summary"></span>
+    </div>
   </div>
-
-  <div id="ctrl-msg" class="banner banner-info">Loading…</div>
 
   <section id="race-entrants" style="display:none;">
     <!-- No "Entrants" heading. The table is self-evidently the entrants, and on the
@@ -716,12 +720,12 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
    * How many rows are worth giving the table its own scrollbar for.
    *
    * <p>Below this the fixed height is worse than no fixed height: a short window would
-   * get a scrollbar around six boats, so the fleet is scrolled inside a box that is
-   * itself scrolled down the page. The whole point is to keep the toolbars and the
+   * get a scrollbar around five or six boats, so the fleet is scrolled inside a box that
+   * is itself scrolled down the page. The whole point is to keep the toolbars and the
    * notice in view while working down the fleet, and there has to be a fleet to work
    * down for that to be worth anything.
    */
-  const MIN_SCROLL_ROWS = 15;
+  const MIN_SCROLL_ROWS = 10;
 
   function fitEntrantsHeight() {
     const box = document.getElementById('entrants-scroll');
@@ -1844,7 +1848,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       return;
     }
     await processHandicaps();
-    setCtrlMsg('banner-warn', 'Race abandoned. Every boat is flagged ABN, the results '
+    setCtrlMsg('banner-ok', 'Race abandoned. Every boat is flagged ABN, the results '
       + 'are processed and no handicap has changed. Unlock results puts it back.');
   }
 
@@ -1872,7 +1876,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     renderRace();
     renderHead();
     renderEntrants();
-    setCtrlMsg('banner-warn', 'Starts unlocked. The published start sheet still stands '
+    setCtrlMsg('banner-ok', 'Starts unlocked. The published start sheet still stands '
       + 'until you compute new times.');
   }
 
@@ -2066,8 +2070,12 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       + 'processed, which changes nobody\u2019s handicap. Unlock results undoes it.';
     document.getElementById('process-btn').disabled = locked;
 
+    // Where the race has got to, drawn on every load — not the result of anything
+    // anybody just did, so all three are the plain informational blue. Locked was
+    // yellow, which reads as something needing attention when it is the opposite: a
+    // finished race. Green is reserved for reporting an action, below.
     if (locked) {
-      setCtrlMsg('banner-warn', 'This race is processed and locked. Its handicaps have '
+      setCtrlMsg('banner-info', 'This race is processed and locked. Its handicaps have '
         + 'been carried forward. Unlock it below to make changes.');
     } else if (!bundle.startSheet) {
       setCtrlMsg('banner-info', 'No start times yet — set the target elapsed time and '
@@ -2075,7 +2083,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     } else {
       const src = bundle.entrants && bundle.entrants.tcfSource;
       const from = bundle.entrants && bundle.entrants.sourceRaceNumber;
-      setCtrlMsg('banner-ok', src === 'CARRIED_FORWARD' && from != null
+      setCtrlMsg('banner-info', src === 'CARRIED_FORWARD' && from != null
         ? ('Handicaps carried forward from race ' + from + '.')
         : 'Ready.');
     }
