@@ -17,13 +17,65 @@
 
 const OCS_PENALTY_SECONDS = 5 * 60;
 
+/**
+ * The mutually exclusive reasons a boat has no place, in the order they read on a sheet.
+ *
+ * <p><b>A boat has at most one.</b> You cannot both run out of time and retire — they are
+ * different answers to the same question, and a boat carrying both says the RO changed
+ * their mind rather than that two things happened. Enforced in {@link flags} rather than
+ * left to the popover, so it is true of stored data and of anything a future caller
+ * supplies, not only of what the tick boxes happen to allow.
+ *
+ * <p>That exclusivity is what makes the order usable as a sort key: with one reason per
+ * boat, "sort the unplaced by why" has exactly one answer. ABN is deliberately not on the
+ * list — an abandoned race says nothing about the boat, and every boat in one carries it.
+ */
+const STATUS_ORDER = ['AVG', 'DNF', 'RET', 'DNS', 'DSQ', 'DNC'];
+
 // Flags in display order. Anything else a caller supplies is preserved and
 // shown after these, but is not offered as a checkbox.
-const KNOWN_FLAGS = ['DNC', 'DNS', 'DNF', 'DSQ', 'AVG', 'OCS', 'RET', 'ABN'];
+//
+// The six exclusive reasons first, in the order they read on a sheet, then the two that
+// qualify rather than classify. OCS used to sit in the middle, so "DNF OCS" and "OCS RET"
+// were both possible and the cell read differently depending on which reason it was. See
+// STATUS_ORDER below — this list is built from it so the two cannot drift apart.
+const KNOWN_FLAGS = [...STATUS_ORDER, 'ABN', 'OCS'];
 
 // Flags that mean "this boat has classified itself" — their presence stops the
 // automatic came/finish inspection from adding one of its own.
 const STATUS_FLAGS = ['DNC', 'DNS', 'DNF', 'DSQ', 'RET', 'ABN', 'AVG'];
+
+/**
+ * Reasons that cannot sit beside OCS.
+ *
+ * <p>OCS says the boat crossed the line early, which means it started. So it can sit
+ * beside a boat that then failed to finish, retired, or was thrown out — and cannot sit
+ * beside one that never started, never came, or is being given average points instead of
+ * a race.
+ */
+const OCS_EXCLUDES = ['DNS', 'AVG', 'DNC'];
+
+/**
+ * Where a boat with no place sorts among the others that have none.
+ *
+ * <p>Its reason's position in {@link STATUS_ORDER}, or one past the end for anything the
+ * list does not name — which is where a boat with no reason at all lands too. OCS is not
+ * a reason: it is about the start, and a boat that was over early and then retired is a
+ * retirement.
+ */
+function unplacedRank(flagList) {
+  for (let i = 0; i < STATUS_ORDER.length; i++)
+    if ((flagList || []).includes(STATUS_ORDER[i])) return i;
+  return STATUS_ORDER.length;
+}
+
+/** Keep one reason, and drop OCS where it contradicts the one that is kept. */
+function normaliseFlags(set) {
+  const reasons = STATUS_ORDER.filter(f => set.has(f));
+  for (const f of reasons.slice(1)) set.delete(f);
+  if (reasons.length && OCS_EXCLUDES.includes(reasons[0])) set.delete('OCS');
+  return set;
+}
 
 // Flags that take a boat out of the placings entirely.
 const UNPLACED_FLAGS = ['AVG', 'DNC', 'DNS', 'DNF', 'DSQ', 'RET', 'ABN'];
@@ -243,6 +295,7 @@ function createScorer(state) {
       for (const f of ov.added || []) set.add(f);
       for (const f of ov.removed || []) set.delete(f);
     }
+    normaliseFlags(set);
     const known = KNOWN_FLAGS.filter(f => set.has(f));
     return known.concat([...set].filter(f => !KNOWN_FLAGS.includes(f)));
   }

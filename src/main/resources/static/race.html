@@ -449,6 +449,9 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       render: e => esc(scorer.flags(e).join(', ')) || '<span class="hint">—</span>' },
     { key: 'place', label: 'Place', cls: 'num-cell',
       get: e => placeMap.get(String(e.boatId)) ?? NaN,
+      // Below the finishers every boat ranks the same — none — and they are not the
+      // same boat to somebody reading down the table. Ordered by why they are there.
+      whenMissing: e => unplacedRank(scorer.flags(e)),
       render: e => esc(placeMap.get(String(e.boatId)) ?? '') },
     { key: 'remove', label: '', sortable: false, cls: 'remove-cell',
       // Hidden unless Allow remove is ticked, and gone entirely once the results are
@@ -600,8 +603,15 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
           // way. Only real values get flipped.
           const ae = isEmptyValue(av), be = isEmptyValue(bv);
           if (ae || be) {
-            if (ae && be) continue;
-            return ae ? 1 : -1;
+            if (!ae || !be) return ae ? 1 : -1;
+            // Both in the tail. If the column has something to say about how the tail
+            // is arranged, say it; otherwise fall through to the next sort column.
+            if (!col.whenMissing) continue;
+            const fa = col.whenMissing(a), fb = col.whenMissing(b);
+            // Not multiplied by dir, like the tail's own position is not: reversing the
+            // column reverses the ranked fleet and leaves the rest as it reads.
+            if (fa !== fb) return fa - fb;
+            continue;
           }
           const cmp = compareValues(av, bv);
           if (cmp !== 0) return cmp * dir;
@@ -1188,7 +1198,24 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
         const cur = dirtyFlags.get(String(boatId)) || { added: [], removed: [] };
         const added = new Set(cur.added);
         const removed = new Set(cur.removed);
-        if (cb.checked) { added.add(f); removed.delete(f); }
+        if (cb.checked) {
+          added.add(f);
+          removed.delete(f);
+          // One reason at a time. Ticking a second silently replaced the first once
+          // flags() started normalising, which looked like the click had done nothing.
+          // Clearing the others here makes the boxes agree with the answer.
+          for (const other of STATUS_ORDER) {
+            if (other === f) continue;
+            added.delete(other);
+            // Removed as well as un-added: the one being replaced may be derived from
+            // the times rather than ticked, and un-adding does not clear that.
+            if (STATUS_ORDER.includes(f)) removed.add(other);
+          }
+          // OCS says the boat started, so it cannot stand beside a reason that says it
+          // did not — in either direction.
+          if (f === 'OCS') for (const x of OCS_EXCLUDES) { added.delete(x); removed.add(x); }
+          if (OCS_EXCLUDES.includes(f)) { added.delete('OCS'); removed.add('OCS'); }
+        }
         else { removed.add(f); added.delete(f); }
         dirtyFlags.set(String(boatId), { added: [...added], removed: [...removed] });
         pop.remove();

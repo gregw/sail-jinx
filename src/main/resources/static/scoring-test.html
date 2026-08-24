@@ -470,6 +470,54 @@
   check('scored elapsed still runs from the gun',
     5400, starts.scoredElapsedSeconds(st('late')));
 
+
+  // --- one reason, and the order they read in -----------------------------------
+  // Below the finishers, a fleet sorted by place is a heap of boats that all rank the
+  // same: none. They are not the same to a race officer reading down the sheet, so they
+  // are ordered by why they are there — and that ordering is only well defined because
+  // the reasons are exclusive. A boat cannot both run out of time and retire.
+
+  const FLAG_E = [{ boatId: 'f', sailNumber: 'A1', name: 'F', tcf: 1.0, entryType: 'ROSTER' }];
+  const withFlags = (added, times) => createScorer({
+    entrants: FLAG_E,
+    startSheet: { earliestStart: '18:00:00', starts: [{ boatId: 'f', startTime: '18:00:00' }] },
+    times: { f: times || { came: true, actualStart: '18:00:05', finish: '19:30:00' } },
+    dutyBoatId: null,
+    flagOverrides: new Map([['f', { added, removed: [] }]]),
+    tcfOverrides: new Map()
+  }).flags(FLAG_E[0]);
+
+  check('exclusive: two reasons keep the one that reads first',
+    ['DNF'], withFlags(['DNF', 'RET']));
+  check('exclusive: and it is the list order that decides, not the tick order',
+    ['DNF'], withFlags(['RET', 'DNF']));
+  check('exclusive: AVG outranks everything',
+    ['AVG'], withFlags(['DNC', 'AVG']));
+
+  // OCS says the boat crossed early, so it started. It can sit beside a boat that then
+  // failed to finish, retired, or was thrown out.
+  check('OCS survives beside a boat that started and then stopped',
+    ['DNF', 'OCS'], withFlags(['DNF', 'OCS']));
+  check('OCS survives beside a disqualification', ['DSQ', 'OCS'], withFlags(['DSQ', 'OCS']));
+  check('OCS survives beside a retirement', ['RET', 'OCS'], withFlags(['RET', 'OCS']));
+  // …and cannot sit beside one that never started, never came, or is on average points.
+  check('OCS goes when the boat never started', ['DNS'], withFlags(['DNS', 'OCS']));
+  check('OCS goes when the boat never came', ['DNC'], withFlags(['DNC', 'OCS']));
+  check('OCS goes when the boat is on average points', ['AVG'], withFlags(['AVG', 'OCS']));
+
+  check('unplaced order: average points first',      0, unplacedRank(['AVG']));
+  check('unplaced order: ran out of time',           1, unplacedRank(['DNF']));
+  check('unplaced order: stopped of its own accord', 2, unplacedRank(['RET']));
+  check('unplaced order: never started',             3, unplacedRank(['DNS']));
+  check('unplaced order: disqualified',              4, unplacedRank(['DSQ']));
+  check('unplaced order: never came',                5, unplacedRank(['DNC']));
+  // Anything the list does not name sorts after everything it does.
+  check('unplaced order: an abandoned race is other', 6, unplacedRank(['ABN']));
+  check('unplaced order: no reason at all is other',  6, unplacedRank([]));
+  check('unplaced order: OCS is about the start, not the reason', 6, unplacedRank(['OCS']));
+  check('unplaced order: OCS is ignored beside a real one', 1, unplacedRank(['DNF', 'OCS']));
+
+
 </script>
 </body>
 </html>
