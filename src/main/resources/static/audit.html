@@ -12,8 +12,8 @@
 <main>
   <h1>Audit log</h1>
   <p class="lead">
-    Every handicap processing step, in order. This store is the only record
-    there is, so it is worth being able to see what changed and when.
+    Every handicap processing step, in order, and who did it. This store is the only
+    record there is, so it is worth being able to see what changed and when.
   </p>
 
   <div id="store-errors" class="banner banner-err" style="display:none;"></div>
@@ -47,6 +47,19 @@
     ]);
     const state = document.getElementById('audit-state');
     if (!auditR.ok) {
+      // Somebody who followed a link or a bookmark here. Say which of the two things is
+      // wrong — not signed in, or signed in and not an admin — because "sign in" is the
+      // answer to one of them and no answer at all to the other.
+      const who = await getWhoami();
+      if (auditR.status === 401 || auditR.status === 403) {
+        state.className = 'banner banner-warn';
+        state.innerHTML = who.signedIn
+          ? 'The audit log is for administrators. It records who changed what, which is '
+            + 'the one thing on this site that is not the club&rsquo;s racing.'
+          : 'The audit log is for administrators. <a href="'
+            + esc(who.loginPath || '/auth/login') + '">Sign in</a> if you are one.';
+        return;
+      }
       state.className = 'banner banner-err';
       state.textContent = 'Could not load the audit log: ' + errorOf(auditR);
       return;

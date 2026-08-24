@@ -474,9 +474,16 @@ no outbound call — exactly what the server did before a login existed.
 
 | Tier | Who | May |
 |---|---|---|
-| `VIEWER` | anybody, signed in or not | read every page and every GET |
+| `VIEWER` | anybody, signed in or not | read every page and every GET **except `/api/audit`** |
 | `RACE_OFFICER` | a club-domain account | run a race night: times, start sheet, handicaps, unlock, and editing an entrant's TCF, division or casual flag |
 | `ADMIN` | listed in `admins:` | series, races, roster, series config, the fleet register, and which boats are in a race at all |
+
+**The audit log is the one exception to "every GET answers anybody".** It is not a
+result: it records who changed what, and since it started naming them, publishing it
+is a different decision from publishing the racing. `GET /api/audit` needs an admin,
+the nav link carries `data-requires="admin"`, and the page itself says which of the
+two things is wrong — not signed in, or signed in and not an admin — because "sign
+in" answers one of them and nothing at all for the other.
 
 The split between the last two is **composing versus running**. Deciding that there
 is a race, who is in the series, and which boats tonight's race is scored over is the

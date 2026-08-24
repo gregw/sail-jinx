@@ -86,9 +86,13 @@ import org.slf4j.LoggerFactory;
  * </pre>
  *
  * <h2>Authorisation</h2>
- * Three tiers, and the first one is the point: <b>every GET above answers anybody</b>.
- * A club publishes its results, and a season that can only be read by people with
- * accounts is a season nobody reads.
+ * Three tiers, and the first one is the point: <b>every GET above answers anybody</b>,
+ * with one exception. A club publishes its results, and a season that can only be read
+ * by people with accounts is a season nobody reads.
+ *
+ * <p>The exception is {@code GET /api/audit}, which is an admin's. The audit log is not
+ * a result — it is a record of who changed what, and since it started naming them,
+ * publishing it is a different decision from publishing the racing.
  *
  * <pre>
  *   VIEWER        no account          every GET
@@ -226,7 +230,10 @@ public class ApiServlet extends HttpServlet
                 case "/designs" -> writeJson(resp, sortedDesigns());
                 case "/series" -> writeJson(resp, sortedSeries());
                 case "/races" -> writeJson(resp, allRaces());
-                case "/audit" -> writeJson(resp, store.audit());
+                case "/audit" -> {
+                    if (!denyUnless(req, resp, Role.ADMIN))
+                        writeJson(resp, store.audit());
+                }
                 default -> doGetPath(req, path, resp);
             }
         }

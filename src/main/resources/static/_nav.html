@@ -4,7 +4,10 @@
     <span><a href="/series.html">Series</a></span>
     <span><a href="/races.html">Races</a></span>
     <span><a href="/race.html">Race</a></span>
-    <span><a href="/audit.html">Audit</a></span>
+    <!-- The one page that is not the club's racing: it records who changed what, and
+         names them. Hidden from everybody else — and the server refuses the data as
+         well, so this is a tidy nav rather than the lock. -->
+    <span data-requires="admin"><a href="/audit.html">Audit</a></span>
     <span class="build-widget" id="build-widget"></span>
     <span class="build-widget" id="auth-widget"></span>
 </nav>

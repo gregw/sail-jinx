@@ -96,7 +96,7 @@ for (const page of fs.readdirSync(dir).filter(f => f.endsWith('.html') && !f.sta
   // it just quietly offers an admin's button to a race officer.
   const ROLES = new Set(['officer', 'admin']);
   const badRoles = new Map();
-  (html + raw).split('\n').forEach((line, idx) => {
+  (html + navHtml + raw).split('\n').forEach((line, idx) => {
     for (const m of line.matchAll(/data-requires="([^"]*)"/g))
       if (!ROLES.has(m[1]) && !badRoles.has(m[1])) badRoles.set(m[1], idx + 1);
   });

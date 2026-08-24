@@ -507,7 +507,7 @@ class AuthIntegrationTest
                 + "\"netAdjustmentMinutes\":5.0,\"oldTcf\":1.0,\"newTcf\":1.0526}]}"),
             is(200));
 
-        JsonNode audit = M.readTree(browser().send(HttpRequest.newBuilder()
+        JsonNode audit = M.readTree(commodore.send(HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:" + port(jinx) + "/api/audit")).GET().build(),
             HttpResponse.BodyHandlers.ofString()).body());
         assertThat(audit.size(), is(1));
@@ -522,7 +522,7 @@ class AuthIntegrationTest
                 .DELETE().build(),
             HttpResponse.BodyHandlers.ofString());
         assertThat(del.statusCode(), is(200));
-        JsonNode after = M.readTree(browser().send(HttpRequest.newBuilder()
+        JsonNode after = M.readTree(commodore.send(HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:" + port(jinx) + "/api/audit")).GET().build(),
             HttpResponse.BodyHandlers.ofString()).body());
         assertThat(after.get(1).path("action").asText(), equalTo("unlock"));
@@ -569,5 +569,33 @@ class AuthIntegrationTest
         assertThat(postAs(officer, "/api/races/" + raceId + "/entrants",
             "{\"entrants\":[{\"boatId\":\"" + boatId + "\",\"tcf\":1.0},"
                 + "{\"boatId\":\"" + second + "\",\"tcf\":1.0}]}"), is(403));
+    }
+
+    @Test
+    void theAuditLogIsForAdminsOnly(@TempDir Path tmp) throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false);
+
+        // The only GET on this server that does not answer everybody. The rest of what
+        // the club holds is published — the fleet, the seasons, the results — but the
+        // audit log is not a result: it is a record of who changed what, and it names
+        // them. Publishing that is a different decision from publishing the racing.
+        assertThat(getStatus(browser(), "/api/audit"), is(401));
+
+        HttpClient officer = browser();
+        signIn(officer, "ro@myc.org.au");
+        assertThat(getStatus(officer, "/api/audit"), is(403));
+
+        HttpClient commodore = browser();
+        signIn(commodore, "commodore@myc.org.au");
+        assertThat(getStatus(commodore, "/api/audit"), is(200));
+    }
+
+    private int getStatus(HttpClient browser, String path) throws Exception
+    {
+        return browser.send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx) + path)).GET().build(),
+            HttpResponse.BodyHandlers.ofString()).statusCode();
     }
 }
