@@ -1051,4 +1051,34 @@ class JinxApiIntegrationTest
         assertThat(post("/api/races/" + raceId + "/abandon", "{\"abandoned\":false}")
             .path("race").path("abandoned").asBoolean(), is(false));
     }
+
+    @Test
+    void abandoningARaceProcessesItAndMovesNobodysHandicap() throws Exception
+    {
+        String seriesId = createSeries("2026 Winter Twilight");
+        String fast = createBoat("AUS9", "Quick Silver");
+        String slow = createBoat("A123", "Slow Poke");
+        putRoster(seriesId, fast, 1.0450, slow, 0.8821);
+        String raceId = createRace(seriesId, "2026-06-05");
+        post("/api/races/" + raceId + "/entrants/seed", "{}");
+
+        // What the page sends when Abandon Race is pressed: every boat ABN. One of them
+        // has a finish time, because a race is usually called off with boats already
+        // round — and that boat must not be treated as the winner of anything.
+        JsonNode processed = post("/api/races/" + raceId + "/process-handicaps", """
+            {"targetElapsedMinutes":90,
+             "boats":[{"boatId":"%s","tcf":1.0450,"status":"ABN","seeded":true,
+                       "elapsedMinutes":85,"finishPosition":1},
+                      {"boatId":"%s","tcf":0.8821,"status":"ABN","seeded":true}]}"""
+            .formatted(fast, slow));
+
+        JsonNode adjustments = processed.path("adjustments");
+        assertThat(adjustments.size(), equalTo(2));
+        for (JsonNode a : adjustments)
+        {
+            assertThat(a.path("newTcf").asDouble(), closeTo(a.path("oldTcf").asDouble(), 1e-12));
+            assertThat(a.path("penaltyMinutes").asDouble(), closeTo(0.0, 1e-12));
+            assertThat(a.path("rewardMinutes").asDouble(), closeTo(0.0, 1e-12));
+        }
+    }
 }

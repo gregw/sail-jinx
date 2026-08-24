@@ -374,8 +374,9 @@ body.report-page { background: var(--surface); }
    misaligned above a full-width sheet. */
 .report-wide { max-width: none; }
 /* A boat name is one thing and reads as one thing; with the width above there is room
-   for it. Only on the wide sheet — the finish sheet is narrow on purpose. */
-.report-wide table.report-table td:nth-child(2) { white-space: nowrap; }
+   for it. Marked by the column rather than by position — it was nth-child(2), which
+   silently became the wrong column the moment either sheet was reordered. */
+table.report-table td.nowrap, table.report-table th.nowrap { white-space: nowrap; }
 .report-head { border-bottom: 2px solid var(--ink); padding-bottom: 0.5rem; margin-bottom: 1rem; }
 .report-head h1 { margin: 0; font-size: 1.4rem; }
 .report-sub { color: var(--muted); font-size: 0.95rem; margin-top: 0.2rem; }

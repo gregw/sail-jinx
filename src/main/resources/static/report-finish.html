@@ -8,12 +8,12 @@
 </head>
 <body class="report-page">
 
-<div class="report-toolbar no-print">
+<div class="report-toolbar report-wide no-print">
   <button onclick="window.print()" class="primary" type="button">Print</button>
   <a id="back-link" href="/races.html">← back to the race</a>
 </div>
 
-<main class="report">
+<main class="report report-wide">
   <header class="report-head">
     <h1 id="report-title">Finish sheet</h1>
     <div id="report-sub" class="report-sub"></div>
@@ -70,7 +70,7 @@
       get: r => r.flags,   text: r => esc(r.flags) },
     { key: 'sail',         label: 'Sail #', cls: 'mono',
       get: r => r.sail,    text: r => esc(r.sail) },
-    { key: 'name',         label: 'Boat', cls: '',
+    { key: 'name',         label: 'Boat', cls: 'nowrap',
       get: r => r.name,    text: r => esc(r.name) },
     // Blank until the handicaps are processed and saved, which is the only thing that
     // puts an adjustment in the bundle. A dash would claim the boat was adjusted by

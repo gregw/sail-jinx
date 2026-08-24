@@ -2,6 +2,7 @@ package org.mortbay.sailing.jinx.pursuit;
 
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -413,5 +414,33 @@ class PursuitHandicapEngineTest
     private static Result fin(String id, LocalTime start, LocalTime finish)
     {
         return new Result(id, FinishStatus.FIN, start, finish, null);
+    }
+
+    /**
+     * An abandoned race changes nobody's handicap.
+     *
+     * <p>Abandoning is not a result and must not read as one. The boats that were ahead
+     * when it was called off did not win, and the boats that were behind did not lose —
+     * so no penalty is collected, there is no pool, and every TCF comes out the way it
+     * went in. That falls out of {@code ABN} being one of the frozen statuses, which is
+     * why it is an enum constant and not a flag the browser quietly drops on the floor.
+     */
+    @Test
+    void anAbandonedRaceLeavesEveryHandicapExactlyWhereItWas()
+    {
+        List<Competitor> boats = workedExampleFleet();
+        Map<String, Result> results = new LinkedHashMap<>();
+        for (Competitor b : boats)
+            results.put(b.boatId(), new Result(b.boatId(), FinishStatus.ABN, null, null, 0.0));
+
+        List<Adjustment> out = engine.processResults(boats, race(90), results);
+
+        assertThat(out, hasSize(boats.size()));
+        for (Adjustment a : out)
+        {
+            assertThat(a.newTcf(), closeTo(a.oldTcf(), 1e-12));
+            assertThat(a.penaltyMinutes(), closeTo(0.0, 1e-12));
+            assertThat(a.rewardMinutes(), closeTo(0.0, 1e-12));
+        }
     }
 }

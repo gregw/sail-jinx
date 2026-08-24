@@ -19,14 +19,14 @@ const OCS_PENALTY_SECONDS = 5 * 60;
 
 // Flags in display order. Anything else a caller supplies is preserved and
 // shown after these, but is not offered as a checkbox.
-const KNOWN_FLAGS = ['DNC', 'DNS', 'DNF', 'DSQ', 'AVG', 'OCS', 'RET', 'ABD'];
+const KNOWN_FLAGS = ['DNC', 'DNS', 'DNF', 'DSQ', 'AVG', 'OCS', 'RET', 'ABN'];
 
 // Flags that mean "this boat has classified itself" — their presence stops the
 // automatic came/finish inspection from adding one of its own.
-const STATUS_FLAGS = ['DNC', 'DNS', 'DNF', 'DSQ', 'RET', 'ABD', 'AVG'];
+const STATUS_FLAGS = ['DNC', 'DNS', 'DNF', 'DSQ', 'RET', 'ABN', 'AVG'];
 
 // Flags that take a boat out of the placings entirely.
-const UNPLACED_FLAGS = ['AVG', 'DNC', 'DNS', 'DNF', 'DSQ', 'RET', 'ABD'];
+const UNPLACED_FLAGS = ['AVG', 'DNC', 'DNS', 'DNF', 'DSQ', 'RET', 'ABN'];
 
 // --- time helpers ----------------------------------------------------------
 
@@ -310,6 +310,7 @@ function createScorer(state) {
   // partitioning; this only decides what we send.
   function jinxStatus(e) {
     const f = flags(e);
+    if (f.includes('ABN')) return 'ABN';
     if (f.includes('AVG')) return 'DNC';
     if (f.includes('DSQ')) return 'DSQ';
     if (f.includes('DNC')) return 'DNC';

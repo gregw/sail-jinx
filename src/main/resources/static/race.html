@@ -33,10 +33,8 @@
     <div class="toolbar">
       <button id="start-times-btn" class="primary" type="button" data-requires="officer">Compute start times</button>
       <button id="unlock-starts-btn" type="button" data-requires="officer" style="display:none;">Unlock starts</button>
-      <!-- Same tab, unlike the finish sheet. The start sheet is printed and carried
-           away from the screen, so a tab left behind is litter; the finish sheet is read
-           beside the race page while the results are transcribed. Both pages carry a
-           back link. -->
+      <!-- Same tab. Both sheets are printed and carried away from the screen, so a
+           tab left behind is litter, and both pages carry a back link. -->
       <a id="report-starts-link" class="button-link disabled">Start sheet ▸</a>
     </div>
   </section>
@@ -48,8 +46,8 @@
            has already been scored, and unlocking is the way back to this. -->
       <button id="abandon-btn" type="button" data-requires="officer"
               style="display:none;">Abandon Race</button>
-      <a id="report-finish-link" class="button-link disabled" target="_blank">Finish sheet ▸</a>
       <button id="unlock-results-btn" type="button" data-requires="officer" style="display:none;">Unlock results</button>
+      <a id="report-finish-link" class="button-link disabled">Finish sheet ▸</a>
     </div>
   </section>
 
@@ -695,6 +693,48 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       };
     });
     wireDrag();
+    applyPendingFocus();
+  }
+
+  /**
+   * Keeping the caret where the RO put it, across a table that is rebuilt whole.
+   *
+   * <p>Every time edit re-renders the entrants table, which destroys the element the
+   * browser was on its way to focusing — so a click on the next box landed on a node
+   * that no longer existed, and Enter left the focus nowhere at all. The target is
+   * therefore remembered as boat + column, which survives the render, and re-found
+   * afterwards.
+   */
+  let pendingFocus = null;
+
+  function applyPendingFocus() {
+    const want = pendingFocus;
+    pendingFocus = null;
+    if (!want) return;
+    const input = document.querySelector('.time-input[data-id="' + CSS.escape(want.id)
+      + '"][data-field="' + want.field + '"]');
+    if (input && !input.disabled) input.focus();
+  }
+
+  /**
+   * The same column, one row further down the table as it is currently arranged.
+   *
+   * <p>Read from {@link orderedEntrants} rather than the DOM, and read <em>before</em>
+   * the edit is committed: entering a finish can hide the row that was just filled in,
+   * and the answer to "what is next" is the row that was next when the key was pressed.
+   *
+   * <p>Boats that did not come are skipped — their box is disabled, so landing on it
+   * would be a dead stop in the middle of a column the RO is working down.
+   */
+  function stepTimeCell(boatId, field, dir) {
+    const rows = orderedEntrants();
+    const i = rows.findIndex(e => String(e.boatId) === String(boatId));
+    if (i < 0) return null;
+    for (let j = i + dir; j >= 0 && j < rows.length; j += dir) {
+      if (timesFor(rows[j].boatId).came)
+        return { id: String(rows[j].boatId), field };
+    }
+    return null;
   }
 
   /**
@@ -773,7 +813,12 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       setTimeout(() => selectSegment(2), 0);
     };
 
-    input.onblur = () => {
+    input.onblur = (ev) => {
+      // Where the focus was going. The commit below rebuilds the table, so without this
+      // the click that caused the blur lands on an element that has been replaced.
+      const to = ev && ev.relatedTarget;
+      if (to && to.classList && to.classList.contains('time-input'))
+        pendingFocus = { id: to.dataset.id, field: to.dataset.field };
       if (input.dataset.prefill !== undefined && input.value === input.dataset.prefill)
         input.value = '';
       delete input.dataset.prefill;
@@ -781,7 +826,21 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     };
 
     input.onkeydown = (ev) => {
-      if (ev.key === 'Enter') { ev.preventDefault(); commit(); input.blur(); return; }
+      if (ev.key === 'Enter' || ev.key === 'Tab') {
+        // Down the column, which is how a finish sheet is actually keyed: one field,
+        // boat after boat. Shift+Tab goes back up rather than being trapped.
+        const raw = input.value.trim();
+        // An unparseable time keeps the focus it has, with its error showing, rather
+        // than being carried away from the mistake.
+        if (raw && reformatTime(raw) == null) { ev.preventDefault(); commit(); return; }
+        const next = stepTimeCell(input.dataset.id, field, ev.shiftKey ? -1 : 1);
+        // Nothing below? Let Tab do what Tab does and leave the table.
+        if (!next && ev.key === 'Tab') return;
+        ev.preventDefault();
+        pendingFocus = next;
+        input.blur();
+        return;
+      }
       if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
         ev.preventDefault();
         nudge(ev.key === 'ArrowUp' ? 1 : -1);
@@ -1579,20 +1638,41 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       + handicapSummary(r.body));
   }
 
-  async function toggleAbandoned() {
-    const to = !bundle.race.abandoned;
-    if (to && !confirm('Abandon this race?\n\nIts entrants and times are kept, but it '
-      + 'will not be scored. You can put it back.')) return;
+  /**
+   * Call the race off: ABN on every boat, then process, which locks it.
+   *
+   * <p>Abandoning is a way of finishing a race, not a way of leaving it open. Every boat
+   * gets the flag, the results are processed with it, and because ABN is one of the
+   * frozen statuses nobody's handicap moves — which is the point. The race then behaves
+   * like any other processed race, and <b>Unlock results</b> is the way back.
+   *
+   * <p>The times are kept exactly as captured. Somebody watched those boats and wrote
+   * down when they crossed, and a squall is no reason to throw that away — the flag says
+   * the night does not count, not that it did not happen.
+   */
+  async function abandonRace() {
+    if (!confirm('Abandon this race?\n\nEvery boat is flagged ABN and the results are '
+      + 'processed. No handicap changes. The times you have captured are kept, and '
+      + 'Unlock results puts the race back.')) return;
+
+    for (const e of entrants) {
+      const id = String(e.boatId);
+      const cur = dirtyFlags.get(id) || { added: [], removed: [] };
+      const added = new Set(cur.added);
+      added.add('ABN');
+      dirtyFlags.set(id, { added: [...added], removed: [...cur.removed] });
+    }
+    if (!await doSave()) return;
+
     const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/abandon',
-      { abandoned: to });
+      { abandoned: true });
     if (!r.ok) {
-      setCtrlMsg('banner-err', 'Could not change the race: ' + errorOf(r));
+      setCtrlMsg('banner-err', 'Could not abandon the race: ' + errorOf(r));
       return;
     }
-    await load();
-    setCtrlMsg(to ? 'banner-warn' : 'banner-ok', to
-      ? 'Race abandoned. Its entrants and times are kept, and it will not be scored.'
-      : 'Race is back on.');
+    await processHandicaps();
+    setCtrlMsg('banner-warn', 'Race abandoned. Every boat is flagged ABN, the results '
+      + 'are processed and no handicap has changed. Unlock results puts it back.');
   }
 
   /**
@@ -1623,13 +1703,51 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       + 'until you compute new times.');
   }
 
+  /**
+   * Discard the saved handicaps — and, if the race was abandoned, un-abandon it.
+   *
+   * <p>One button rather than two, because abandoning is now a way of processing a race:
+   * it flags every boat ABN and saves the result. The way back from any processed race is
+   * this, so the way back from an abandoned one has to be this too. A separate
+   * "un-abandon" alongside it would be a second door into the same room, and the label
+   * for it — the previous attempt read "Race was sailed" — never stopped being confusing.
+   *
+   * <p>Taking the flags off restores the derived ones: DNC, DNS, DNF and OCS all fall
+   * out of the came box and the times, which were kept, so the race comes back exactly as
+   * it was captured rather than as a blank.
+   */
   async function unlockResults() {
-    if (!confirm('Unlock the results? The saved handicaps are discarded so results '
-      + 'can be edited and reprocessed. The next race keeps the TCFs it was '
-      + 'already given until you process again.')) return;
+    const wasAbandoned = !!(bundle.race && bundle.race.abandoned);
+    if (!confirm(wasAbandoned
+      ? 'Put this race back on?\n\nThe ABN flags come off every boat and the saved '
+        + 'handicaps are discarded. The times you captured are kept, and the flags they '
+        + 'imply come back.'
+      : 'Unlock the results? The saved handicaps are discarded so results '
+        + 'can be edited and reprocessed. The next race keeps the TCFs it was '
+        + 'already given until you process again.')) return;
+
     const r = await deleteJson('/api/races/' + encodeURIComponent(raceId) + '/adjustments');
     if (!r.ok) { setCtrlMsg('banner-err', 'Could not unlock: ' + errorOf(r)); return; }
+
+    if (wasAbandoned) {
+      for (const [id, ov] of [...dirtyFlags.entries()]) {
+        const added = (ov.added || []).filter(f => f !== 'ABN');
+        const removed = (ov.removed || []).filter(f => f !== 'ABN');
+        if (added.length || removed.length) dirtyFlags.set(id, { added, removed });
+        else dirtyFlags.delete(id);
+      }
+      if (!await doSave()) return;
+      const back = await postJson('/api/races/' + encodeURIComponent(raceId) + '/abandon',
+        { abandoned: false });
+      if (!back.ok) {
+        setCtrlMsg('banner-err', 'Could not put the race back: ' + errorOf(back));
+        return;
+      }
+    }
     await load();
+    if (wasAbandoned)
+      setCtrlMsg('banner-ok', 'Race is back on. The ABN flags are off and the times you '
+        + 'captured are as they were.');
   }
 
   // --- chrome ----------------------------------------------------------------
@@ -1760,10 +1878,8 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     // the alternative would be creating a second race for a night that only had one.
     const abandon = document.getElementById('abandon-btn');
     abandon.style.display = (!locked && canEdit()) ? '' : 'none';
-    abandon.textContent = bundle.race.abandoned ? 'Race was sailed' : 'Abandon Race';
-    abandon.title = bundle.race.abandoned
-      ? 'This race is marked abandoned. Put it back on.'
-      : 'Call this race off — it keeps its entrants and times, but is not a result.';
+    abandon.title = 'Call this race off: every boat is flagged ABN and the results are '
+      + 'processed, which changes nobody\u2019s handicap. Unlock results undoes it.';
     document.getElementById('process-btn').disabled = locked;
 
     if (locked) {
@@ -1888,7 +2004,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     document.getElementById('start-times-btn').onclick = computeStartTimes;
     document.getElementById('process-btn').onclick = processHandicaps;
     document.getElementById('unlock-results-btn').onclick = unlockResults;
-    document.getElementById('abandon-btn').onclick = toggleAbandoned;
+    document.getElementById('abandon-btn').onclick = abandonRace;
     document.getElementById('unlock-starts-btn').onclick = unlockStarts;
     // Hide design and Hide NOW change the column set, so the header has to be rebuilt
     // as well; the other two only change which rows show.

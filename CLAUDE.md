@@ -377,7 +377,24 @@ Two more things that are easy to get wrong:
    body omits from the series defaults and would quietly give a cancelled race a
    different name or first gun.
 
-3. **Flags the RO set by hand are stored; flags the times imply are not.** Most
+3. **Abandoning a race is a way of processing it.** The Abandon Race button flags
+   every boat `ABN`, saves, and processes — so an abandoned race is locked like any
+   other scored race, and **Unlock results is the way back from both**. There is no
+   separate un-abandon button: it would be a second door into the same room, and the
+   label for it never stopped being confusing. Unlocking strips the `ABN` flags, and
+   the derived ones — DNC, DNS, DNF, OCS — come back out of the came box and the
+   times, which are kept throughout. A squall is no reason to throw away times
+   somebody stood there and wrote down.
+
+   `FinishStatus.ABN` is a real status, not a display-only flag, and that is what
+   makes an abandoned race change nobody's handicap: the engine freezes everything it
+   does not recognise as finishing or running out of time, so `ABN` lands in the
+   frozen bucket by construction. A flag the browser knew about and the engine did
+   not would have scored an abandoned race normally — including making whichever boat
+   happened to be round first its winner.
+   `anAbandonedRaceLeavesEveryHandicapExactlyWhereItWas` pins it.
+
+4. **Flags the RO set by hand are stored; flags the times imply are not.** Most
    flags are derived — DNC, DNS, DNF, OCS all follow from came/started/finished, and
    deriving them is right, because a stored one would go stale the moment a time was
    corrected. What cannot be derived is a judgement that *contradicts* the times, and

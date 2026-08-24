@@ -29,5 +29,18 @@ public enum FinishStatus
     /** Did not compete — never on the water. TCF unchanged. */
     DNC,
     /** Did not start — on the water, did not start. TCF unchanged. */
-    DNS
+    DNS,
+    /**
+     * The race was abandoned. TCF unchanged, for every boat in it.
+     *
+     * <p>An abandoned race is not a result and must not read as one: the boats that were
+     * ahead when it was called off did not win, and the ones behind did not lose. So no
+     * penalty is collected, there is no pool to give back, and nobody's handicap moves.
+     *
+     * <p>A status rather than a display-only flag because that is what makes the above
+     * true. The engine freezes everything it does not recognise as finishing or running
+     * out of time, so ABN lands in the frozen bucket by construction; a flag the browser
+     * knew about and the engine did not would have scored an abandoned race normally.
+     */
+    ABN
 }
