@@ -496,6 +496,11 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     return !(startsLocked() || readOnly());
   }
 
+  /** True once the fleet has been given guns — the thing Allocated Start displays. */
+  function hasStartSheet() {
+    return !!(bundle && bundle.startSheet && (bundle.startSheet.starts || []).length);
+  }
+
   function isMixedSeries() {
     return !!bundle && bundle.spinnakerPolicy === 'MIXED';
   }
@@ -507,8 +512,15 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       if (c.key === 'adjustment' && adjustments.size === 0) return false;
       // Every boat in a one-way series answers the same, so the column says nothing.
       if (c.key === 'spin' && !isMixedSeries()) return false;
+      // TCF and Allocated Start are the same column's worth of space, and which of the
+      // two is worth it swaps at the moment the guns are computed. Before that the TCF
+      // is what the stagger will be built from and the Allocated column is empty; after
+      // it, the gun is the fact being worked to and the TCF is the reference it came
+      // from. So exactly one of them is a detail column at any time — except while the
+      // TCF is editable, which is never hidden.
       const detail = DETAIL_COLS.includes(c.key)
-        || (c.key === 'tcf' && !tcfEditable());
+        || (c.key === 'tcf' && hasStartSheet() && !tcfEditable())
+        || (c.key === 'allocated' && !hasStartSheet());
       if (detail && document.getElementById('hide-details').checked) return false;
       if (c.key === 'remove' && !(allowRemove() && !locked)) return false;
       return true;
@@ -1950,7 +1962,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     // engine and saved — which is the same thing as the race being locked.
     setReportLink('report-starts-link',
       '/report-starts.html?raceId=' + encodeURIComponent(raceId),
-      !!(bundle.startSheet && (bundle.startSheet.starts || []).length),
+      hasStartSheet(),
       'Compute the start times first.');
     setReportLink('report-finish-link',
       '/report-finish.html?raceId=' + encodeURIComponent(raceId),
