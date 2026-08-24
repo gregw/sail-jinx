@@ -54,7 +54,7 @@
   <section id="race-entrants" style="display:none;">
     <h2>Entrants <span id="entrants-count" class="hint"></span></h2>
     <div class="filters">
-      <label><input type="checkbox" id="hide-dnc"> Hide didn't come</label>
+      <label><input type="checkbox" id="hide-dnc"> Hide DNC</label>
       <label><input type="checkbox" id="hide-finished"> Hide finished</label>
       <label title="Hides design, corrected finish and scored elapsed — the columns that
 are reference rather than capture. Once the start sheet is out, TCF joins them; while it
@@ -437,13 +437,13 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       render: e => timeInput(e, 'finish') },
     { key: 'corrected', label: 'Corrected<br>Finish', cls: 'num-cell',
       get: e => scorer.correctedFinishSeconds(e) ?? NaN,
-      render: e => esc(fmtTimeOfDay(scorer.correctedFinishSeconds(e))) },
+      render: e => derived(e, fmtTimeOfDay(scorer.correctedFinishSeconds(e))) },
     { key: 'scoredFinish', label: 'Scored<br>Finish', cls: 'num-cell',
       get: e => scorer.scoredFinishSeconds(e) ?? NaN,
-      render: e => esc(fmtTimeOfDay(scorer.scoredFinishSeconds(e))) },
+      render: e => derived(e, fmtTimeOfDay(scorer.scoredFinishSeconds(e))) },
     { key: 'elapsed', label: 'Scored<br>Elapsed', cls: 'num-cell',
       get: e => scorer.scoredElapsedSeconds(e) ?? NaN,
-      render: e => esc(fmtElapsed(scorer.scoredElapsedSeconds(e))) },
+      render: e => derived(e, fmtElapsed(scorer.scoredElapsedSeconds(e))) },
     { key: 'flags', label: 'Flags', sortable: false, cls: 'flag-cell',
       get: e => scorer.flags(e).join(', '),
       render: e => esc(scorer.flags(e).join(', ')) || '<span class="hint">—</span>' },
@@ -510,6 +510,47 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       if (c.key === 'remove' && !(allowRemove() && !locked)) return false;
       return true;
     });
+  }
+
+  /**
+   * A computed time, with its working shown on hover.
+   *
+   * <p>These three columns are the ones nobody can check by eye: each is a captured time
+   * with something added to it or taken off it, and which start it was measured from is
+   * the whole difference between them. Asking that question used to mean reading the
+   * wiki. The answer is the same six numbers every time, so they are simply there.
+   */
+  function derived(e, text) {
+    const detail = timeDetail(e);
+    if (!detail) return esc(text);
+    return '<span class="derived" title="' + esc(detail) + '">' + esc(text) + '</span>';
+  }
+
+  function timeDetail(e) {
+    const clock = (v) => v == null ? '—' : fmtTimeOfDay(v);
+    const span = (v) => v == null ? '—' : fmtElapsed(v);
+    const allocated = scorer.allocatedStartSeconds(e);
+    const actual = scorer.actualStartSeconds(e);
+    const corrected = scorer.correctedStartSeconds(e);
+    if (scorer.finishSeconds(e) == null && allocated == null) return '';
+    return [
+      'Allocated start  ' + clock(allocated),
+      'Actual start     ' + clock(actual),
+      // Named because it is the one that is not simply a captured time: an early boat
+      // is held to its gun here, which is why its actual elapsed can be shorter than
+      // the clock says it was out.
+      'Corrected start  ' + clock(corrected)
+        + (actual != null && allocated != null && actual < allocated ? '  (started early)' : ''),
+      '',
+      'Actual finish    ' + clock(scorer.finishSeconds(e)),
+      'Corrected finish ' + clock(scorer.correctedFinishSeconds(e)),
+      'Scored finish    ' + clock(scorer.scoredFinishSeconds(e)),
+      '',
+      'Actual elapsed   ' + span(scorer.actualElapsedSeconds(e))
+        + '   (finish - corrected start)',
+      'Scored elapsed   ' + span(scorer.scoredElapsedSeconds(e))
+        + '   (scored finish - allocated start)'
+    ].join('\n');
   }
 
   function timeInput(e, field) {
@@ -818,8 +859,14 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       selectSegment(segment);
     };
 
+    // Whether this focus came from a click, which is the difference between "put me
+    // where the seconds are" and "put me where I pointed".
+    let byPointer = false;
+    input.onmousedown = () => { byPointer = true; };
+
     input.onfocus = () => {
-      if (!input.value) {
+      const wasEmpty = !input.value;
+      if (wasEmpty) {
         const e = entrants.find(x => String(x.boatId) === input.dataset.id);
         input.value = field === 'finish' ? finishPrefix(e) : startPrefix(e);
         // Remembering it is how blur can tell "nothing was entered" from "this time".
@@ -827,8 +874,13 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       } else {
         delete input.dataset.prefill;
       }
-      // After the click has finished placing its own caret.
-      setTimeout(() => selectSegment(2), 0);
+      const aimed = byPointer && !wasEmpty;
+      byPointer = false;
+      // Land on the seconds — the minute is nearly always already known — but not when
+      // the RO clicked into a box that already had a time in it. That click is aimed at
+      // a segment, and moving the caret out of it meant the arrow keys nudged the
+      // seconds however carefully you had pointed at the hours.
+      if (!aimed) setTimeout(() => selectSegment(2), 0);
     };
 
     input.onblur = (ev) => {

@@ -385,6 +385,91 @@
     raceView('not an object',
              { hasPlaces: false, hasStarts: false, raceDate: TODAY, today: TODAY }));
 
+
+  // --- scored elapsed without a gun -------------------------------------------
+  // Scored elapsed is measured from the allocated start, so a boat nobody timed away
+  // still has one. A boat that never got a gun at all — added after the sheet was
+  // published — had nothing to measure from, and showed an empty column despite having
+  // been round the course.
+
+  const NO_GUN_ENTRANTS = [
+    { boatId: 'gunned',  sailNumber: 'A1', name: 'Gunned',  tcf: 1.0, entryType: 'ROSTER' },
+    { boatId: 'untimed', sailNumber: 'A2', name: 'Untimed', tcf: 1.0, entryType: 'ROSTER' },
+    { boatId: 'lateadd', sailNumber: 'A3', name: 'LateAdd', tcf: 1.0, entryType: 'ROSTER' }
+  ];
+  const noGun = createScorer({
+    entrants: NO_GUN_ENTRANTS,
+    startSheet: { earliestStart: '18:00:00', starts: [
+      { boatId: 'gunned',  startTime: '18:00:00' },
+      { boatId: 'untimed', startTime: '18:05:00' }] },
+    times: {
+      gunned:  { came: true, actualStart: '18:00:04', finish: '19:30:00' },
+      untimed: { came: true, actualStart: null,       finish: '19:35:00' },
+      lateadd: { came: true, actualStart: '18:09:00', finish: '19:39:00' }
+    },
+    dutyBoatId: null, flagOverrides: new Map(), tcfOverrides: new Map()
+  });
+  const byId = (id) => NO_GUN_ENTRANTS.find(e => e.boatId === id);
+
+  // The gun, not the crossing: this boat was four seconds late and is charged for it.
+  check('scored elapsed measures from the gun, not the actual start',
+    5400, noGun.scoredElapsedSeconds(byId('gunned')));
+  check('a boat nobody timed away still has a scored elapsed',
+    5400, noGun.scoredElapsedSeconds(byId('untimed')));
+  // No gun to be late for, so its own start is the only start it has.
+  check('a boat with no gun falls back to when it actually started',
+    5400, noGun.scoredElapsedSeconds(byId('lateadd')));
+  // All three sailed 5400 on purpose, so this is a three-way dead heat and they share
+  // the better place. What is being pinned is that the gunless boat is in the ranking
+  // at all — it used to be absent from it, having had no elapsed time to rank by.
+  check('…and it is placed on it rather than left out',
+    1, noGun.places('scratch').get('lateadd'));
+
+
+  // --- the two starts a boat has -----------------------------------------------
+  // The gun it was given, and the moment it actually crossed. Which of them a number is
+  // measured from is the whole difference between the columns on the race page, so the
+  // detail popup names both — and needs the corrected start to name them by.
+
+  const START_ENTRANTS = [
+    { boatId: 'late',  sailNumber: 'A1', name: 'Late',  tcf: 1.0, entryType: 'ROSTER' },
+    { boatId: 'early', sailNumber: 'A2', name: 'Early', tcf: 1.0, entryType: 'ROSTER' },
+    { boatId: 'nostart', sailNumber: 'A3', name: 'NoStart', tcf: 1.0, entryType: 'ROSTER' }
+  ];
+  const starts = createScorer({
+    entrants: START_ENTRANTS,
+    startSheet: { earliestStart: '18:00:00', starts: [
+      { boatId: 'late',    startTime: '18:00:00' },
+      { boatId: 'early',   startTime: '18:05:00' },
+      { boatId: 'nostart', startTime: '18:10:00' }] },
+    times: {
+      late:    { came: true, actualStart: '18:00:30', finish: '19:30:00' },
+      early:   { came: true, actualStart: '18:04:30', finish: '19:35:00' },
+      nostart: { came: true, actualStart: null,       finish: '19:40:00' }
+    },
+    dutyBoatId: null, flagOverrides: new Map(), tcfOverrides: new Map()
+  });
+  const st = (id) => START_ENTRANTS.find(e => e.boatId === id);
+
+  // Away thirty seconds after its gun: that is when it started sailing.
+  check('corrected start: a late boat uses its own crossing',
+    parseTime('18:00:30'), starts.correctedStartSeconds(st('late')));
+  // Away thirty seconds BEFORE its gun. An early start is a penalty, not a head start,
+  // so the gun stands and the boat gets no credit for the half minute it stole.
+  check('corrected start: an early boat is held to its gun',
+    parseTime('18:05:00'), starts.correctedStartSeconds(st('early')));
+  check('corrected start: nobody timed it away, so the gun stands',
+    parseTime('18:10:00'), starts.correctedStartSeconds(st('nostart')));
+
+  // Time actually spent sailing, which is not what the race is scored on.
+  check('actual elapsed runs from the corrected start',
+    5370, starts.actualElapsedSeconds(st('late')));
+  check('actual elapsed for an early boat runs from the gun',
+    5400, starts.actualElapsedSeconds(st('early')));
+  // …where the scored elapsed always runs from the gun, so the late boat is charged.
+  check('scored elapsed still runs from the gun',
+    5400, starts.scoredElapsedSeconds(st('late')));
+
 </script>
 </body>
 </html>

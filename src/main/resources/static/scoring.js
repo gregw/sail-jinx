@@ -278,9 +278,56 @@ function createScorer(state) {
     return Math.round(f + (early != null && early > 0 ? early : 0));
   }
 
+  /**
+   * The start a boat is credited with — its own crossing, unless it was early.
+   *
+   * <p>Not the same question as {@link effectiveStartSeconds}, which answers "when did
+   * this boat actually go" for working out how late it was. This answers "what should it
+   * be measured from", and the difference is the early starter: crossing before the gun
+   * is a penalty, not a head start, so the gun stands and the boat gets no credit for
+   * the seconds it stole. A boat nobody timed away keeps its gun too, there being
+   * nothing else to use.
+   */
+  function correctedStartSeconds(e) {
+    const a = actualStartSeconds(e);
+    const s = allocatedStartSeconds(e);
+    if (a == null) return s;
+    if (s == null) return a;
+    return a >= s ? a : s;
+  }
+
+  /**
+   * Time actually spent sailing: the finish, from the corrected start.
+   *
+   * <p>Reference rather than result. The race is scored on {@link scoredElapsedSeconds},
+   * which runs from the gun and therefore charges a boat for being late to it — this is
+   * the number that says how long the boat was out there, which is the one a sailor
+   * asks about and the one that makes the difference visible.
+   */
+  function actualElapsedSeconds(e) {
+    const f = finishSeconds(e);
+    const s = correctedStartSeconds(e);
+    return (f == null || s == null) ? null : Math.round(f - s);
+  }
+
+  /**
+   * Time on the course, measured from the gun.
+   *
+   * <p>The <em>allocated</em> start, deliberately, not the actual one: a boat that was
+   * four seconds late for its gun sailed four seconds less than the fleet thinks it did,
+   * and the scored elapsed is what says so. It also means a boat nobody timed away still
+   * has one — the gun is published, so the measurement exists whether or not anybody was
+   * watching that boat when it crossed.
+   *
+   * <p>A boat with <em>no</em> gun falls back to when it actually started. That is a boat
+   * added to the race after the start sheet went out: there is nothing for it to be late
+   * for, so its own crossing is the only start it has. Without the fallback it sailed the
+   * whole course and the column stayed empty, which reads as missing data rather than as
+   * the answer it is.
+   */
   function scoredElapsedSeconds(e) {
     const sf = scoredFinishSeconds(e);
-    const s = allocatedStartSeconds(e);
+    const s = allocatedStartSeconds(e) ?? actualStartSeconds(e);
     return (sf == null || s == null) ? null : Math.round(sf - s);
   }
 
@@ -438,6 +485,8 @@ function createScorer(state) {
     isOcsRemoved,
     scoredFinishSeconds,
     correctedFinishSeconds,
+    correctedStartSeconds,
+    actualElapsedSeconds,
     scoredElapsedSeconds,
     latePlaces,
     handicapElapsedSeconds,
