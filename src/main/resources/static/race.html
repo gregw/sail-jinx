@@ -9,7 +9,7 @@
 <body>
 <!-- INCLUDE _nav.html -->
 
-<main>
+<main id="race-page">
   <div class="race-head">
     <div class="race-nav">
       <button id="prev-btn" type="button" disabled title="Previous race">←</button>
@@ -17,8 +17,6 @@
     </div>
     <h1 id="race-title">Race</h1>
   </div>
-
-  <div id="ctrl-msg" class="banner banner-info">Loading…</div>
 
   <section id="race-setup" style="display:none;">
     <div class="toolbar">
@@ -51,8 +49,26 @@
     </div>
   </section>
 
+  <!-- Immediately above the table, where the Entrants heading used to be: this is the
+       line the RO's eye is already on, and a notice at the top of the page was one they
+       had to look up for. Deliberately a sibling of #race-entrants rather than inside
+       it — that section stays hidden until a race loads, and "No race selected" and
+       "Could not load race" are exactly the notices that have to show when it does not.
+
+       The save bar sits over it, and is sticky, so it stays reachable once the page is
+       scrolled past this point. -->
+  <div id="save-bar" class="save-bar" style="display:none;">
+    <button id="save-btn" class="primary" type="button" data-requires="officer">Save</button>
+    <button id="reset-btn" type="button" data-requires="officer">Reset</button>
+    <span id="save-summary"></span>
+  </div>
+
+  <div id="ctrl-msg" class="banner banner-info">Loading…</div>
+
   <section id="race-entrants" style="display:none;">
-    <h2>Entrants <span id="entrants-count" class="hint"></span></h2>
+    <!-- No "Entrants" heading. The table is self-evidently the entrants, and on the
+         laptop this runs on a line of chrome is a line of boats. The count keeps its
+         place in the filters row, which was going to be there anyway. -->
     <div class="filters">
       <label><input type="checkbox" id="hide-dnc"> Hide DNC</label>
       <label><input type="checkbox" id="hide-finished"> Hide finished</label>
@@ -65,12 +81,15 @@ is still editable it always shows."><input type="checkbox" id="hide-details" che
       <label>Duty boat
         <select id="duty-boat"><option value="">— none —</option></select>
       </label>
+      <span id="entrants-count" class="hint"></span>
     </div>
 
-    <table id="entrants-table">
-      <thead><tr id="entrants-head"></tr></thead>
-      <tbody id="entrants-tbody"></tbody>
-    </table>
+    <div id="entrants-scroll" class="entrants-scroll">
+      <table id="entrants-table">
+        <thead><tr id="entrants-head"></tr></thead>
+        <tbody id="entrants-tbody"></tbody>
+      </table>
+    </div>
 
     <div id="now-log" style="display:none;">
       <div class="toolbar">
@@ -142,12 +161,6 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       <div id="import-report"></div>
     </div>
   </section>
-
-  <div id="save-bar" class="save-bar" style="display:none;">
-    <button id="save-btn" class="primary" type="button" data-requires="officer">Save</button>
-    <button id="reset-btn" type="button" data-requires="officer">Reset</button>
-    <span id="save-summary"></span>
-  </div>
 
 </main>
 
@@ -699,10 +712,38 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     });
   }
 
+  /**
+   * How many rows are worth giving the table its own scrollbar for.
+   *
+   * <p>Below this the fixed height is worse than no fixed height: a short window would
+   * get a scrollbar around six boats, so the fleet is scrolled inside a box that is
+   * itself scrolled down the page. The whole point is to keep the toolbars and the
+   * notice in view while working down the fleet, and there has to be a fleet to work
+   * down for that to be worth anything.
+   */
+  const MIN_SCROLL_ROWS = 15;
+
+  function fitEntrantsHeight() {
+    const box = document.getElementById('entrants-scroll');
+    // Measure unconstrained, or the second call measures the first call's answer.
+    box.style.maxHeight = '';
+    const row = document.querySelector('#entrants-tbody tr');
+    if (!row) return;
+    const rowH = row.getBoundingClientRect().height;
+    const head = document.querySelector('#entrants-table thead');
+    const headH = head ? head.getBoundingClientRect().height : 0;
+    // Room between the top of the table and the bottom of the window, less enough to
+    // leave the page's own bottom margin visible rather than flush against the edge.
+    const available = window.innerHeight - box.getBoundingClientRect().top - 24;
+    if (rowH > 0 && available >= headH + rowH * MIN_SCROLL_ROWS)
+      box.style.maxHeight = Math.floor(available) + 'px';
+  }
+
   function renderEntrants() {
     // The flags cell refuses to open when locked, but its cursor, hover and pencil said
     // otherwise — it looked editable and did nothing. The styling is gated on this.
     document.getElementById('entrants-table').classList.toggle('locked', locked);
+    const scrollWas = document.getElementById('entrants-scroll').scrollTop;
     const cols = activeCols();
     const rows = orderedEntrants();
     document.getElementById('entrants-tbody').innerHTML = rows.map(e => {
@@ -714,8 +755,13 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
         + (locked ? '' : ' draggable="true"') + '>' + cells + '</tr>';
     }).join('');
     document.getElementById('entrants-count').textContent =
-      '(' + rows.length + (rows.length === entrants.length ? '' : ' of ' + entrants.length) + ')';
+      rows.length + (rows.length === entrants.length ? '' : ' of ' + entrants.length)
+      + ' boat' + (rows.length === 1 ? '' : 's');
     wireRows();
+    // The table is rebuilt whole on every edit, so a fleet scrolled halfway down would
+    // jump back to the top on each captured time.
+    document.getElementById('entrants-scroll').scrollTop = scrollWas;
+    fitEntrantsHeight();
   }
 
   function wireRows() {
@@ -2201,6 +2247,8 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     };
     document.getElementById('import-preview').onclick = () => runEntrantImport(true);
     document.getElementById('import-apply').onclick = () => runEntrantImport(false);
+
+    window.addEventListener('resize', fitEntrantsHeight);
 
     window.addEventListener('beforeunload', (ev) => {
       if (isDirty()) { ev.preventDefault(); ev.returnValue = ''; }

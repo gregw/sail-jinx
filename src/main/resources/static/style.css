@@ -68,7 +68,6 @@ h2 {
 }
 p.lead { color: var(--muted); font-size: 1.02rem; max-width: 60rem; }
 ul, ol { max-width: 60rem; }
-ol.setup-steps li { margin-bottom: 0.35rem; }
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--brand); text-decoration: underline; }
@@ -226,7 +225,14 @@ a.build-err, .build-err { color: var(--err-fg); font-weight: 600; }
 
 /* Nav first, then the title: the arrows read as "step through the season" sitting
    beside the race they step from, rather than stranded on the far margin. */
+/* The race page is worked down, not read, so the run-up to the table is squeezed: the
+   title sits at half the usual gap from the nav, and each line below it 20% closer to
+   the next. Every line saved here is a boat visible without scrolling. */
 .race-head { display: flex; align-items: center; gap: 0.75rem; }
+#race-page h1 { margin-top: 0.5rem; }
+#race-page .banner { margin-bottom: 0.6rem; }
+#race-page .toolbar { margin: 0.6rem 0; }
+#race-page section { margin-top: 0.6rem; }
 .race-nav { display: flex; gap: 0.3rem; }
 .race-nav button { padding: 0.2rem 0.55rem; line-height: 1; }
 
@@ -239,7 +245,7 @@ input.hhmm-input { width: 5rem; }
    most often reached for, and hunting the far side of the page for them costs more
    than the line of space this takes. */
 #race-entrants > h2 { margin-bottom: 0.35rem; }
-#race-entrants > .filters { margin-bottom: 0.9rem; }
+#race-entrants > .filters { margin-bottom: 0.72rem; }
 
 /* Removing an entrant is a repair, not part of the night's work. The toggle that
    reveals it reads as a warning, and the button itself is small and quiet — it is only
@@ -273,13 +279,26 @@ input.time-input.now-drop-target {
 }
 
 .save-bar {
-  position: sticky; bottom: 0; z-index: 20;
+  position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; gap: 0.75rem;
-  padding: 0.7rem 1rem; margin-top: 1rem;
+  padding: 0.7rem 1rem; margin-bottom: 0.6rem;
   background: var(--dirty-bg); border: 1px solid var(--dirty-bd);
   border-radius: var(--radius); box-shadow: var(--shadow-pop);
 }
 .save-bar span { color: var(--muted); font-size: 0.88rem; }
+
+/* The entrants table gets its own scrollbar once the window is tall enough to show a
+   useful number of boats at once — see fitEntrantsHeight in race.html, which sets the
+   height and decides whether to set one at all. The header sticks, or scrolling the
+   fleet would mean scrolling the column names off the top of it. */
+.entrants-scroll { overflow: auto; }
+.entrants-scroll table { border-radius: 0; border-top: none; }
+.entrants-scroll thead th {
+  position: sticky; top: 0; z-index: 2;
+  /* No background here on purpose: #entrants-table thead th already paints it brand,
+     and an id beats a class. A sticky header MUST be opaque or the rows scroll visibly
+     through it — so it inherits the one that is already there. */
+}
 
 /* --- tables -------------------------------------------------------------- */
 

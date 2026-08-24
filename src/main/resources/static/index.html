@@ -52,19 +52,6 @@
         </p>
     </section>
 
-    <section>
-        <h2>Getting set up</h2>
-        <ol class="setup-steps">
-            <li><a href="/boats.html">Boats</a> — enter the fleet: sail number, name,
-                and each boat's starting TCF.</li>
-            <li><a href="/series.html">Series</a> — create the season, then build its
-                roster from the fleet.</li>
-            <li><a href="/races.html">Races</a> — add the race dates.</li>
-            <li>On the night, open the race, compute the start times, print the start
-                sheet, and capture finishes as they cross.</li>
-        </ol>
-    </section>
-
 
     <p class="lead">
         Further reading:
@@ -100,7 +87,9 @@
     const races = r.body || [];
     if (!races.length) {
       el.className = 'banner banner-info';
-      el.innerHTML = 'No races yet — work through the setup steps below.';
+      // The steps it used to point at are gone; the nav is where they live.
+      el.innerHTML = 'No races yet. Add a <a href="/series.html">series</a>, then its '
+        + '<a href="/races.html">races</a>.';
       return;
     }
     const pending = races.filter(x => !x.locked && !x.abandoned);
