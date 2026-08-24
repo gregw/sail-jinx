@@ -109,6 +109,15 @@ a.button-link {
   border-radius: var(--radius-sm); background: var(--surface); color: var(--ink);
 }
 a.button-link:hover { background: var(--surface-alt); border-color: var(--accent); text-decoration: none; }
+/* A report link with nothing to report yet. Matched to a disabled button rather than
+   hidden, so the sheet is visibly a step that is coming rather than one that does not
+   exist. Deliberately NOT pointer-events:none — the title says why it is off, and
+   suppressing pointer events would suppress the tooltip along with the click. The href
+   is removed in script, which is what actually stops the navigation. */
+a.button-link.disabled, a.button-link.disabled:hover {
+  color: var(--muted); border-color: var(--line); background: var(--surface);
+  cursor: not-allowed;
+}
 
 /* --- inputs -------------------------------------------------------------- */
 
@@ -356,6 +365,17 @@ body.report-page { background: var(--surface); }
   display: flex; align-items: center; gap: 1rem;
   max-width: 46rem; margin: 1rem auto 0;
 }
+/* The start sheet is eight columns, four of them blank space to write in, so 46rem
+   wraps boat names for no reason. It gets the window instead — and prints the same,
+   since the print rules already lift the cap for every report.
+
+   After .report-toolbar, not before: both are a single class, so at equal specificity
+   whichever comes last wins, and the toolbar would otherwise keep its own 46rem and sit
+   misaligned above a full-width sheet. */
+.report-wide { max-width: none; }
+/* A boat name is one thing and reads as one thing; with the width above there is room
+   for it. Only on the wide sheet — the finish sheet is narrow on purpose. */
+.report-wide table.report-table td:nth-child(2) { white-space: nowrap; }
 .report-head { border-bottom: 2px solid var(--ink); padding-bottom: 0.5rem; margin-bottom: 1rem; }
 .report-head h1 { margin: 0; font-size: 1.4rem; }
 .report-sub { color: var(--muted); font-size: 0.95rem; margin-top: 0.2rem; }

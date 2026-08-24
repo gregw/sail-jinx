@@ -33,14 +33,18 @@
     <div class="toolbar">
       <button id="start-times-btn" class="primary" type="button" data-requires="officer">Compute start times</button>
       <button id="unlock-starts-btn" type="button" data-requires="officer" style="display:none;">Unlock starts</button>
-      <a id="report-starts-link" class="button-link" href="#" target="_blank">Start sheet ▸</a>
+      <!-- Same tab, unlike the finish sheet. The start sheet is printed and carried
+           away from the screen, so a tab left behind is litter; the finish sheet is read
+           beside the race page while the results are transcribed. Both pages carry a
+           back link. -->
+      <a id="report-starts-link" class="button-link disabled">Start sheet ▸</a>
     </div>
   </section>
 
   <section id="handicap-panel" style="display:none;">
     <div class="toolbar">
-      <button id="process-btn" class="primary" type="button" data-requires="officer">Process handicaps</button>
-      <a id="report-finish-link" class="button-link" href="#" target="_blank">Finish sheet ▸</a>
+      <button id="process-btn" class="primary" type="button" data-requires="officer">Process Results</button>
+      <a id="report-finish-link" class="button-link disabled" target="_blank">Finish sheet ▸</a>
       <button id="unlock-results-btn" type="button" data-requires="officer" style="display:none;">Unlock results</button>
     </div>
   </section>
@@ -1578,6 +1582,27 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     if (el) el.textContent = text;
   }
 
+  /**
+   * Offer a report link, or show it greyed with a reason.
+   *
+   * <p>An anchor has no disabled attribute, so the href is what is taken away — that is
+   * what stops the navigation, and the class only makes it look the part. Removing the
+   * href also takes the link out of the tab order, which a CSS-only version would not.
+   */
+  function setReportLink(id, href, ready, why) {
+    const a = document.getElementById(id);
+    a.classList.toggle('disabled', !ready);
+    if (ready) {
+      a.href = href;
+      a.removeAttribute('aria-disabled');
+      a.removeAttribute('title');
+    } else {
+      a.removeAttribute('href');
+      a.setAttribute('aria-disabled', 'true');
+      a.title = why;
+    }
+  }
+
   function applyNowVisibility() {
     // Nothing left to capture on a locked race, so the log is stale rather than useful.
     document.getElementById('now-log').style.display =
@@ -1626,10 +1651,18 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       renderEntrants();
     }
 
-    const startsHref = '/report-starts.html?raceId=' + encodeURIComponent(raceId);
-    const finishHref = '/report-finish.html?raceId=' + encodeURIComponent(raceId);
-    document.getElementById('report-starts-link').href = startsHref;
-    document.getElementById('report-finish-link').href = finishHref;
+    // Each sheet is offered only once there is something on it. The start sheet is the
+    // published stagger, so it needs a start sheet in the bundle; the finish sheet now
+    // carries an Adjustment column, so it needs the race to have been through the
+    // engine and saved — which is the same thing as the race being locked.
+    setReportLink('report-starts-link',
+      '/report-starts.html?raceId=' + encodeURIComponent(raceId),
+      !!(bundle.startSheet && (bundle.startSheet.starts || []).length),
+      'Compute the start times first.');
+    setReportLink('report-finish-link',
+      '/report-finish.html?raceId=' + encodeURIComponent(raceId),
+      locked,
+      'Process the results first.');
 
     document.getElementById('prev-btn').disabled = !bundle.previousRaceId;
     document.getElementById('next-btn').disabled = !bundle.nextRaceId;
