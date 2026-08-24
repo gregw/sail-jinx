@@ -674,6 +674,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
         saveView();
         renderHead();
         renderEntrants();
+        renderDutyOptions();
       };
     });
     document.querySelectorAll('#entrants-head .now-head-btn').forEach(btn => {
@@ -1003,6 +1004,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
         dragId = null;
         // Dragging cleared the sort, and that is an arrangement worth keeping too.
         saveView();
+        renderDutyOptions();
         renderHead();
         touched();
       };
@@ -1889,9 +1891,20 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       (locked || hideNow()) ? 'none' : '';
   }
 
+  /**
+   * The duty boat list, in whatever order the table is currently in.
+   *
+   * <p>{@link arrangedEntrants} rather than the raw entrant list, so that a fleet sorted
+   * by name is a list sorted by name and one dragged into a working order reads the same
+   * way in both places. Looking a boat up in a list ordered differently from the table
+   * beside it is a small thing that goes wrong under pressure.
+   *
+   * <p>Arranged but <em>not</em> filtered: the tick boxes hide rows from the table, and a
+   * boat you cannot currently see is still a boat that can be on duty.
+   */
   function renderDutyOptions() {
     const sel = document.getElementById('duty-boat');
-    sel.innerHTML = '<option value="">— none —</option>' + entrants
+    sel.innerHTML = '<option value="">— none —</option>' + arrangedEntrants()
       .filter(e => e.boatId)
       .map(e => '<option value="' + esc(e.boatId) + '"'
         + (String(dutyBoatId) === String(e.boatId) ? ' selected' : '') + '>'
