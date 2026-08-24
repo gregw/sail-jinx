@@ -14,6 +14,17 @@ club:
   longName: "Manly Yacht Club"
   timezone: "Australia/Sydney"     # used to compute local sunset
 
+  # The club's own addresses, shown on the front page. All four are optional: leave one
+  # out and the front page simply does not mention it. They are configuration rather
+  # than code because this application is not MYC's — another club runs it against its
+  # own file, and a link hard-coded in the page would point at somebody else's club.
+  website: "https://www.myc.org.au/"                # the club site itself
+  # Where the club's other racing is scored. sail-jinx runs the Jinx pursuit series and
+  # nothing else, so this is the answer to "where are the rest of the results".
+  otherResults: "https://app.sailsys.com.au/club/23/profile?tab=results"
+  seriesEntry: "https://www.myc.org.au/race-series/" # where boats enter a series
+  noticeBoard: "https://www.myc.org.au/notice-board/" # the official notice board
+
 algorithm:
   # The handicap variant, as the two knobs it actually is. `variant` is shorthand for
   # both; either knob may be set on its own, and an explicit knob beats the variant it

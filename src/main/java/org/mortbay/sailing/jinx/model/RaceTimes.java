@@ -37,10 +37,57 @@ public record RaceTimes(
             times = Map.of();
     }
 
+    /**
+     * What was captured against one boat, and what the race officer said about it.
+     *
+     * <p>{@code flags} is the RO's overrides, not the boat's effective flags. Most flags
+     * are <em>derived</em> from the three fields above it — came, started, finished — and
+     * deriving them is right: they follow from the times and would go stale the moment a
+     * time was corrected. What cannot be derived is a judgement that contradicts the
+     * times, and that is what this holds.
+     *
+     * <p>The case it exists for: a boat that came, started and never finished reads as
+     * DNF, and DNF eases a handicap because running out of time is about speed. RET says
+     * the boat stopped for a reason of its own, which says nothing about its speed and
+     * freezes the handicap instead. Nothing else on the page can tell those apart, so
+     * without this the RO's RET survived only as long as the browser tab.
+     */
     public record BoatTimes(
         boolean came,
         String actualStart,
-        String finish)
+        String finish,
+        FlagOverride flags)
     {
+        /** Times with nothing overridden — the ordinary case. */
+        public BoatTimes(boolean came, String actualStart, String finish)
+        {
+            this(came, actualStart, finish, null);
+        }
+    }
+
+    /**
+     * Flags the race officer added or cleared by hand.
+     *
+     * <p>Added <em>and</em> removed, rather than one list of effective flags, because a
+     * derived flag has to be clearable: an OCS that came from a mistyped start time is
+     * taken off by fixing the time, but a genuine one the RO wants gone needs somewhere
+     * to be recorded as gone. A single list could not express "not this one".
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record FlagOverride(List<String> added, List<String> removed)
+    {
+        public FlagOverride
+        {
+            if (added == null)
+                added = List.of();
+            if (removed == null)
+                removed = List.of();
+        }
+
+        /** Nothing was overridden; there is no reason to write this out. */
+        public boolean isEmpty()
+        {
+            return added.isEmpty() && removed.isEmpty();
+        }
     }
 }

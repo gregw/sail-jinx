@@ -13,6 +13,7 @@ import static org.hamcrest.Matchers.closeTo;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class JinxConfigTest
@@ -175,5 +176,35 @@ class JinxConfigTest
     void missingFileThrows(@TempDir Path tmp)
     {
         assertThrows(IOException.class, () -> JinxConfig.load(tmp.resolve("does-not-exist.yaml")));
+    }
+
+    @Test
+    void theClubsLinksAreConfiguredAndOptional(@TempDir Path tmp) throws IOException
+    {
+        Path file = tmp.resolve("config.yaml");
+        Files.writeString(file, """
+            club:
+              domain: "myc.org.au"
+              longName: "Manly Yacht Club"
+              website: "https://www.myc.org.au/"
+              otherResults: "https://app.sailsys.com.au/club/23/profile?tab=results"
+              seriesEntry: "https://www.myc.org.au/race-series/"
+              noticeBoard: "https://www.myc.org.au/notice-board/"
+            """);
+        JinxConfig.Club club = JinxConfig.load(file).club();
+        assertThat(club.website(), equalTo("https://www.myc.org.au/"));
+        assertThat(club.otherResults(),
+            equalTo("https://app.sailsys.com.au/club/23/profile?tab=results"));
+        assertThat(club.seriesEntry(), equalTo("https://www.myc.org.au/race-series/"));
+        assertThat(club.noticeBoard(), equalTo("https://www.myc.org.au/notice-board/"));
+
+        // Null, not a guess. A club that has not given a link has no link, and the page
+        // leaves the sentence out rather than sending anybody to a URL nobody chose.
+        Files.writeString(file, "club:\n  domain: \"myc.org.au\"\n");
+        JinxConfig.Club bare = JinxConfig.load(file).club();
+        assertThat(bare.website(), is(nullValue()));
+        assertThat(bare.otherResults(), is(nullValue()));
+        assertThat(bare.seriesEntry(), is(nullValue()));
+        assertThat(bare.noticeBoard(), is(nullValue()));
     }
 }

@@ -319,7 +319,7 @@ projects, not just a local regression.
 | `roster/{seriesId}.json` | who is in for the season, **and the terms they enter on** |
 | `entrants/{raceId}.json` | who is in this race **and the TCF it was sailed on** |
 | `start-sheet/{raceId}.json` | the published stagger |
-| `race-times/{raceId}.json` | came / actual start / finish, as typed |
+| `race-times/{raceId}.json` | came / actual start / finish as typed, **and the flags the RO overrode** |
 | `adjustments/{raceId}.json` | saved handicap output — **also the race lock** |
 | `audit.json`, `journal/` | history — **and who did it**, when there is a login |
 
@@ -370,7 +370,24 @@ Two more things that are easy to get wrong:
    ever kept the latest value, which is why v1 needed a separate snapshot file.
 2. **The race lifecycle is derived, never stored.** A race is locked iff it has
    saved adjustments; unlocking is deleting them. There is no status field, and
-   there should not be one — the v1 field was sticky and lied.
+   there should not be one — the v1 field was sticky and lied. `abandoned` is the
+   one exception and is not a lifecycle state: it is a judgement made on the water
+   that no captured time can imply, so it has `POST /api/races/{id}/abandon` — its
+   own endpoint rather than a field on the race editor, which fills anything the
+   body omits from the series defaults and would quietly give a cancelled race a
+   different name or first gun.
+
+3. **Flags the RO set by hand are stored; flags the times imply are not.** Most
+   flags are derived — DNC, DNS, DNF, OCS all follow from came/started/finished, and
+   deriving them is right, because a stored one would go stale the moment a time was
+   corrected. What cannot be derived is a judgement that *contradicts* the times, and
+   `RaceTimes.BoatTimes.flags` holds exactly that, as added/removed rather than one
+   effective list — a derived flag has to be clearable, and one list cannot say "not
+   this one". The case it exists for is **RET against a boat that never finished**:
+   the times say DNF, which eases a handicap, where RET freezes it. `scoring.js`
+   already suppressed the derived flag correctly; what was missing was anywhere to
+   keep the RO's answer, so it lived in the browser tab and `sessionClear()` on
+   processing turned every RET back into a DNF.
 
 ### What the race actually needs
 
@@ -422,6 +439,7 @@ for the full list. The shape worth knowing:
 | POST | `/api/boats/import` | load the fleet from a sailing-pf export (`?dryRun=true` previews) |
 | POST | `/api/races/{id}/entrants/import` | add entrants from the same export, with TCFs |
 | POST | `/api/races/{id}/entrants/seed` | seed from the roster or the previous race |
+| POST | `/api/races/{id}/abandon` | call a race off, or put it back on |
 | POST | `/api/races/{id}/start-times` | compute and publish the stagger (applies the sunset cap) |
 | POST | `/api/races/{id}/process-handicaps` | run the engine (computes, saves nothing) |
 | POST | `/api/races/{id}/save-handicaps` | save, and carry TCFs to the next race |

@@ -44,6 +44,10 @@
   <section id="handicap-panel" style="display:none;">
     <div class="toolbar">
       <button id="process-btn" class="primary" type="button" data-requires="officer">Process Results</button>
+      <!-- Offered only while it would mean something: a race whose results are locked
+           has already been scored, and unlocking is the way back to this. -->
+      <button id="abandon-btn" type="button" data-requires="officer"
+              style="display:none;">Abandon Race</button>
       <a id="report-finish-link" class="button-link disabled" target="_blank">Finish sheet ▸</a>
       <button id="unlock-results-btn" type="button" data-requires="officer" style="display:none;">Unlock results</button>
     </div>
@@ -994,6 +998,38 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     applyNowDrop(inp, ev.dataTransfer.getData('text/plain'));
   });
 
+  /**
+   * The times as they are stored, with the RO's flag overrides folded back in.
+   *
+   * <p>Flags are edited through their own map because that is what the scorer takes, but
+   * they belong to the same record as the times they contradict — so they are merged on
+   * the way out and read back out on the way in. Kept out of {@code timesMap} in between
+   * so that a flag edit cannot be mistaken for a time edit.
+   */
+  function withFlags(map) {
+    const out = {};
+    for (const [id, t] of Object.entries(map || {})) out[id] = { ...t, flags: undefined };
+    for (const [id, ov] of dirtyFlags.entries()) {
+      if (!(ov.added || []).length && !(ov.removed || []).length) continue;
+      out[id] = { ...(out[id] || { came: false, actualStart: null, finish: null }),
+                  flags: { added: ov.added || [], removed: ov.removed || [] } };
+    }
+    return out;
+  }
+
+  /** The saved overrides, as the working map the scorer reads. */
+  function flagsFromTimes(map) {
+    const out = new Map();
+    for (const [id, t] of Object.entries(map || {})) {
+      const f = t && t.flags;
+      if (!f) continue;
+      const added = f.added || [], removed = f.removed || [];
+      if (added.length || removed.length)
+        out.set(String(id), { added: [...added], removed: [...removed] });
+    }
+    return out;
+  }
+
   // --- flags popover ---------------------------------------------------------
 
   function openFlagPopover(anchor, boatId) {
@@ -1391,7 +1427,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     }
 
     const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/times', {
-      boatOrder, dutyBoatId: dutyBoatId || null, times: timesMap
+      boatOrder, dutyBoatId: dutyBoatId || null, times: withFlags(timesMap)
     });
     if (!r.ok) { setMsg('save-summary', 'Could not save times: ' + errorOf(r)); return false; }
 
@@ -1519,6 +1555,18 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
 
     sessionClear();
     await load();
+
+    // Finishing order, always. Processing is the moment the race stops being a list of
+    // boats to time and becomes a result, and the result is the order they finished in
+    // — so whatever the table was arranged by for capturing times, this is now the
+    // question being asked of it. After load(), because load() applies the remembered
+    // view; and saved, because it is a real arrangement of this race that should still
+    // be there when the RO comes back to it.
+    sortStack = [{ key: 'place', dir: 1 }];
+    saveView();
+    renderHead();
+    renderEntrants();
+
     const carried = sr.body.carriedEntrants;
     // One notice, in one place. This used to be two: a sentence beside the button and
     // the same thing again in the box, plus a summary panel that stayed on screen
@@ -1529,6 +1577,22 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
           : 'This is the last race in the series, so nothing was carried forward.')
       + ' The results are now locked — unlock them to redo. '
       + handicapSummary(r.body));
+  }
+
+  async function toggleAbandoned() {
+    const to = !bundle.race.abandoned;
+    if (to && !confirm('Abandon this race?\n\nIts entrants and times are kept, but it '
+      + 'will not be scored. You can put it back.')) return;
+    const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/abandon',
+      { abandoned: to });
+    if (!r.ok) {
+      setCtrlMsg('banner-err', 'Could not change the race: ' + errorOf(r));
+      return;
+    }
+    await load();
+    setCtrlMsg(to ? 'banner-warn' : 'banner-ok', to
+      ? 'Race abandoned. Its entrants and times are kept, and it will not be scored.'
+      : 'Race is back on.');
   }
 
   /**
@@ -1691,6 +1755,15 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     applyNowVisibility();
     document.getElementById('unlock-results-btn').style.display =
       (locked && canEdit()) ? '' : 'none';
+    // Abandoning is for a race that has not been scored. Once it is abandoned the same
+    // button puts it back, because the decision is made in a squall and squalls pass —
+    // the alternative would be creating a second race for a night that only had one.
+    const abandon = document.getElementById('abandon-btn');
+    abandon.style.display = (!locked && canEdit()) ? '' : 'none';
+    abandon.textContent = bundle.race.abandoned ? 'Race was sailed' : 'Abandon Race';
+    abandon.title = bundle.race.abandoned
+      ? 'This race is marked abandoned. Put it back on.'
+      : 'Call this race off — it keeps its entrants and times, but is not a result.';
     document.getElementById('process-btn').disabled = locked;
 
     if (locked) {
@@ -1730,7 +1803,10 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     dutyBoatId = (bundle.times && bundle.times.dutyBoatId) || null;
     boatOrder = (bundle.times && bundle.times.boatOrder) || [];
     dirtyTcf = new Map();
-    dirtyFlags = new Map();
+    // Seeded from the store, not emptied: a flag the RO set is a fact about the race,
+    // and it used to live only in this tab — so processing the results, which clears the
+    // session, turned every RET back into the DNF its times imply.
+    dirtyFlags = flagsFromTimes(timesMap);
     adjustments = new Map((bundle.adjustments || []).map(a => [String(a.boatId), a]));
 
     baseline = stateJson();
@@ -1812,6 +1888,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     document.getElementById('start-times-btn').onclick = computeStartTimes;
     document.getElementById('process-btn').onclick = processHandicaps;
     document.getElementById('unlock-results-btn').onclick = unlockResults;
+    document.getElementById('abandon-btn').onclick = toggleAbandoned;
     document.getElementById('unlock-starts-btn').onclick = unlockStarts;
     // Hide design and Hide NOW change the column set, so the header has to be rebuilt
     // as well; the other two only change which rows show.

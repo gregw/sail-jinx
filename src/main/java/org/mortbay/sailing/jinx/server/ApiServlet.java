@@ -75,6 +75,7 @@ import org.slf4j.LoggerFactory;
  *   POST   /api/races/{id}/entrants           replace the entrant list
  *   POST   /api/races/{id}/entrants/seed      seed entrants from the roster or the previous race
  *   POST   /api/races/{id}/entrants/import    add entrants from a sailing-pf export
+ *   POST   /api/races/{id}/abandon            call a race off, or put it back on
  *   POST   /api/races/{id}/start-times        compute and publish the pursuit start sheet
  *   GET    /api/races/{id}/times              RO-captured came / start / finish
  *   POST   /api/races/{id}/times              save them
@@ -132,6 +133,7 @@ public class ApiServlet extends HttpServlet
     private static final Pattern RACE_PROCESS_HANDICAPS = Pattern.compile("/races/([^/]+)/process-handicaps");
     private static final Pattern RACE_SAVE_HANDICAPS = Pattern.compile("/races/([^/]+)/save-handicaps");
     private static final Pattern RACE_ADJUSTMENTS = Pattern.compile("/races/([^/]+)/adjustments");
+    private static final Pattern RACE_ABANDON = Pattern.compile("/races/([^/]+)/abandon");
 
     /** A season is twenty-odd races; a request for hundreds is a typo, not a season. */
     private static final int MAX_RACES_PER_REQUEST = 100;
@@ -285,6 +287,8 @@ public class ApiServlet extends HttpServlet
             handleImportEntrants(req, resp, m.group(1));
         else if ((m = RACE_ENTRANTS.matcher(path)).matches())
             handleSaveEntrants(req, resp, m.group(1));
+        else if ((m = RACE_ABANDON.matcher(path)).matches())
+            handleAbandonRace(req, resp, m.group(1));
         else if ((m = RACE_START_TIMES.matcher(path)).matches())
             handleComputeStartTimes(req, resp, m.group(1));
         else if ((m = RACE_TIMES.matcher(path)).matches())
@@ -326,11 +330,18 @@ public class ApiServlet extends HttpServlet
     {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("version", version);
-        out.put("club", mapOf(
-            "domain", config.club().domain(),
-            "shortName", config.club().shortName(),
-            "longName", config.club().longName(),
-            "timezone", config.club().timezone()));
+        Map<String, Object> club = new LinkedHashMap<>();
+        club.put("domain", config.club().domain());
+        club.put("shortName", config.club().shortName());
+        club.put("longName", config.club().longName());
+        club.put("timezone", config.club().timezone());
+        // Null when unset, and the front page tests for that: these are the club's own
+        // addresses, not this application's, and an unset one means say nothing.
+        club.put("website", config.club().website());
+        club.put("otherResults", config.club().otherResults());
+        club.put("seriesEntry", config.club().seriesEntry());
+        club.put("noticeBoard", config.club().noticeBoard());
+        out.put("club", club);
         out.put("algorithm", algorithmMap(config.algorithm()));
         // Surfaced so a corrupt store file is visible in the UI instead of
         // quietly presenting as missing data.
@@ -1105,6 +1116,44 @@ public class ApiServlet extends HttpServlet
     private static long countWithoutId(List<Entrant> entrants)
     {
         return entrants.stream().filter(e -> e.boatId() == null || e.boatId().isBlank()).count();
+    }
+
+    /**
+     * Call a race off, or put it back on.
+     *
+     * <p>Its own endpoint rather than a field on the general race editor, which would be
+     * the obvious place. {@code handleSaveRace} takes the whole race and fills anything
+     * the body omits from the series defaults — so abandoning through it would mean the
+     * page resending every field correctly, and a single omission would quietly give a
+     * cancelled race a different name or a different first gun. Abandoning changes one
+     * boolean and should be unable to change anything else.
+     *
+     * <p>Reversible, because "abandoned" is a decision made in a squall and the squall
+     * sometimes passes. The alternative to putting it back is creating a second race for
+     * a night that only had one.
+     *
+     * <p>A race officer's, not an admin's: calling a race off is the archetypal
+     * race-night judgement, made on the water by whoever is running it. It is the one
+     * thing about the shape of the season that is decided out there.
+     */
+    private void handleAbandonRace(HttpServletRequest req, HttpServletResponse resp,
+        String raceId) throws Exception
+    {
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
+            return;
+        Race race = store.races().get(raceId);
+        if (race == null)
+        {
+            resp.setStatus(404);
+            writeJson(resp, mapOf("error", "no such race: " + raceId));
+            return;
+        }
+        JsonNode body = MAPPER.readTree(req.getInputStream());
+        boolean abandoned = body.path("abandoned").asBoolean(true);
+        Race updated = new Race(race.id(), race.seriesId(), race.number(), race.name(),
+            race.date(), race.earliestStart(), race.targetElapsedMinutes(), abandoned);
+        store.putRace(updated);
+        writeJson(resp, mapOf("ok", true, "race", raceMap(updated)));
     }
 
     /**

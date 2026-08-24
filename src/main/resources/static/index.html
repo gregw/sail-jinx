@@ -13,16 +13,16 @@
     <h1>Sail-Jinx</h1>
     <p class="lead">
         A standalone race-management application for pursuit racing, with a
-        punitive handicap on the side. After each race a boat's handicap is
-        adjusted to change its next start time:
+        deliberately punitive handicapping system called Jinx. After each race a
+        boat's handicap is adjusted to change its next start time:
     </p>
     <ul>
         <li><b>Top finishers receive fixed time penalties</b> by place — for example
-            6 minutes for first, 4 for second, 2 for third. That is added to their
-            next start time.</li>
+            6 minutes for first, 4 for second, 2 for third. The penalty may be
+            absolute, or per hour of race duration. That is added to their next
+            start time.</li>
         <li><b>All starters receive a variable time bonus</b> totalling the penalties
-            given, distributed so that slower boats get a larger share, especially
-            in longer races.</li>
+            given, distributed so that slower boats get a larger share.</li>
         <li><b>The fleet is re-anchored</b> so the slowest boat starts exactly on the
             earliest allowed start time.</li>
     </ul>
@@ -30,8 +30,26 @@
     <div id="store-errors" class="banner banner-err" style="display:none;"></div>
 
     <section>
-        <h2>Race night</h2>
+        <h2>Next Races</h2>
         <div id="next-race" class="banner banner-info">Looking for a race…</div>
+    </section>
+
+    <!-- Filled from config.yaml's club block, one sentence per link, and each one
+         omitted when the club has not configured it. This application is not MYC's:
+         another club runs it against its own file, so nothing here is hard-coded. -->
+    <section id="club-section" style="display:none;">
+        <h2 id="club-heading">The club</h2>
+        <p id="club-about"></p>
+    </section>
+
+    <section>
+        <h2>Series Scoring</h2>
+        <p>
+            This system does not calculate points, nor series scores. Results must be
+            copied into another system — SailSys, for instance — for scoring. Use the
+            <b>start sheet</b> and <b>finish sheet</b> reports on each race to transcribe
+            the starts and the results.
+        </p>
     </section>
 
     <section>
@@ -47,15 +65,6 @@
         </ol>
     </section>
 
-    <section>
-        <h2>Getting results into SailSys</h2>
-        <p>
-            sail-jinx has no connection to SailSys or any other system. Each race
-            produces two printable reports — a start sheet and a corrected-finish
-            sheet — which someone types into SailSys by hand. That transcription
-            is the only link between the two, and it happens outside this software.
-        </p>
-    </section>
 
     <p class="lead">
         Further reading:
@@ -79,6 +88,8 @@
 
     // Point at the race most likely wanted tonight: the earliest one that
     // hasn't been processed yet, else the most recent race there is.
+    renderClub(cfg);
+
     const r = await fetchJson('/api/races');
     const el = document.getElementById('next-race');
     if (!r.ok) {
@@ -100,6 +111,41 @@
       + (race.date ? ', ' + esc(fmtDate(race.date)) : '') + '</a>'
       + (pending.length ? '' : ' <span class="tag">every race processed</span>');
   })();
+
+  /**
+   * What this site is, and where the rest of the club's racing lives.
+   *
+   * <p>Every sentence is conditional on its link being configured, and the section
+   * disappears entirely when none of them is. A club that has not filled the file in
+   * gets a front page with nothing to say about itself, rather than one pointing at
+   * addresses somebody else chose.
+   */
+  function renderClub(cfg) {
+    const club = (cfg && cfg.club) || {};
+    const name = club.longName || club.shortName;
+    const link = (href, text) => '<a href="' + esc(href) + '" target="_blank">'
+      + esc(text) + '</a>';
+    const parts = [];
+
+    if (name) {
+      parts.push('This site carries the Jinx results for '
+        + (club.website ? link(club.website, name) : '<b>' + esc(name) + '</b>') + '.');
+    }
+    if (club.otherResults)
+      parts.push('Results for the club\u2019s other racing are at '
+        + link(club.otherResults, 'SailSys') + '.');
+    if (club.seriesEntry)
+      parts.push('Boats enter a series through the links at '
+        + link(club.seriesEntry, 'Race Series') + '.');
+    if (club.noticeBoard)
+      parts.push('The official ' + link(club.noticeBoard, 'notice board')
+        + ' is where the sailing instructions and any amendments are posted.');
+
+    if (!parts.length) return;
+    if (name) document.getElementById('club-heading').textContent = name;
+    document.getElementById('club-about').innerHTML = parts.join(' ');
+    document.getElementById('club-section').style.display = '';
+  }
 </script>
 </body>
 </html>

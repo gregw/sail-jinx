@@ -26,6 +26,7 @@ import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.startsWith;
 
 /**
  * End-to-end exercise of the standalone API: boot the real server against a
@@ -985,5 +986,69 @@ class JinxApiIntegrationTest
             HttpResponse.BodyHandlers.ofString());
         assertThat("DELETE " + path + " -> " + r.body(), r.statusCode(), equalTo(200));
         return M.readTree(r.body());
+    }
+
+    @Test
+    void aManuallySetFlagIsStoredWithTheTimesThatImplyItsOpposite() throws Exception
+    {
+        String seriesId = createSeries("2026 Winter Twilight");
+        String boatId = createBoat("AUS9", "Quick Silver");
+        putRoster(seriesId, boatId, 1.0);
+        String raceId = createRace(seriesId, "2026-06-05");
+        post("/api/races/" + raceId + "/entrants/seed", "{}");
+
+        // Came, started, never finished. The times alone say DNF; the RO says the boat
+        // retired, which is a different fact about a different thing — DNF eases a
+        // handicap and RET freezes it. Nothing else on the page records the difference,
+        // so if the flag is not stored here it is not stored at all.
+        post("/api/races/" + raceId + "/times", """
+            {"boatOrder":["%s"],
+             "times":{"%s":{"came":true,"actualStart":"18:00:05","finish":null,
+                            "flags":{"added":["RET"],"removed":[]}}}}"""
+            .formatted(boatId, boatId));
+
+        JsonNode back = get("/api/races/" + raceId + "/times")
+            .path("times").path("times").path(boatId).path("flags");
+        assertThat(back.path("added").size(), equalTo(1));
+        assertThat(back.path("added").get(0).asText(), equalTo("RET"));
+
+        // And it is in the race bundle, which is the one call the race page makes: a
+        // flag that survived the save but not the reload would look identical to a flag
+        // that was never saved.
+        JsonNode bundled = get("/api/races/" + raceId)
+            .path("times").path("times").path(boatId).path("flags");
+        assertThat(bundled.path("added").get(0).asText(), equalTo("RET"));
+    }
+
+    @Test
+    void aRaceCanBeAbandonedAndRestoredWithoutDisturbingAnythingElse() throws Exception
+    {
+        String seriesId = createSeries("2026 Winter Twilight");
+        String raceId = post("/api/races", """
+            {"seriesId":"%s","date":"2026-06-05","name":"Race in a gale",
+             "earliestStart":"17:45","targetElapsedMinutes":75}""".formatted(seriesId))
+            .path("race").path("id").asText();
+
+        JsonNode abandoned = post("/api/races/" + raceId + "/abandon",
+            "{\"abandoned\":true}").path("race");
+        assertThat(abandoned.path("abandoned").asBoolean(), is(true));
+
+        // The wind is the only thing that changed. Abandoning through the general race
+        // editor would mean resending every field, and a field left out of that body
+        // silently reverts to the series default — so the race would come back from a
+        // cancelled night with a different name and a different first gun.
+        assertThat(abandoned.path("name").asText(), equalTo("Race in a gale"));
+        assertThat(abandoned.path("earliestStart").asText(), startsWith("17:45"));
+        assertThat(abandoned.path("targetElapsedMinutes").asInt(), equalTo(75));
+        assertThat(abandoned.path("date").asText(), equalTo("2026-06-05"));
+
+        // It survives the reload, and it is in the bundle the race page reads.
+        assertThat(get("/api/races/" + raceId).path("race").path("abandoned").asBoolean(),
+            is(true));
+
+        // And there is a way back: an abandoned race that turns out to have been sailed
+        // after all must not need a new race to be created for it.
+        assertThat(post("/api/races/" + raceId + "/abandon", "{\"abandoned\":false}")
+            .path("race").path("abandoned").asBoolean(), is(false));
     }
 }

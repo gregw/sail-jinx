@@ -39,7 +39,7 @@ public record JinxConfig(
     public JinxConfig
     {
         if (club == null)
-            club = new Club(null, null, null, null);
+            club = new Club(null, null, null, null, null, null, null, null);
         if (algorithm == null)
             algorithm = new Algorithm(
                 null, 0, 0, null, null, null, false, null, null, null, false);
@@ -67,6 +67,13 @@ public record JinxConfig(
      * <p>Changing it after data exists would orphan every series and race id, so it is
      * set once at installation.
      *
+     * <p>{@code website}, {@code otherResults}, {@code seriesEntry} and
+     * {@code noticeBoard} are the club's own addresses, shown on the front page. They
+     * are configuration rather than code because this application is not MYC's: another
+     * club runs it against its own YAML, and a link hard-coded here would be a link to
+     * somebody else's noticeboard. Each is optional and absent means the front page says
+     * nothing about it.
+     *
      * <p>{@code timezone} is the other field with teeth:
      * {@link org.mortbay.sailing.jinx.pursuit.SolarTimes} uses it to turn a computed
      * sunset into local wall-clock, which keeps the summer-DST evening races honest.
@@ -75,7 +82,11 @@ public record JinxConfig(
         @JsonProperty("domain") String domain,
         @JsonProperty("shortName") String shortName,
         @JsonProperty("longName") @JsonAlias("name") String longName,
-        @JsonProperty("timezone") String timezone)
+        @JsonProperty("timezone") String timezone,
+        @JsonProperty("website") String website,
+        @JsonProperty("otherResults") String otherResults,
+        @JsonProperty("seriesEntry") String seriesEntry,
+        @JsonProperty("noticeBoard") String noticeBoard)
     {
         public Club
         {
@@ -87,6 +98,20 @@ public record JinxConfig(
                 shortName = longName;
             if (timezone == null || timezone.isBlank())
                 timezone = "Australia/Sydney";
+            // The four links are left null when they are not given. Every other field
+            // here has a sensible fallback because something has to be printed; a link
+            // does not — the front page leaves the sentence out rather than sending
+            // somebody to an address nobody chose. A blank in YAML means the same as
+            // absent, or a club that half-filled the file would publish a dead anchor.
+            website = trimToNull(website);
+            otherResults = trimToNull(otherResults);
+            seriesEntry = trimToNull(seriesEntry);
+            noticeBoard = trimToNull(noticeBoard);
+        }
+
+        private static String trimToNull(String s)
+        {
+            return (s == null || s.isBlank()) ? null : s.trim();
         }
     }
 
