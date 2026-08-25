@@ -1737,6 +1737,14 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       setCtrlMsg('banner-err', 'Earliest start must be a time of day, as HH:MM.');
       return;
     }
+
+    // Save first, as Process Results does. The stagger is computed on the server from
+    // the entrants it has on disk, so a TCF edited but not saved, or a boat added but
+    // not saved, would be left out of the very sheet it was being edited for — and the
+    // fleet would be given guns from a fleet list nobody was looking at. Both validity
+    // checks come first: a save is not the thing to do about a mistyped duration.
+    if (isDirty() && !(await doSave())) return;
+
     const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/start-times', {
       targetElapsedMinutes: target,
       earliestStart: earliest
