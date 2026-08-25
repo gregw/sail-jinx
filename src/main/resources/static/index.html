@@ -10,13 +10,12 @@
 <!-- INCLUDE _nav.html -->
 
 <main>
-    <h1>Sail-Jinx</h1>
     <p class="quote">
-        <i><b>Jinx</b> — to bring a "curse" upon your future self by doing too well today.</i>
+        <i><b>Jinx</b> — to bring a "curse" upon your future self by your actions.</i>
     </p>
     <p class="lead">
-        A standalone race-management application for pursuit racing, with a
-        deliberately punitive handicapping system called Jinx. After each race a
+        Jinx is a standalone race-management application for pursuit racing, with a
+        deliberately punitive handicapping system. After each race a
         boat's handicap is adjusted to change its next start time:
     </p>
     <ul>
@@ -76,18 +75,19 @@
         + cfg.storeErrors.map(e => '<li>' + esc(e) + '</li>').join('') + '</ul>';
     }
 
-    // Point at the race most likely wanted tonight: the earliest one that
-    // hasn't been processed yet, else the most recent race there is.
     renderClub(cfg);
 
-    const r = await fetchJson('/api/races');
+    const [racesR, seriesR] = await Promise.all([
+      fetchJson('/api/races'),
+      fetchJson('/api/series')
+    ]);
     const el = document.getElementById('next-race');
-    if (!r.ok) {
+    if (!racesR.ok) {
       el.className = 'banner banner-err';
-      el.textContent = 'Could not load races: ' + errorOf(r);
+      el.textContent = 'Could not load races: ' + errorOf(racesR);
       return;
     }
-    const races = r.body || [];
+    const races = racesR.body || [];
     if (!races.length) {
       el.className = 'banner banner-info';
       // The steps it used to point at are gone; the nav is where they live.
@@ -95,13 +95,45 @@
         + '<a href="/races.html">races</a>.';
       return;
     }
-    const pending = races.filter(x => !x.locked && !x.abandoned);
-    const race = pending.length ? pending[0] : races[races.length - 1];
-    el.className = 'banner banner-ok';
-    el.innerHTML = '<a href="/race.html?raceId=' + encodeURIComponent(race.id) + '">'
+
+    // One line per series, not one line for the club. A club runs more than one season
+    // at a time — a twilight series and a Saturday one — and "the next race" was
+    // whichever of them happened to fall first, which is the wrong answer for whoever
+    // is running the other.
+    //
+    // Archived series are left out: they are archived precisely because nobody is
+    // looking for their next race.
+    const archived = new Set(((seriesR.ok ? seriesR.body : []) || [])
+      .filter(x => x.archived).map(x => x.id));
+
+    // /api/races comes back in date then number order, so the first match down each
+    // series is the next race in it.
+    const bySeries = new Map();
+    for (const race of races) {
+      if (archived.has(race.seriesId)) continue;
+      const cur = bySeries.get(race.seriesId);
+      const pending = !race.locked && !race.abandoned;
+      // The first unprocessed race, or — for a season that is over — its last race, so
+      // a finished series still offers a way back into its results.
+      if (!cur) bySeries.set(race.seriesId, { race, pending });
+      else if (pending && !cur.pending) bySeries.set(race.seriesId, { race, pending });
+      else if (!pending && !cur.pending) bySeries.set(race.seriesId, { race, pending });
+    }
+
+    if (!bySeries.size) {
+      el.className = 'banner banner-info';
+      el.innerHTML = 'Every series is archived. '
+        + '<a href="/series.html">Series</a> lists them.';
+      return;
+    }
+
+    el.className = 'banner banner-info';
+    el.innerHTML = '<ul class="next-races">' + [...bySeries.values()].map(({ race, pending }) =>
+      '<li><a href="/race.html?raceId=' + encodeURIComponent(race.id) + '">'
       + esc(race.seriesName || 'Race') + ' — race ' + esc(race.number)
       + (race.date ? ', ' + esc(fmtDate(race.date)) : '') + '</a>'
-      + (pending.length ? '' : ' <span class="tag">every race processed</span>');
+      + (pending ? '' : ' <span class="tag">every race processed</span>')
+      + '</li>').join('') + '</ul>';
   })();
 
   /**
@@ -124,14 +156,14 @@
         + (club.website ? link(club.website, name) : '<b>' + esc(name) + '</b>') + '.');
     }
     if (club.otherResults)
-      parts.push('Results for the club\u2019s other racing are at '
-        + link(club.otherResults, 'SailSys') + '.');
+      parts.push('For non-Jinx results, see the club\u2019s '
+        + link(club.otherResults, 'other system') + '.');
     if (club.seriesEntry)
-      parts.push('Boats enter a series through the links at '
-        + link(club.seriesEntry, 'Race Series') + '.');
+      parts.push('To enter all club series use '
+        + link(club.seriesEntry, 'links for this page') + '.');
     if (club.noticeBoard)
-      parts.push('The official ' + link(club.noticeBoard, 'notice board')
-        + ' is where the sailing instructions and any amendments are posted.');
+      parts.push('See the official ' + link(club.noticeBoard, 'notice board')
+        + ' for SIs, amendments and other notices.');
 
     if (!parts.length) return;
     if (name) document.getElementById('club-heading').textContent = name;
