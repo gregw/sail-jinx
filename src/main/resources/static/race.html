@@ -729,10 +729,15 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
 
   function fitEntrantsHeight() {
     const box = document.getElementById('entrants-scroll');
-    // Measure unconstrained, or the second call measures the first call's answer.
+    // Un-constraining the box to measure it makes it briefly tall enough not to scroll,
+    // and the browser clamps scrollTop to 0 on the spot. Putting the height back does
+    // not put the scroll back, so every tick and every time entry threw the RO to the
+    // top of the fleet. Held across the measurement, not merely restored afterwards.
+    const scrollWas = box.scrollTop;
     box.style.maxHeight = '';
+    const restore = () => { box.scrollTop = scrollWas; };
     const row = document.querySelector('#entrants-tbody tr');
-    if (!row) return;
+    if (!row) { restore(); return; }
     const rowH = row.getBoundingClientRect().height;
     const head = document.querySelector('#entrants-table thead');
     const headH = head ? head.getBoundingClientRect().height : 0;
@@ -741,6 +746,7 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     const available = window.innerHeight - box.getBoundingClientRect().top - 24;
     if (rowH > 0 && available >= headH + rowH * MIN_SCROLL_ROWS)
       box.style.maxHeight = Math.floor(available) + 'px';
+    restore();
   }
 
   function renderEntrants() {
@@ -763,9 +769,11 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       + ' boat' + (rows.length === 1 ? '' : 's');
     wireRows();
     // The table is rebuilt whole on every edit, so a fleet scrolled halfway down would
-    // jump back to the top on each captured time.
-    document.getElementById('entrants-scroll').scrollTop = scrollWas;
+    // jump back to the top on each captured time. After the height, not before it —
+    // fitEntrantsHeight has to un-constrain the box to measure it, which resets the
+    // scroll on its own account.
     fitEntrantsHeight();
+    document.getElementById('entrants-scroll').scrollTop = scrollWas;
   }
 
   function wireRows() {
@@ -1265,30 +1273,14 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     pop.querySelectorAll('input').forEach(cb => {
       cb.onclick = (ev) => ev.stopPropagation();
       cb.onchange = () => {
-        const f = cb.value;
-        const cur = dirtyFlags.get(String(boatId)) || { added: [], removed: [] };
-        const added = new Set(cur.added);
-        const removed = new Set(cur.removed);
-        if (cb.checked) {
-          added.add(f);
-          removed.delete(f);
-          // One reason at a time. Ticking a second silently replaced the first once
-          // flags() started normalising, which looked like the click had done nothing.
-          // Clearing the others here makes the boxes agree with the answer.
-          for (const other of STATUS_ORDER) {
-            if (other === f) continue;
-            added.delete(other);
-            // Removed as well as un-added: the one being replaced may be derived from
-            // the times rather than ticked, and un-adding does not clear that.
-            if (STATUS_ORDER.includes(f)) removed.add(other);
-          }
-          // OCS says the boat started, so it cannot stand beside a reason that says it
-          // did not — in either direction.
-          if (f === 'OCS') for (const x of OCS_EXCLUDES) { added.delete(x); removed.add(x); }
-          if (OCS_EXCLUDES.includes(f)) { added.delete('OCS'); removed.add('OCS'); }
-        }
-        else { removed.add(f); added.delete(f); }
-        dirtyFlags.set(String(boatId), { added: [...added], removed: [...removed] });
+        // The rules live in scoring.js, where scoring-test.html pins them: what belongs
+        // in `removed` is subtle enough that it was got wrong here, and an entry that
+        // lands there by mistake silences an automatic flag for good.
+        const next = toggleFlag(dirtyFlags.get(String(boatId)), cb.value, cb.checked);
+        if (next.added.length || next.removed.length)
+          dirtyFlags.set(String(boatId), next);
+        else
+          dirtyFlags.delete(String(boatId));
         pop.remove();
         touched();
       };

@@ -69,6 +69,42 @@ function unplacedRank(flagList) {
   return STATUS_ORDER.length;
 }
 
+/**
+ * Apply one tick, or one untick, to a boat's flag override.
+ *
+ * <p>The override is {@code {added, removed}}, and what goes into {@code removed} is the
+ * whole question: it means "suppress this even though the times imply it". Anything that
+ * lands there by accident silences an automatic flag permanently, because nothing later
+ * takes it out again.
+ *
+ * <p>So two rules. <b>Ticking a reason clears its siblings from {@code added} only</b> —
+ * a derived sibling is already suppressed by this being an explicit classification, and
+ * recording it as removed would outlive the flag that caused it. And <b>un-ticking a
+ * flag you added yourself simply un-ticks it</b>; only un-ticking one the times produced
+ * is a removal worth recording. Together those are what let the RO try RET, change their
+ * mind, and get the derived DNF back — which they could not, because the DNF had been
+ * buried in {@code removed} on the way in.
+ */
+function toggleFlag(override, flag, checked) {
+  const added = new Set((override && override.added) || []);
+  const removed = new Set((override && override.removed) || []);
+
+  if (checked) {
+    added.add(flag);
+    removed.delete(flag);
+    if (STATUS_ORDER.includes(flag))
+      for (const other of STATUS_ORDER) if (other !== flag) added.delete(other);
+    // OCS says the boat started; a reason saying it did not cannot stand beside it.
+    if (flag === 'OCS') for (const x of OCS_EXCLUDES) added.delete(x);
+    if (OCS_EXCLUDES.includes(flag)) added.delete('OCS');
+  } else if (added.has(flag)) {
+    added.delete(flag);
+  } else {
+    removed.add(flag);
+  }
+  return { added: [...added], removed: [...removed] };
+}
+
 /** Keep one reason, and drop OCS where it contradicts the one that is kept. */
 function normaliseFlags(set) {
   const reasons = STATUS_ORDER.filter(f => set.has(f));

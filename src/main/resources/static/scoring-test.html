@@ -534,6 +534,46 @@
   check('unplaced order: OCS is ignored beside a real one', 1, unplacedRank(['DNF', 'OCS']));
 
 
+
+  // --- ticking a flag off has to give the times their say back -----------------
+  // The popover writes an override of {added, removed}. What goes in `removed` is the
+  // whole question: it means "suppress this even though the times imply it", and
+  // anything that lands there by accident silences the automatic flag for good.
+
+  const OV = (added, removed) => ({ added, removed });
+
+  check('ticking a reason adds it', OV(['RET'], []),
+    toggleFlag(OV([], []), 'RET', true));
+  // The boat's times imply DNF; the RO says RET. The DNF must NOT be recorded as
+  // removed — it is suppressed already by RET being an explicit classification, and
+  // recording it would outlive the RET that caused it.
+  check('ticking a reason does not bury the ones it replaces',
+    OV(['RET'], []), toggleFlag(OV(['DNF'], []), 'RET', true));
+  check('un-ticking a reason you added leaves nothing behind',
+    OV([], []), toggleFlag(OV(['RET'], []), 'RET', false));
+  // …which is the bug: RET went off, DNF stayed suppressed, and the boat ended up
+  // with no flag at all and no way to get one back.
+  check('so the times get their say back',
+    OV([], []), toggleFlag(toggleFlag(OV([], []), 'RET', true), 'RET', false));
+
+  // Un-ticking a flag you did NOT add is the other case, and the one `removed` exists
+  // for: a derived flag the RO is overruling.
+  check('un-ticking a derived flag records the removal',
+    OV([], ['OCS']), toggleFlag(OV([], []), 'OCS', false));
+  check('and ticking it again takes the removal off',
+    OV(['OCS'], []), toggleFlag(OV([], ['OCS']), 'OCS', true));
+
+  check('one reason at a time', OV(['DNS'], []),
+    toggleFlag(OV(['RET'], []), 'DNS', true));
+  // OCS says the boat started, so ticking a reason that says it did not takes OCS off.
+  check('a reason that contradicts OCS takes OCS with it',
+    OV(['DNC'], []), toggleFlag(OV(['OCS'], []), 'DNC', true));
+  check('and OCS takes those reasons off in return',
+    OV(['OCS'], []), toggleFlag(OV(['DNS'], []), 'OCS', true));
+  // A reason OCS can live with stays.
+  check('OCS and a boat that started then stopped coexist',
+    OV(['RET', 'OCS'], []), toggleFlag(OV(['RET'], []), 'OCS', true));
+
 </script>
 </body>
 </html>
