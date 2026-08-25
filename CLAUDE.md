@@ -446,6 +446,19 @@ answers:
   ROSTER.** A casual turned up once, and a boat nobody expects appearing on a
   printed start sheet costs more than the two clicks to add it again.
 
+**Seeding is additive, and it runs itself.** `POST /api/races/{id}/entrants/seed` adds
+the boats missing from this race and leaves the ones already in it exactly as they are —
+a TCF somebody typed by hand is a decision, and re-seeding over it would quietly undo
+it. It used to refuse outright once a race had anybody in it, which left it useful for
+one moment in a race's life and made "a boat joined the series" a per-race chore.
+
+The race page runs it on the **first view of the page**, when an admin is looking, the
+start sheet is not published, and the results are not locked. Once per page load, not
+once per `load()` — that runs again after every save and every process, and re-seeding
+there would put back a boat somebody had just deliberately removed. It replaced a Seed
+entrants button that did nothing visible when the roster was empty: seeding zero boats
+onto zero boats looks exactly like a dead button.
+
 TCFs are held to four decimal places (`model/Tcf.java`), rounded half-up, at
 every point one is recorded. They get read aloud and retyped; a value that
 renders differently each time cannot survive that.
@@ -462,7 +475,7 @@ for the full list. The shape worth knowing:
 | GET | `/api/races/{id}` | **everything the race page needs, in one call** |
 | POST | `/api/boats/import` | load the fleet from a sailing-pf export (`?dryRun=true` previews) |
 | POST | `/api/races/{id}/entrants/import` | add entrants from the same export, with TCFs |
-| POST | `/api/races/{id}/entrants/seed` | seed from the roster or the previous race |
+| POST | `/api/races/{id}/entrants/seed` | add the boats this race is missing, from the roster or the previous race |
 | POST | `/api/races/{id}/abandon` | call a race off, or put it back on |
 | POST | `/api/races/{id}/start-times` | compute and publish the stagger (applies the sunset cap) |
 | POST | `/api/races/{id}/process-handicaps` | run the engine (computes, saves nothing) |

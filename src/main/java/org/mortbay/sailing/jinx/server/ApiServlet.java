@@ -1169,9 +1169,13 @@ public class ApiServlet extends HttpServlet
      * entrants at their current TCFs, which is what the fleet actually is until
      * handicaps are processed.
      *
-     * <p>Refuses to overwrite an existing list — re-seeding a race that already
-     * has times captured against it would be destructive, and the RO can add or
-     * remove individual boats instead.
+     * <p><b>Additive.</b> Boats already entered are left exactly as they are, and only
+     * the ones missing from this race are added — so it is safe to run on a race that
+     * is half set up, and it is what picks up a boat that joined the series after this
+     * race's list was first built. It used to refuse outright once a race had anybody
+     * in it, which left it useful for precisely one moment in a race's life.
+     *
+     * <p>Casuals and one-offs are not carried: see {@code Entrant.seedsNextRace}.
      */
     private void handleSeedEntrants(HttpServletRequest req, HttpServletResponse resp,
         String raceId) throws Exception
@@ -1186,16 +1190,38 @@ public class ApiServlet extends HttpServlet
             return;
         }
         RaceEntrants existing = store.entrants(raceId);
-        if (existing != null && !existing.entrants().isEmpty())
+        List<Entrant> already = existing == null ? List.of() : existing.entrants();
+        Set<String> have = idsOf(already);
+
+        RaceEntrants source = seedFromPreviousRace(race).orElseGet(() -> seedFromRoster(race));
+        List<Entrant> missing = source.entrants().stream()
+            .filter(e -> e.boatId() != null && !e.boatId().isBlank() && !have.contains(e.boatId()))
+            .toList();
+
+        // Additive, not all-or-nothing. This used to refuse outright the moment a race
+        // had anybody in it, which made it useless for the job it is actually for:
+        // picking up the boats that have joined the series since. Boats already entered
+        // keep the terms they were entered on — a TCF somebody typed by hand is a
+        // decision, and re-seeding over it would quietly undo it.
+        if (missing.isEmpty())
         {
-            badRequest(resp, "race already has entrants — add or remove boats instead");
+            writeJson(resp, mapOf("ok", true, "raceId", raceId, "added", 0,
+                "entrants", existing == null ? source : existing));
             return;
         }
 
-        RaceEntrants seeded = seedFromPreviousRace(race)
-            .orElseGet(() -> seedFromRoster(race));
+        List<Entrant> merged = new ArrayList<>(already);
+        merged.addAll(missing);
+        // A race seeded onto an empty list is carried forward; one that already had
+        // boats keeps whatever it was already saying about where its TCFs came from.
+        RaceEntrants seeded = already.isEmpty()
+            ? new RaceEntrants(raceId, Instant.now(), source.tcfSource(),
+                source.sourceRaceId(), source.sourceRaceNumber(), merged)
+            : new RaceEntrants(raceId, Instant.now(), existing.tcfSource(),
+                existing.sourceRaceId(), existing.sourceRaceNumber(), merged);
         store.putEntrants(seeded);
-        writeJson(resp, mapOf("ok", true, "raceId", raceId, "entrants", seeded));
+        writeJson(resp, mapOf("ok", true, "raceId", raceId, "added", missing.size(),
+            "entrants", seeded));
     }
 
     private Optional<RaceEntrants> seedFromPreviousRace(Race race)

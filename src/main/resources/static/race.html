@@ -2137,10 +2137,8 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     document.getElementById('handicap-panel').style.display = '';
     if (startsLocked()) document.getElementById('import-panel').style.display = 'none';
 
-    if (!entrants.length) {
+    if (!entrants.length)
       setCtrlMsg('banner-warn', 'This race has no entrants yet.');
-      await offerSeed();
-    }
 
     renderHead();
     renderEntrants();
@@ -2152,22 +2150,37 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     }
   }
 
-  async function offerSeed() {
-    const el = document.getElementById('ctrl-msg');
-    const btn = document.createElement('button');
-    btn.textContent = 'Seed entrants';
-    btn.className = 'primary';
-    btn.style.marginLeft = '0.75rem';
-    // Seeding fills the race from the roster, which is the admin's list.
-    btn.setAttribute('data-requires', 'admin');
-    btn.onclick = async () => {
-      const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/entrants/seed', {});
-      if (!r.ok) { setCtrlMsg('banner-err', 'Could not seed: ' + errorOf(r)); return; }
-      sessionClear();
-      await load();
-    };
-    el.appendChild(btn);
-    applyRoleGates(el);
+  /**
+   * Fill in the boats this race is missing, without being asked.
+   *
+   * <p>This was a Seed entrants button, offered when a race had nobody in it. Two things
+   * were wrong with it. It did nothing visible when the roster was empty — seeding zero
+   * boats onto zero boats looks identical to a dead button — and it was only ever
+   * offered on an empty race, so a boat that joined the series after this race's list
+   * was built had to be added to every remaining race by hand.
+   *
+   * <p>So it runs by itself, on the first view of the page, under three conditions:
+   * an admin is looking (the endpoint is an admin's, and it decides who is in a race);
+   * the start sheet has not been published (after that the fleet is fixed — a boat
+   * added now has no gun); and the results are not locked.
+   *
+   * <p>Once per page load, not once per {@link load}: load() runs again after every
+   * save and every process, and re-seeding there would put back a boat somebody had
+   * just deliberately taken out.
+   */
+  let seedChecked = false;
+
+  async function seedMissingEntrants() {
+    if (seedChecked) return;
+    seedChecked = true;
+    if (locked || hasStartSheet() || !isAdmin()) return;
+
+    const r = await postJson('/api/races/' + encodeURIComponent(raceId) + '/entrants/seed', {});
+    if (!r.ok || !r.body || !r.body.added) return;
+    const n = r.body.added;
+    await load();
+    setCtrlMsg('banner-ok', 'Added ' + n + ' boat' + (n === 1 ? '' : 's')
+      + ' carried over from the previous race. Remove any that are not sailing.');
   }
 
   // --- boot ------------------------------------------------------------------
@@ -2263,6 +2276,10 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     });
 
     await load();
+    // After the first load, so it can see whether the race has a start sheet, and
+    // before the RO starts working: a boat appearing halfway through capturing times
+    // would be a surprise rather than a convenience.
+    await seedMissingEntrants();
     refreshAddSuggestions();
     updateAddButtons();
   })();

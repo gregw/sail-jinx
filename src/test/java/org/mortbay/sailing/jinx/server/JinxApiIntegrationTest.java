@@ -223,16 +223,26 @@ class JinxApiIntegrationTest
     }
 
     @Test
-    void seedingRefusesToClobberAnExistingEntrantList() throws Exception
+    void seedingTwiceDoesNotClobberAnExistingEntrantList() throws Exception
     {
         String seriesId = createSeries("S");
         String boatId = createBoat("AUS9", "Quick Silver");
         putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
+        post("/api/races/" + raceId + "/entrants",
+            "{\"entrants\":[{\"boatId\":\"" + boatId + "\",\"tcf\":1.2345}]}");
 
-        HttpResponse<String> again = postRaw("/api/races/" + raceId + "/entrants/seed", "{}");
-        assertThat(again.statusCode(), equalTo(400));
+        // Seeding again is safe rather than refused: the page now runs it on every first
+        // view of an unstarted race, so it has to be a no-op when there is nothing to
+        // add. The hand-typed TCF is the test of that — re-seeding over it would put the
+        // roster's 1.0 back and look like the number had never been changed.
+        JsonNode again = post("/api/races/" + raceId + "/entrants/seed", "{}");
+        assertThat(again.path("added").asInt(), equalTo(0));
+
+        JsonNode entrants = get("/api/races/" + raceId).path("entrants").path("entrants");
+        assertThat(entrants.size(), equalTo(1));
+        assertThat(entrants.get(0).path("tcf").asDouble(), closeTo(1.2345, 1e-9));
     }
 
     @Test
@@ -1080,5 +1090,52 @@ class JinxApiIntegrationTest
             assertThat(a.path("penaltyMinutes").asDouble(), closeTo(0.0, 1e-12));
             assertThat(a.path("rewardMinutes").asDouble(), closeTo(0.0, 1e-12));
         }
+    }
+
+    @Test
+    void seedingAddsTheBoatsThatAreMissingRatherThanRefusing() throws Exception
+    {
+        String seriesId = createSeries("2026 Winter Twilight");
+        String fast = createBoat("AUS9", "Quick Silver");
+        String slow = createBoat("A123", "Slow Poke");
+        putRoster(seriesId, fast, 1.0450, slow, 0.8821);
+
+        String race1 = createRace(seriesId, "2026-06-05");
+        post("/api/races/" + race1 + "/entrants/seed", "{}");
+        // A casual turns up to race 1. It sailed, so it is scored — but it is nobody's
+        // expectation for next week.
+        String casual = createBoat("MYC7", "Just Visiting");
+        post("/api/races/" + race1 + "/entrants", """
+            {"entrants":[{"boatId":"%s","tcf":1.0450},{"boatId":"%s","tcf":0.8821},
+                         {"boatId":"%s","tcf":1.0,"entryType":"CASUAL"}]}"""
+            .formatted(fast, slow, casual));
+
+        // Race 2 already has one of the two roster boats — somebody added it by hand.
+        String race2 = createRace(seriesId, "2026-06-12");
+        post("/api/races/" + race2 + "/entrants",
+            "{\"entrants\":[{\"boatId\":\"" + fast + "\",\"tcf\":1.1111}]}");
+
+        // Seeding used to refuse outright once a race had anybody in it, which made it
+        // useless for the thing it is actually for: picking up the boats that have
+        // joined since. It now adds what is missing and leaves what is there alone.
+        JsonNode seeded = post("/api/races/" + race2 + "/entrants/seed", "{}");
+        assertThat(seeded.path("added").asInt(), equalTo(1));
+
+        JsonNode entrants = get("/api/races/" + race2).path("entrants").path("entrants");
+        assertThat(entrants.size(), equalTo(2));
+
+        // The hand-entered TCF stands: this is not a re-seed of boats already in.
+        JsonNode kept = entrants.get(0);
+        assertThat(kept.path("boatId").asText(), equalTo(fast));
+        assertThat(kept.path("tcf").asDouble(), closeTo(1.1111, 1e-9));
+        assertThat(entrants.get(1).path("boatId").asText(), equalTo(slow));
+
+        // …and the casual is not among them.
+        for (JsonNode e : entrants)
+            assertThat(e.path("boatId").asText(), not(equalTo(casual)));
+
+        // Nothing left to add is not an error, it is a no-op.
+        assertThat(post("/api/races/" + race2 + "/entrants/seed", "{}")
+            .path("added").asInt(), equalTo(0));
     }
 }
