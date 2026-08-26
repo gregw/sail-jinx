@@ -78,7 +78,8 @@
       <label><input type="checkbox" id="hide-finished"> Hide finished</label>
       <label title="Hides design, corrected finish and scored elapsed — the columns that
 are reference rather than capture. Once the start sheet is out, TCF joins them; while it
-is still editable it always shows."><input type="checkbox" id="hide-details" checked>
+is still editable it always shows. Once the race is processed, so does the actual
+finish."><input type="checkbox" id="hide-details" checked>
         Hide details</label>
       <label title="Hides the NOW buttons and the log of times they capture."><input
         type="checkbox" id="hide-now" checked> Hide NOW</label>
@@ -548,7 +549,12 @@ for."><input type="checkbox" id="allow-remove">
       // it, the gun is the fact being worked to and the TCF is the reference it came
       // from. So exactly one of them is a detail column at any time — except while the
       // TCF is editable, which is never hidden.
+      // Actual Finish is the night's work while the night is on — the number being
+      // typed, and never hideable. Once the race is processed it has done its job: the
+      // corrected and scored columns are what the results are read from, and the raw
+      // finish becomes reference like the rest of them.
       const detail = DETAIL_COLS.includes(c.key)
+        || (c.key === 'finish' && locked)
         || (c.key === 'tcf' && hasStartSheet() && !tcfEditable())
         || (c.key === 'allocated' && !hasStartSheet());
       if (detail && document.getElementById('hide-details').checked) return false;
