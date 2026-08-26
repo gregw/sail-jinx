@@ -74,7 +74,7 @@
       <label for="cfg-duration">Default expected race duration (min)</label>
       <input id="cfg-duration" type="number" min="1">
 
-      <label for="cfg-dnf">DNF allowance**</label>
+      <label for="cfg-dnf">DNF allowance<strong>*</strong></label>
       <input id="cfg-dnf" type="number" min="1">
 
       <label for="cfg-earliest">Earliest start</label>
@@ -102,17 +102,17 @@
       </span>
     </div>
     <p class="hint" style="max-width:46rem;">
-      <strong>*</strong> How the pool of penalty minutes is shared out. At 0 every boat
+        <strong>*</strong> A boat that did not finish is scored this many minutes behind
+        the last boat that did, and that is what its share of the giveback is worked out
+        from. It is the largest single share, which is the intent: a boat that ran out of
+        time is the one whose handicap should ease most.
+    </p>
+    <p class="hint" style="max-width:46rem;">
+      <strong>**</strong> How the pool of penalty minutes is shared out. At 0 every boat
       that gets a share gets the same one. At 1.0 the share is proportional to how far
       behind the first boat home each one finished — so the boat that won gets nothing
       back and pays its penalty in full, and a boat ten minutes back gets twice what one
       five minutes back gets. Anything in between is a blend of the two.
-    </p>
-    <p class="hint" style="max-width:46rem;">
-      <strong>**</strong> A boat that did not finish is scored this many minutes behind
-      the last boat that did, and that is what its share of the giveback is worked out
-      from. It is the largest single share, which is the intent: a boat that ran out of
-      time is the one whose handicap should ease most.
     </p>
     <p class="hint" style="max-width:46rem;">
       <strong>***</strong> The share of the fleet the pool comes back to, counted from
