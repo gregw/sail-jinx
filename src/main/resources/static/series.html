@@ -71,17 +71,19 @@
       <label for="cfg-penalties">Penalties (minutes, 1st, 2nd, …)</label>
       <input id="cfg-penalties" placeholder="6, 4, 2">
 
-      <label for="cfg-duration">Default race duration (min)</label>
+      <label for="cfg-duration">Default expected race duration (min)</label>
       <input id="cfg-duration" type="number" min="1">
 
-      <label for="cfg-dnf">DNF allowance (min)</label>
+      <label for="cfg-dnf">DNF allowance**</label>
       <input id="cfg-dnf" type="number" min="1">
 
       <label for="cfg-earliest">Earliest start</label>
       <input id="cfg-earliest" placeholder="18:00">
 
       <label for="cfg-sunset">Cap duration at sunset</label>
-      <input id="cfg-sunset" type="checkbox">
+      <!-- A bare checkbox in a grid cell centres itself against the label opposite,
+           which reads as a stray mark rather than a box belonging to that row. -->
+      <span class="check-cell"><input id="cfg-sunset" type="checkbox"></span>
 
       <label for="cfg-scaling">Penalty scaling</label>
       <select id="cfg-scaling">
@@ -89,23 +91,34 @@
         <option value="FIXED">Fixed — the listed minutes, whatever the race took</option>
       </select>
 
-      <label for="cfg-gamma">Giveback weighting (γ)</label>
-      <span>
-        <input id="cfg-gamma" type="number" min="0" max="1" step="0.05" class="hhmm-input">
-        <span class="hint" id="cfg-variant-note"></span>
-      </span>
+      <label for="cfg-gamma">Giveback weighting (0&nbsp;=&nbsp;even,
+        1.0&nbsp;=&nbsp;proportional*)</label>
+      <input id="cfg-gamma" type="number" min="0" max="1" step="0.05" class="hhmm-input">
 
-      <label for="cfg-dnf-duration">Count retirements in the measured duration</label>
-      <input id="cfg-dnf-duration" type="checkbox">
+      <label for="cfg-fleet">Giveback fleet***</label>
+      <span>
+        <input id="cfg-fleet" type="number" min="0" max="1" step="0.01" class="hhmm-input">
+        <span class="hint" id="cfg-fleet-note"></span>
+      </span>
     </div>
     <p class="hint" style="max-width:46rem;">
-      The two settings above the retirement box are the handicap variant. Penalties are
-      either a flat number of minutes or a rate per hour of racing; the pool comes back
-      either evenly (γ = 0) or shared by how far behind the leader each boat finished
-      (γ = 1), with anything in between allowed. At γ = 1 the winner gets nothing back and
-      pays its penalty in full. The club default is <strong>C</strong> — per hour, given
-      back evenly — which is the combination that makes a long night and a short one apply
-      the same correction.
+      <strong>*</strong> How the pool of penalty minutes is shared out. At 0 every boat
+      that gets a share gets the same one. At 1.0 the share is proportional to how far
+      behind the first boat home each one finished — so the boat that won gets nothing
+      back and pays its penalty in full, and a boat ten minutes back gets twice what one
+      five minutes back gets. Anything in between is a blend of the two.
+    </p>
+    <p class="hint" style="max-width:46rem;">
+      <strong>**</strong> A boat that did not finish is scored this many minutes behind
+      the last boat that did, and that is what its share of the giveback is worked out
+      from. It is the largest single share, which is the intent: a boat that ran out of
+      time is the one whose handicap should ease most.
+    </p>
+    <p class="hint" style="max-width:46rem;">
+      <strong>***</strong> The share of the fleet the pool comes back to, counted from
+      the back — 1.0 the whole fleet, 0.33 the bottom third, 0 nobody at all. "The back"
+      means furthest behind the first boat home. At 0 the penalty minutes are simply kept,
+      so the fleet's handicaps tighten overall rather than moving against each other.
     </p>
     <div class="toolbar">
       <button id="cfg-save" class="primary" type="button">Save settings</button>
@@ -299,29 +312,49 @@
     document.getElementById('cfg-scaling').value = c.penaltyScaling || 'PER_HOUR';
     document.getElementById('cfg-gamma').value =
       c.givebackGamma == null ? 0 : c.givebackGamma;
-    document.getElementById('cfg-dnf-duration').checked = !!c.dnfInRaceDuration;
-    showVariant();
+    document.getElementById('cfg-fleet').value =
+      c.givebackFleet == null ? 1 : c.givebackFleet;
+    showFleetNote();
   }
 
-  // The knobs are what the engine reads; the letter is only a name for a corner. Shown
-  // where the knobs are, so a club that says "we score on C" can check it at a glance —
-  // and so an intermediate gamma reads as deliberate rather than as a broken variant.
-  const VARIANT_KNOBS = {
-    A: ['FIXED', 0], B: ['FIXED', 1], C: ['PER_HOUR', 0], D: ['PER_HOUR', 1]
-  };
-
-  function showVariant() {
-    const scaling = document.getElementById('cfg-scaling').value;
-    const gamma = Number(document.getElementById('cfg-gamma').value);
-    const hit = Object.keys(VARIANT_KNOBS).find(k =>
-      VARIANT_KNOBS[k][0] === scaling && VARIANT_KNOBS[k][1] === gamma);
-    document.getElementById('cfg-variant-note').textContent =
-      hit ? 'variant ' + hit + (hit === 'C' ? ' (the default)' : '')
-          : '0 = even, 1 = by gap behind the leader — between the named variants';
+  /**
+   * Say what a fraction of the fleet works out to, and warn where it stops working.
+   *
+   * <p>The form cannot know how many boats will start, and that is exactly the risk: a
+   * third of thirty is ten boats and a third of six is two. Below a third the pool lands
+   * on so few boats that one of them can take most of it, and on a small enough fleet it
+   * rounds to nobody and the pool is silently kept.
+   */
+  function showFleetNote() {
+    const el = document.getElementById('cfg-fleet-note');
+    const raw = document.getElementById('cfg-fleet').value;
+    const v = Number(raw);
+    if (raw.trim() === '' || isNaN(v)) { el.textContent = ''; el.className = 'hint'; return; }
+    if (v <= 0) {
+      el.className = 'hint';
+      el.textContent = 'no giveback — the penalty minutes are kept';
+      return;
+    }
+    if (v >= 1) {
+      el.className = 'hint';
+      el.textContent = 'the whole fleet';
+      return;
+    }
+    const example = Math.round(30 * v);
+    if (v < 0.3) {
+      el.className = 'hint cfg-warn';
+      el.textContent = '⚠ ' + Math.round(v * 100) + '% — ' + example + ' boats in a fleet '
+        + 'of 30, but only ' + Math.round(8 * v) + ' in a fleet of 8. On a small fleet a '
+        + 'share this narrow gives most of the pool to one or two boats, and can round to '
+        + 'nobody at all.';
+      return;
+    }
+    el.className = 'hint';
+    el.textContent = 'the back ' + Math.round(v * 100) + '% — about ' + example
+      + ' boats in a fleet of 30';
   }
 
-  document.getElementById('cfg-scaling').onchange = showVariant;
-  document.getElementById('cfg-gamma').oninput = showVariant;
+  document.getElementById('cfg-fleet').oninput = showFleetNote;
 
   document.getElementById('cfg-defaults').onclick = () => {
     if (configDefaults) fillConfig(configDefaults);
@@ -339,11 +372,11 @@
       dnfAllowance: Number(document.getElementById('cfg-dnf').value),
       earliestStart: document.getElementById('cfg-earliest').value.trim(),
       limitBySunset: document.getElementById('cfg-sunset').checked,
-      // The knobs, never the letter: sending both would make the server arbitrate
-      // between two things this form already knows are consistent.
+      // The knobs themselves. The server takes a variant name too, for a config file
+      // that says one; this form has no use for the shorthand.
       penaltyScaling: document.getElementById('cfg-scaling').value,
       givebackGamma: Number(document.getElementById('cfg-gamma').value),
-      dnfInRaceDuration: document.getElementById('cfg-dnf-duration').checked
+      givebackFleet: Number(document.getElementById('cfg-fleet').value)
     };
     const r = await postJson('/api/series/' + seriesPath(configSeriesId) + '/config', payload);
     const msg = document.getElementById('cfg-msg');

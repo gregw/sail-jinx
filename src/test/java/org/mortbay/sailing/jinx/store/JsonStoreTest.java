@@ -399,7 +399,7 @@ class JsonStoreTest
         first.putSeriesConfig("s-1",
             new JinxConfig.Algorithm(List.of(7.0, 5.0, 3.0, 1.0), 75, 4, "17:30",
                 -34.5678, 150.4321, true,
-                JinxConfig.Variant.B, null, null, false));
+                JinxConfig.Variant.B, null, null, null));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();

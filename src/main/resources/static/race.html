@@ -132,10 +132,11 @@ is still editable it always shows."><input type="checkbox" id="hide-details" che
          data-requires sits on the label rather than the input, or hiding it from a
          visitor would leave the words "Allow remove" beside nothing. -->
     <div class="toolbar" id="allow-remove-bar">
-      <label class="danger-toggle" data-requires="admin" title="Reveals a column for
-taking a boat out of this race altogether. For a boat entered by mistake — not for one
-that did not come, which is what Came is for."><input type="checkbox" id="allow-remove">
-        Allow remove</label>
+      <label class="danger-toggle" data-requires="admin" title="Unlocks the Casual tick
+boxes and reveals a column for taking a boat out of this race altogether. For a boat
+entered by mistake — not for one that did not come, which is what Came is
+for."><input type="checkbox" id="allow-remove">
+        Allow remove &amp; casuals</label>
     </div>
 
     <div id="import-panel" style="display:none;">
@@ -236,7 +237,11 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
   function stateJson() {
     return JSON.stringify({
       entrants,
-      times: timesMap,
+      // The tidied map, not the raw one. timesFor() creates a record the first time any
+      // boat is rendered, so the raw map grows an empty entry per boat during the very
+      // first render — after baseline was taken — and the page came out dirty having
+      // been merely looked at. An empty record is not an edit.
+      times: withFlags(timesMap),
       dutyBoatId,
       // boatOrder is deliberately absent. It is how the table is arranged, not
       // something a boat did, so dragging a row must not make the page dirty and offer
@@ -402,7 +407,10 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       render: e => {
         if (e.entryType === 'ONE_OFF')
           return '<span class="tag" title="Not in the register — never seeded">one-off</span>';
-        if (readOnly()) return e.entryType === 'CASUAL' ? '✓' : '';
+        // Behind the same guard as Remove. Both change who this race is scored over
+        // rather than what the boats did, and both are a repair rather than a view —
+        // an unticked box next to forty rows is one stray click from a silent change.
+        if (readOnly() || !allowRemove()) return e.entryType === 'CASUAL' ? '✓' : '';
         return '<input type="checkbox" class="casual-input" data-id="' + esc(e.boatId) + '"'
           + (e.entryType === 'CASUAL' ? ' checked' : '')
           + ' title="Casual — will not be seeded into the next race">';
@@ -1227,7 +1235,13 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
    */
   function withFlags(map) {
     const out = {};
-    for (const [id, t] of Object.entries(map || {})) out[id] = { ...t, flags: undefined };
+    for (const [id, t] of Object.entries(map || {})) {
+      const merged = { ...t, flags: undefined };
+      // Records that say nothing are dropped rather than stored. They are invented by
+      // timesFor() on the way to the screen, and writing them back would fill the store
+      // with a row per boat per race saying that nothing happened.
+      if (!isEmptyTimes(merged)) out[id] = merged;
+    }
     for (const [id, ov] of dirtyFlags.entries()) {
       if (!(ov.added || []).length && !(ov.removed || []).length) continue;
       out[id] = { ...(out[id] || { came: false, actualStart: null, finish: null }),
@@ -1752,6 +1766,16 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     if (!r.ok) { setCtrlMsg('banner-err', 'Could not compute: ' + errorOf(r)); return; }
     setStartsUnlocked(false);
     await load();
+
+    // The order the guns go in, always. Computing the stagger is the moment the table
+    // stops being a list of boats and becomes a running order, and it is the order the
+    // RO reads down on the water. After load(), which applies the remembered view.
+    sortStack = [{ key: 'allocated', dir: 1 }];
+    saveView();
+    renderHead();
+    renderEntrants();
+    renderDutyOptions();
+
     setCtrlMsg('banner-ok', r.body.limitedBySunset
       ? 'Start times computed — duration capped to '
         + fmtInterval(r.body.startSheet.targetElapsedMinutes)
@@ -2220,6 +2244,8 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
       renderEntrants();
     };
     document.getElementById('allow-remove').onchange = () => {
+      // Head as well as body: it adds the Remove column, and it turns the Casual cells
+      // from ticks into tick boxes.
       renderHead();
       renderEntrants();
     };
@@ -2272,7 +2298,9 @@ that did not come, which is what Came is for."><input type="checkbox" id="allow-
     window.addEventListener('resize', fitEntrantsHeight);
 
     window.addEventListener('beforeunload', (ev) => {
-      if (isDirty()) { ev.preventDefault(); ev.returnValue = ''; }
+      // canEdit() as well as isDirty(): a visitor has no way to have changed anything,
+      // so a "leave page?" prompt for them can only ever be a bug reporting itself.
+      if (canEdit() && isDirty()) { ev.preventDefault(); ev.returnValue = ''; }
     });
 
     await load();

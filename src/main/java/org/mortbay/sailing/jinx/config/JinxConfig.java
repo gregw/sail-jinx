@@ -42,7 +42,7 @@ public record JinxConfig(
             club = new Club(null, null, null, null, null, null, null, null);
         if (algorithm == null)
             algorithm = new Algorithm(
-                null, 0, 0, null, null, null, false, null, null, null, false);
+                null, 0, 0, null, null, null, false, null, null, null, null);
         if (server == null)
             server = new Server(0, false);
     }
@@ -120,8 +120,9 @@ public record JinxConfig(
      *
      * <p>{@code FIXED} takes the figure from {@code penaltyList} as it stands, so the
      * same win costs the same on a 45-minute night as on a two-hour one. {@code PER_HOUR}
-     * reads it as a rate and multiplies by the measured duration, so a win costs in
-     * proportion to the racing it took.
+     * reads it as a rate and multiplies by the penalised boat's own elapsed, so a win
+     * costs in proportion to the racing that boat did. Its own, not the fleet's median:
+     * a boat out there for two hours has earned twice the penalty of one out for one.
      */
     public enum PenaltyScaling
     {
@@ -231,16 +232,36 @@ public record JinxConfig(
      * minutes of each other — five minutes was larger than the whole fleet's spread, and
      * two retirements took most of the pool between them.
      *
-     * <p>{@code dnfInRaceDuration} decides whether boats that retired contribute their
-     * allowance-derived elapsed time to the measured duration. Off by default: a stormy
-     * night is exactly when retirements cluster, and their times are an allowance rather
-     * than a measurement, so letting them in would stretch the very number the penalties
-     * are scaled by.
+     * <p>{@code givebackFleet} is the share of the fleet the pool comes back to, counted
+     * from the back: {@code 1.0} the whole fleet, {@code 0.33} the bottom third,
+     * {@code 0} nobody. "Back" is by finish gap — furthest behind the first boat home —
+     * which is the same quantity the weighting already shares by, and not by elapsed
+     * time, which in a pursuit race mostly measures a boat's rating.
+     *
+     * <p>At {@code 0} the pool is collected and kept, so the fleet's handicaps tighten
+     * overall instead of moving against each other. That is the one setting here that
+     * deliberately breaks conservation, and it is a real choice rather than an accident:
+     * a club that wants the place-getters penalised without compensating anybody can say
+     * so. Below about a third, a small fleet rounds down to very few boats — the series
+     * form warns about that, since the arithmetic cannot know how many boats will start.
+     *
+     * <p>There was a {@code dnfInRaceDuration} here, deciding whether retirements
+     * contributed their allowance-derived elapsed time to the median the fleet was
+     * scaled by. The committee removed the setting, and then the median it referred to:
+     * a per-hour penalty is now charged against the penalised boat's own elapsed and the
+     * TCF conversion is anchored to the race's expected duration, so nothing in the
+     * arithmetic is a median of the fleet's times at all. Old files carrying the key
+     * still load — both mappers ignore unknown properties.
      *
      * <p>{@code defaultRaceDuration} is the fallback <em>pre-race</em> target: how long a
-     * race is meant to take when nobody has said, used only to compute published start
-     * times. It is not the measured duration the handicap arithmetic runs on — that is
-     * the median of what the fleet actually sailed, and the two must not be confused.
+     * race is meant to take when nobody has said. It publishes the start times, and it is
+     * also what a time adjustment is measured against when it becomes a TCF change — for
+     * a race that carries no target of its own.
+     *
+     * <p>That second job used to belong to the median of what the fleet actually sailed.
+     * The committee moved it: the number being computed is the handicap for the
+     * <em>next</em> race, and the next race is far more likely to run close to its
+     * expected duration than to the duration of the one just sailed.
      *
      * <p>It carries the old name {@code idealRaceDuration} as an alias, because that key
      * held this value too. Its other job is gone: γ used to be derived from it, as
@@ -267,7 +288,7 @@ public record JinxConfig(
         @JsonProperty("variant") Variant variant,
         @JsonProperty("penaltyScaling") PenaltyScaling penaltyScaling,
         @JsonProperty("givebackGamma") Double givebackGamma,
-        @JsonProperty("dnfInRaceDuration") boolean dnfInRaceDuration)
+        @JsonProperty("givebackFleet") Double givebackFleet)
     {
         public Algorithm
         {
@@ -313,6 +334,21 @@ public record JinxConfig(
                 LOG.warn("algorithm.givebackGamma {} is outside 0.0..1.0 — clamping",
                     givebackGamma);
                 givebackGamma = Math.min(1.0, Math.max(0.0, givebackGamma));
+            }
+
+            // The whole fleet unless the club says otherwise, which is what every race
+            // scored before this setting existed did.
+            if (givebackFleet == null)
+                givebackFleet = 1.0;
+            // A share of the fleet, so outside 0..1 there is nothing it could mean: above
+            // one is still the whole fleet, and below zero would be a negative number of
+            // boats. Clamped rather than refused, like γ, so one bad character in a YAML
+            // file does not stop a race night.
+            if (givebackFleet < 0.0 || givebackFleet > 1.0)
+            {
+                LOG.warn("algorithm.givebackFleet {} is outside 0.0..1.0 — clamping",
+                    givebackFleet);
+                givebackFleet = Math.min(1.0, Math.max(0.0, givebackFleet));
             }
         }
 

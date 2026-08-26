@@ -170,7 +170,7 @@ public class PursuitHandicapEngine implements HandicapEngine
                 // statement about the boat's speed, so its handicap eases.
                 case DNF -> dnf.add(b);
                 // DSQ, DNC, DNS and RET: frozen, and out of the placings, the giveback
-                // and the measured duration alike.
+                // and the pool alike.
                 //
                 // RET belongs here and not with DNF, though the two look alike on the
                 // results sheet. A boat that RETIRED stopped for a reason that says
@@ -216,27 +216,25 @@ public class PursuitHandicapEngine implements HandicapEngine
         // exactly as it is in elapsed terms.
         double dnfGap = (lastHome - firstHome) + config.dnfAllowance();
 
-        // §6.1 — the measured duration: the median of what the fleet actually sailed.
-        // This one number scales the penalties AND anchors the TCF conversion below, and
-        // it has to be the same number in both places — that identity is what makes the
-        // per-hour, even-giveback case exactly duration-independent.
-        List<Double> durationSample = new ArrayList<>();
-        for (Entry f : finishers)
-            durationSample.add(f.elapsedMinutes());
-        if (config.dnfInRaceDuration())
-        {
-            for (int i = 0; i < dnf.size(); i++)
-                durationSample.add(dnfElapsed);
-        }
-        // With nothing measured there is nothing to award: the pool below comes out empty,
-        // every net is zero, and this value cannot reach an answer. It only has to be
-        // positive so the §7 denominator stays defined.
-        double raceDuration = durationSample.isEmpty() ? 60.0 : median(durationSample);
+        // §6.1 — the race's EXPECTED duration, which is what a time adjustment is
+        // measured against when it becomes a TCF change below.
+        //
+        // The estimate, deliberately, and not the median of what the fleet actually
+        // sailed. The number being computed is a handicap for the NEXT race, and the next
+        // race is far more likely to run close to its expected duration than to the
+        // duration of the one just sailed — a night that overran because the breeze died
+        // should not shrink every correction the season makes. A race that carries no
+        // target falls back to the club's default, because the alternative is dividing by
+        // zero in the middle of a night's results.
+        double expectedDuration = race != null && race.targetElapsedMinutes() != null
+            && race.targetElapsedMinutes() > 0
+            ? race.targetElapsedMinutes()
+            : config.defaultRaceDuration();
 
         // Participants: seeded finishers in finish order, then seeded DNF/RET.
         // `gap` is minutes behind the first boat home — what the giveback is shared by.
-        // Separate from `elapsed`, which still drives the measured duration and the
-        // penalty scaling: in a pursuit race the two are different orderings entirely.
+        // Separate from `elapsed`, which is what a per-hour penalty is charged
+        // against: in a pursuit race the two are different orderings entirely.
         record Participant(Competitor boat, Integer position, double elapsed,
                            double gap, double penalty) {}
         List<Participant> participants = new ArrayList<>();
@@ -248,7 +246,10 @@ public class PursuitHandicapEngine implements HandicapEngine
             // so it does not occupy a rung: if it finishes first, the first seeded boat
             // home still pays the first penalty. Adjustment keeps the official place for
             // display; only the ladder closes up.
-            double penalty = penaltyForRank(i + 1, raceDuration);
+            // Per-hour penalties are charged against THIS boat's time on the course, not
+            // against the fleet. A boat out there for two hours has earned twice the
+            // penalty of one out for one, and a median says nothing about either.
+            double penalty = penaltyForRank(i + 1, e.elapsedMinutes());
             participants.add(new Participant(e.boat(),
                 e.position() != null ? e.position() : (i + 1), e.elapsedMinutes(),
                 mark.applyAsDouble(e) - firstHome, penalty));
@@ -258,21 +259,21 @@ public class PursuitHandicapEngine implements HandicapEngine
 
         double pool = participants.stream().mapToDouble(Participant::penalty).sum();
 
-        // §6.3 — giveback over every participant.
+        // §6.3 — giveback, over the share of the fleet the club aims it at.
         double[] rewards = givebacks(pool, participants.stream()
             .mapToDouble(Participant::gap).toArray());
 
-        // §7 — net minutes back into TCF, against the same measured duration.
-        //   newTcf = tcf / (1 − net × tcf / (raceDuration × tcfMed))
+        // §7 — net minutes back into TCF, against the race's expected duration.
+        //   newTcf = tcf / (1 − net × tcf / (expectedDuration × tcfMed))
         // No fleet-wide anchor correction: the next race's start-time pass over the
         // updated TCFs is what brings the new slowest boat back to t_earliest.
         double tcfMed = median(participants.stream()
             .map(p -> p.boat().tcf()).toList());
-        double scale = raceDuration * tcfMed;
+        double scale = expectedDuration * tcfMed;
         if (!(scale > 0.0))
         {
             throw new IllegalStateException(
-                "handicap scale must be positive, but raceDuration=" + raceDuration
+                "handicap scale must be positive, but expectedDuration=" + expectedDuration
                     + " × medianTcf=" + tcfMed + " = " + scale
                     + " — cannot convert time adjustments into TCF changes");
         }
@@ -289,7 +290,7 @@ public class PursuitHandicapEngine implements HandicapEngine
                 throw new IllegalStateException(
                     "TCF conversion denominator must be positive for " + p.boat().boatId()
                         + " but was " + denom + " (net=" + net + ", tcf=" + oldTcf
-                        + ", raceDuration=" + raceDuration + ", medianTcf=" + tcfMed
+                        + ", expectedDuration=" + expectedDuration + ", medianTcf=" + tcfMed
                         + ") — a penalty this large against a race this short cannot be "
                         + "expressed as a handicap change");
             }
@@ -310,17 +311,27 @@ public class PursuitHandicapEngine implements HandicapEngine
      * paying for.
      *
      * <p>Under {@link JinxConfig.PenaltyScaling#PER_HOUR} the figure is a rate rather than
-     * an amount, so it is multiplied by the measured duration. That is the whole
+     * an amount, so it is multiplied by the boat's own elapsed. That is the whole
      * difference between variants A/B and C/D.
      */
-    private double penaltyForRank(int rank, double raceDurationMinutes)
+    /**
+     * The penalty for finishing in this position, in minutes.
+     *
+     * <p>Under {@code perHour} the listed figure is a rate, charged against
+     * {@code boatElapsedMinutes} — the penalised boat's own time on the course. Against
+     * its own, not the fleet's: a boat out there for two hours has earned twice the
+     * penalty of one out for one, and the fleet's median said nothing about either of
+     * them. It used to be the median, which made the penalty a statement about the night
+     * rather than about the boat.
+     */
+    private double penaltyForRank(int rank, double boatElapsedMinutes)
     {
         int idx = rank - 1;
         if (idx < 0 || idx >= config.penaltyList().size())
             return 0.0;
         double listed = config.penaltyList().get(idx);
         return config.penaltyScaling() == JinxConfig.PenaltyScaling.PER_HOUR
-            ? listed * raceDurationMinutes / 60.0
+            ? listed * Math.max(0.0, boatElapsedMinutes) / 60.0
             : listed;
     }
 
@@ -366,30 +377,94 @@ public class PursuitHandicapEngine implements HandicapEngine
         if (n == 0 || pool == 0.0)
             return out;
 
+        // Who is in it at all, before how much each of them gets. The two questions are
+        // separate: givebackFleet decides the back of the fleet by gap, and γ then shares
+        // the pool among those — so a club can aim the pool at the back and still choose
+        // whether it lands evenly there or by how far behind they were.
+        boolean[] eligible = eligibleForGiveback(gaps);
+
         double gamma = config.givebackGamma();
+        int count = 0;
         double mean = 0.0;
-        for (double g : gaps)
-            mean += Math.max(0.0, g);
-        mean /= n;
+        for (int i = 0; i < n; i++)
+        {
+            if (!eligible[i])
+                continue;
+            mean += Math.max(0.0, gaps[i]);
+            count++;
+        }
+        // Nobody is eligible: givebackFleet is 0, or it rounded to no boats at all on a
+        // fleet this small. The pool is kept rather than shared, which is the one case
+        // where the fleet's net adjustments do not sum to zero.
+        if (count == 0)
+            return out;
+        mean /= count;
 
         double weightSum = 0.0;
         double[] weights = new double[n];
         for (int i = 0; i < n; i++)
         {
+            if (!eligible[i])
+                continue;
             weights[i] = (1.0 - gamma) * mean + gamma * Math.max(0.0, gaps[i]);
             weightSum += weights[i];
         }
-        // Every gap zero, so every weight zero whatever γ says.
+        // Every eligible gap zero, so every weight zero whatever γ says.
         if (weightSum <= 0.0)
         {
-            double even = pool / n;
+            double even = pool / count;
             for (int i = 0; i < n; i++)
-                out[i] = even;
+                out[i] = eligible[i] ? even : 0.0;
             return out;
         }
         for (int i = 0; i < n; i++)
             out[i] = pool * weights[i] / weightSum;
         return out;
+    }
+
+    /**
+     * The back of the fleet, as a flag per participant.
+     *
+     * <p>{@code givebackFleet} is a share — 1.0 the whole fleet, 0.33 the bottom third —
+     * and the back is by <b>finish gap</b>, furthest behind the first boat home. Not by
+     * elapsed time: the stagger makes elapsed mostly a statement about a boat's rating,
+     * so "the bottom third by elapsed" would be the third with the earliest guns rather
+     * than the third that sailed worst.
+     *
+     * <p>The count is rounded to the nearest boat, so a thirty-boat fleet at 0.33 is ten
+     * and a six-boat fleet is two. On a small fleet a modest share rounds to very few
+     * boats or to none — the arithmetic cannot know how many will start, so the series
+     * form is where that gets flagged.
+     *
+     * <p>Ties are broken by position in the list, which is finish order, so a dead heat
+     * at the cut resolves the same way every time rather than by whatever the sort felt
+     * like doing.
+     */
+    private boolean[] eligibleForGiveback(double[] gaps)
+    {
+        int n = gaps.length;
+        boolean[] eligible = new boolean[n];
+        int count = (int)Math.round(n * config.givebackFleet());
+        count = Math.max(0, Math.min(n, count));
+        if (count == 0)
+            return eligible;
+        if (count == n)
+        {
+            java.util.Arrays.fill(eligible, true);
+            return eligible;
+        }
+
+        Integer[] order = new Integer[n];
+        for (int i = 0; i < n; i++)
+            order[i] = i;
+        java.util.Arrays.sort(order, (a, b) ->
+        {
+            int byGap = Double.compare(gaps[b], gaps[a]);
+            return byGap != 0 ? byGap : Integer.compare(a, b);
+        });
+        for (int i = 0; i < count; i++)
+            eligible[order[i]] = true;
+        return eligible;
     }
 
     /** The whole minute this time is closest to, rounding a half-minute up. */

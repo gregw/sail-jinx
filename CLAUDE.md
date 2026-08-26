@@ -167,6 +167,11 @@ explicit knob beats a variant that contradicts it, with a warning. `givebackGamm
 is continuous, so the letters are corners of a square, not a menu — 0.35 is a real
 setting.
 
+**The letters are gone from the settings screen**, at the committee's request: they
+named combinations rather than explaining them, and a club reading "variant C" cannot
+tell what it has chosen. The key is still read, so config files written against it keep
+working; the form shows and sends the two knobs.
+
 **γ shares the pool by the finish gap, not by elapsed time.** At γ = 1 a boat's
 share is proportional to how far behind the leader it finished, so the first boat
 home gets nothing back and a boat ten minutes back gets twice one five minutes
@@ -206,22 +211,36 @@ those numbers so the tradeoff stays visible.
 
 Three things it is easy to get wrong here:
 
-1. **`raceDuration` is measured, `targetElapsedMinutes` is a guess.** The handicap
-   arithmetic runs on the median of the elapsed times the fleet actually sailed.
-   The target is the pre-race estimate and is used *only* to publish start times.
-   The engine deliberately does not read it in `processResults`.
-2. **The penalty scaling and the §7 denominator must be the same quantity.** Under
-   `perHour` the penalties scale by `raceDuration` and the TCF conversion divides by
-   `raceDuration × TCF_med`; the two cancel, which is what makes C give the same
-   correction whether the night was 45 minutes or two hours. Substitute the target
-   in either place and the cancellation breaks silently. `HandicapVariantTest`
-   pins it.
+1. **Nothing is measured against the fleet's median any more.** There was a
+   `raceDuration` — the median of the elapsed times the fleet actually sailed — and it
+   did two jobs. Both moved, at the committee's request, and it is gone:
+
+   - **A `perHour` penalty is charged against the penalised boat's own elapsed time.**
+     A boat out there for two hours has earned twice the penalty of one out for one,
+     and the fleet's median said nothing about either of them.
+   - **The §7 denominator is the race's *expected* duration** — `targetElapsedMinutes`,
+     falling back to `defaultRaceDuration`. The number being computed is the handicap
+     for the *next* race, and the next race is far likelier to run close to its expected
+     duration than to the duration of the one just sailed. A night that overran because
+     the breeze died should not shrink every correction the season makes.
+
+   So `targetElapsedMinutes` now reaches `processResults`, where it deliberately did
+   not before. `theExpectedDurationIsWhatAPenaltyIsMeasuredAgainst` and
+   `aRaceWithNoTargetUsesTheConfiguredDefault` pin it.
+
+2. **The old cancellation is gone, deliberately.** Penalty scaling and the §7
+   denominator used to be the same quantity, so under `perHour` they cancelled and a
+   45-minute night and a two-hour one gave the same correction. They are now different
+   quantities and nothing cancels: a flat penalty gives the same correction whatever the
+   night did, and a per-hour penalty gives a larger one on a longer night — which is
+   what "per hour" means. Both are pinned; do not "fix" one back.
 3. **Casuals are handicapped by a second pass.** `Competitor.seeded` is false for
    them, and `processResults` runs the algorithm twice: once over the series
    entrants alone, which is *their* answer, and once over everybody, from which
    only the *casuals'* answer is taken. A casual therefore gets a real TCF
    adjustment while being unable to shift anyone else's — including the size of
-   their penalties, since its elapsed time never reaches their `raceDuration`.
+   their penalties, since a per-hour penalty is charged against the penalised boat's
+   own elapsed and never against anybody else's.
 
    Two consequences that look like bugs and are not:
    - **When a casual wins, the top penalty is awarded twice** — to the casual and
@@ -237,9 +256,25 @@ Three things it is easy to get wrong here:
    (`seeded: entryType === 'ROSTER'`), which keeps `Entrant.scoresHandicap()`
    honest: a casual still scores a handicap, just not in the series' race.
 
-`Design.noSpinnaker`-style asymmetry applies to `dnfInRaceDuration` too: retirements
-draw from the pool because they sailed, but their elapsed time is an *allowance*
-rather than a measurement, so it stays out of the median unless asked for.
+**Retirements never join the measured duration.** They draw from the pool because they
+sailed, but their elapsed time is an *allowance* rather than a measurement, and a hard
+night is exactly when there are enough of them to drag the median up. This was a
+`dnfInRaceDuration` setting; the committee removed it, because the other position was
+indefensible and a setting with one defensible value is not a setting. Old config files
+carrying the key still load — unknown properties are ignored.
+
+**`givebackFleet` decides who the pool comes back to**, as a share counted from the back:
+`1.0` the whole fleet, `0.33` the bottom third, `0` nobody. "The back" is by **finish
+gap**, the same quantity the weighting shares by — not by elapsed, which in a pursuit
+race mostly measures a boat's rating, so the bottom third by elapsed would be the third
+with the earliest guns. The count rounds to the nearest boat, and ties at the cut break
+by finish order.
+
+**At `0` the pool is kept, and `Σ net = pool` rather than zero.** That is the one setting
+that deliberately breaks conservation, and it is a real choice: a club can penalise the
+place-getters without compensating anybody. Below about a third a small fleet rounds to
+very few boats or to none, which the arithmetic cannot know in advance — the series form
+warns instead.
 
 ### The corrected/scored distinction
 

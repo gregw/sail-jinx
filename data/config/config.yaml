@@ -26,22 +26,30 @@ club:
   noticeBoard: "https://www.myc.org.au/notice-board/" # the official notice board
 
 algorithm:
-  # The handicap variant, as the two knobs it actually is. `variant` is shorthand for
-  # both; either knob may be set on its own, and an explicit knob beats the variant it
-  # contradicts. Omit the lot and you get C.
+  # How the penalties are sized, and how the pool of them comes back.
   #
-  #   variant | penaltyScaling | givebackGamma
-  #      A    | fixed          | 0.0
-  #      B    | fixed          | 1.0   <-- default
-  #      C    | perHour        | 0.0
-  #      D    | perHour        | 1.0
-  variant: B
-  penaltyScaling: fixed            # fixed = the penaltyList minutes as written
-  givebackGamma: 1.0               # 0 = even split, 1 = by gap behind the leader
+  # The `variant` key is an older shorthand for these two together — A/B/C/D were the
+  # four corners — and is still read so that config files written against it keep
+  # working. An explicit knob beats a variant that contradicts it. The settings screen
+  # no longer shows the letters: they named combinations rather than explaining them.
+  penaltyScaling: fixed            # fixed = the penaltyList minutes as written;
+                                   # perHour = a rate, scaled by how long the race took
+  givebackGamma: 1.0               # 0 = every share the same
+                                   # 1 = proportional to how far behind the first boat
+                                   #     home each one finished
+
+  # The share of the fleet the pool comes back to, counted from the back — 1.0 the whole
+  # fleet, 0.33 the bottom third, 0 nobody. "The back" is by finish gap: furthest behind
+  # the first boat home. At 0 the penalty minutes are kept rather than shared, so the
+  # fleet's handicaps tighten overall instead of moving against each other.
+  #
+  # Below about a third, a small fleet rounds to very few boats — a third of thirty is
+  # ten, a third of eight is three, and a tenth of eight is one.
+  givebackFleet: 1.0
 
   penaltyList: [6, 4, 2]           # minutes for 1st, 2nd, 3rd — per hour under perHour
-  dnfAllowance: 1                  # minutes past the last finisher a retirement scores
-  dnfInRaceDuration: false         # keep retirements out of the measured duration
+  dnfAllowance: 1                  # minutes past the last finisher a DNF boat scores,
+                                   # and what its share of the giveback is worked from
   defaultRaceDuration: 90          # pre-race target when a race does not say; start
                                    # times only, never the handicap arithmetic
   earliestStart: "18:00"           # the slowest boat's gun

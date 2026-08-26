@@ -360,7 +360,7 @@ class JinxApiIntegrationTest
         JsonNode winner = adjustments.get(0);
         assertThat(winner.path("boatId").asText(), equalTo(fast));
         // Variant B's penalties are fixed, so this is the penaltyList entry itself —
-        // under the per-hour variants it would be 6.0 x raceDuration / 60.
+        // under a per-hour scaling it would be 6.0 x this boat's own elapsed / 60.
         assertThat(winner.path("penaltyMinutes").asDouble(), closeTo(6.0, 1e-9));
         assertThat(winner.path("newTcf").asDouble(), greaterThan(1.0));
 

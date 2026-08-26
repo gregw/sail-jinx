@@ -19,7 +19,7 @@ public record Competitor(String boatId, double tcf, boolean seeded)
      * handicap. A boat that turned up and raced without being seeded is scored for the
      * night but left out of the handicap arithmetic entirely — it is not in the placings,
      * it neither pays into the pool nor draws from it, and its elapsed time does not
-     * reach the measured duration the rest of the fleet is judged against.
+     * reach the penalties the rest of the fleet pays.
      */
     public Competitor
     {

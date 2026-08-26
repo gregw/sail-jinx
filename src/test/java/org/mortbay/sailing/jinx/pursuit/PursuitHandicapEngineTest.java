@@ -29,7 +29,7 @@ class PursuitHandicapEngineTest
 {
     private static final JinxConfig.Algorithm DEFAULT_ALG = new JinxConfig.Algorithm(
         List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 1, "18:00", -33.8000, 151.2833, false,
-        null, null, null, false);
+        null, null, null, null);
 
     private static final double TOLERANCE = 0.01;
 
@@ -41,7 +41,7 @@ class PursuitHandicapEngineTest
     {
         return new PursuitHandicapEngine(new JinxConfig.Algorithm(
             List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 1, "18:00", -33.8000, 151.2833, false,
-            null, scaling, gamma, false));
+            null, scaling, gamma, null));
     }
 
     /** The pair the engine works on: an id to key the answer by, and the TCF in force. */
@@ -222,12 +222,12 @@ class PursuitHandicapEngineTest
     }
 
     /**
-     * newTcf is anchored to the race that was actually sailed, under the default variant
-     * B: fixed penalties, given back by the gap behind the leader.
+     * newTcf is anchored to the race the fleet was <em>set</em> to sail, under the
+     * default variant B: fixed penalties, given back by the gap behind the leader.
      *
      * <p>Worked example fleet: 7 finishers @ 85,90,…,115 min + 1 DNF, all TCF = 1.0.
+     * The race carries a 90-minute target and the fleet took a median of 100.
      * <pre>
-     *   raceDuration = median(85,90,95,100,105,110,115)      = 100 min
      *   pool         = 5+4+3+2+1                             = 15.0 min   (fixed)
      *   dnf scores   = last finisher + dnfAllowance = 115+1  = 116 min
      *   gaps         = 0,5,10,15,20,25,30 and 31 for the DNF
@@ -235,22 +235,25 @@ class PursuitHandicapEngineTest
      *   p1 reward    = 15.0 × 0 / 136                        = 0.0        (γ = 1)
      *   p1 penalty   = 5                                     = 5.0
      *   p1 net       = 5.0 − 0.0                             = 5.0
-     *   scale        = raceDuration × medianTcf = 100 × 1.0  = 100
-     *   newTcf       = 1.0 / (1 − 5.0 / 100)                 = 1.052631…
+     *   scale        = expectedDuration × medianTcf = 90×1.0 = 90
+     *   newTcf       = 1.0 / (1 − 5.0 / 90) = 90/85          = 1.058823…
      * </pre>
      *
-     * <p>Two things this pins that the old variant-C version could not. <b>The winner
-     * pays its penalty in full</b> — at γ = 1 its gap is zero by definition, so it draws
-     * nothing back; under γ = 0 it took an even share and kept 3.125 of its 8.33.
-     * And <b>fixed penalties do not move with the night</b>: 5.0 is the penaltyList entry
-     * itself, where variant C would have scaled it by the measured duration.
+     * <p><b>The 100 the fleet actually took reaches none of this.</b> That is the
+     * reversal the committee asked for: the number being computed is the handicap for
+     * the <em>next</em> race, and the next race is far more likely to run close to its
+     * expected duration than to the duration of the one just sailed. A night that
+     * overran because the breeze died should not shrink every correction the season
+     * makes. The engine used to run on the median of what was sailed, and this same
+     * fleet came out at 1/0.95 rather than 90/85.
      *
-     * <p>Note the target elapsed time still appears nowhere. The race is created with a
-     * target of 90; the arithmetic runs on the 100 the fleet actually took, which under
-     * B reaches the answer through the TCF conversion rather than through the penalties.
+     * <p>Two things it also pins. <b>The winner pays its penalty in full</b> — at γ = 1
+     * its gap is zero by definition, so it draws nothing back. And <b>fixed penalties do
+     * not move with the night</b>: 5.0 is the penaltyList entry itself, where a per-hour
+     * scaling would charge it against this boat's own 85 minutes.
      */
     @Test
-    void newTcfIsAnchoredToTheRaceActuallySailed()
+    void newTcfIsAnchoredToTheExpectedDurationNotTheMeasuredOne()
     {
         List<Competitor> boats = workedExampleFleet();
         Race race = race(90);
@@ -260,7 +263,7 @@ class PursuitHandicapEngineTest
             .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
             .findFirst().orElseThrow();
 
-        assertThat(p1.newTcf(), closeTo(1.0 / 0.95, 1e-9));
+        assertThat(p1.newTcf(), closeTo(90.0 / 85.0, 1e-9));
     }
 
     /**

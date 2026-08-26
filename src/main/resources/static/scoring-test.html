@@ -574,6 +574,31 @@
   check('OCS and a boat that started then stopped coexist',
     OV(['RET', 'OCS'], []), toggleFlag(OV(['RET'], []), 'OCS', true));
 
+
+  // --- an empty times record is not a change ------------------------------------
+  // The race page hands out a times object per boat and creates one on demand, so the
+  // first render of a race nobody has timed yet invents an empty record for every boat
+  // in it. Those are not edits, and treating them as edits made a freshly loaded race
+  // dirty: a Save/Reset box over the notice, a "leave page?" prompt on the way out, and
+  // a Reset that could not clear it because the next load invented them again.
+
+  check('nothing captured is empty', true,
+    isEmptyTimes({ came: false, actualStart: null, finish: null }));
+  check('a bare object is empty', true, isEmptyTimes({}));
+  check('no object at all is empty', true, isEmptyTimes(null));
+  check('blank strings are empty too', true,
+    isEmptyTimes({ came: false, actualStart: '', finish: '' }));
+
+  // Anything the RO actually did makes it real.
+  check('came is a fact', false, isEmptyTimes({ came: true }));
+  check('an actual start is a fact', false, isEmptyTimes({ actualStart: '18:00:05' }));
+  check('a finish is a fact', false, isEmptyTimes({ finish: '19:30:00' }));
+  // A boat can carry a flag and no times — a hand-set DNC on a boat nobody timed.
+  check('a flag override is a fact', false,
+    isEmptyTimes({ flags: { added: ['DNC'], removed: [] } }));
+  check('an empty flag override is not', true,
+    isEmptyTimes({ flags: { added: [], removed: [] } }));
+
 </script>
 </body>
 </html>

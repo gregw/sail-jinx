@@ -147,14 +147,29 @@ class AlgorithmVariantTest
     }
 
     @Test
-    void dnfTimesStayOutOfTheMeasuredDurationUnlessAskedFor(@TempDir Path tmp)
+    void theGivebackGoesToTheWholeFleetUnlessAShareIsAsked(@TempDir Path tmp)
         throws IOException
     {
-        // A stormy night is exactly when retirements cluster, and their times are the
-        // allowance rather than a measurement — letting them in would stretch the very
-        // number the penalties are scaled by.
-        assertThat(load(tmp, "  penaltyList: [5]").dnfInRaceDuration(), equalTo(false));
-        assertThat(load(tmp, "  dnfInRaceDuration: true").dnfInRaceDuration(), equalTo(true));
+        // What every race scored before this setting existed did.
+        assertThat(load(tmp, "  penaltyList: [5]").givebackFleet(), closeTo(1.0, 1e-12));
+        assertThat(load(tmp, "  givebackFleet: 0.33").givebackFleet(), closeTo(0.33, 1e-12));
+        assertThat(load(tmp, "  givebackFleet: 0").givebackFleet(), closeTo(0.0, 1e-12));
+
+        // A share of the fleet, so outside 0..1 there is nothing it could mean. Clamped
+        // rather than refused, like the weighting, so one bad character does not stop a
+        // race night.
+        assertThat(load(tmp, "  givebackFleet: 1.5").givebackFleet(), closeTo(1.0, 1e-12));
+        assertThat(load(tmp, "  givebackFleet: -1").givebackFleet(), closeTo(0.0, 1e-12));
+    }
+
+    @Test
+    void theRetiredInDurationSettingIsGoneAndOldFilesCarryingItStillLoad(@TempDir Path tmp)
+        throws IOException
+    {
+        // The club's config.yaml has this key in it today. Removing the setting must not
+        // stop the file loading — an unknown property is ignored, not an error.
+        Algorithm a = load(tmp, "  penaltyList: [5]\n  dnfInRaceDuration: true");
+        assertThat(a.penaltyList(), equalTo(List.of(5.0)));
     }
 
     @Test

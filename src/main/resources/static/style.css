@@ -220,6 +220,12 @@ ul.next-races li:only-child { list-style: none; margin-left: -1.1rem; }
 .filters { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); }
 .filters label { display: inline-flex; align-items: center; gap: 0.35rem; }
 
+/* A checkbox in a form-grid cell is a small mark in a wide column, and centring it
+   against the label opposite reads as a stray tick rather than as that row's box. */
+.form-grid .check-cell { display: flex; align-items: center; }
+.form-grid .check-cell input { margin: 0; }
+.cfg-warn { color: var(--warn-fg); }
+
 .form-grid {
   display: grid; grid-template-columns: max-content 1fr;
   gap: 0.45rem 1rem; align-items: center;

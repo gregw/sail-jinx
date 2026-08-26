@@ -105,6 +105,27 @@ function toggleFlag(override, flag, checked) {
   return { added: [...added], removed: [...removed] };
 }
 
+/**
+ * True when a boat's times record says nothing at all.
+ *
+ * <p>The race page creates one of these per boat on demand, so the first render of a
+ * race nobody has timed yet invents an empty record for every boat in it. An invented
+ * record is not an edit: counted as one it made a freshly loaded race dirty — a Save
+ * box over the notice, a "leave page?" prompt on the way out, and a Reset that could
+ * not clear it because the next load invented them all over again.
+ *
+ * <p>A flag override counts as something: a boat can be hand-marked DNC with no times
+ * against it at all, and that is a judgement worth keeping.
+ */
+function isEmptyTimes(t) {
+  if (!t) return true;
+  if (t.came) return false;
+  if (t.actualStart) return false;
+  if (t.finish) return false;
+  const f = t.flags;
+  return !(f && ((f.added || []).length || (f.removed || []).length));
+}
+
 /** Keep one reason, and drop OCS where it contradicts the one that is kept. */
 function normaliseFlags(set) {
   const reasons = STATUS_ORDER.filter(f => set.has(f));
