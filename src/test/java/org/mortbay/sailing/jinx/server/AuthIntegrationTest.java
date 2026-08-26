@@ -111,6 +111,14 @@ class AuthIntegrationTest
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
             HttpResponse.BodyHandlers.ofString()).statusCode();
     }
+    private int deleteAs(HttpClient browser, String path) throws Exception
+    {
+        return browser.send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx) + path))
+                .DELETE().build(),
+            HttpResponse.BodyHandlers.ofString()).statusCode();
+    }
+
     private final HttpClient http = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .followRedirects(HttpClient.Redirect.NEVER)
@@ -445,6 +453,12 @@ class AuthIntegrationTest
         assertThat(postAs(officer, "/api/series", "{\"name\":\"2027 Winter\"}"), is(403));
         assertThat(postAs(officer, "/api/races",
             "{\"seriesId\":\"" + seriesId + "\",\"date\":\"2026-06-12\"}"), is(403));
+
+        // And least of all deleting one. This is the only action that destroys a season's
+        // results outright, so it must never be reachable by the tier that merely runs
+        // the night. 403 and the series still there, not 403 after the fact.
+        assertThat(deleteAs(officer, "/api/series/" + seriesId), is(403));
+        assertThat(M.readTree(get("/api/series").body()).size(), is(1));
     }
 
     @Test

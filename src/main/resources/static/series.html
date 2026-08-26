@@ -168,7 +168,8 @@
         + '<button type="button" class="link-btn edit-btn" data-requires="admin" data-id="' + esc(s.id) + '">Edit</button> '
         + '<button type="button" class="link-btn cfg-btn" data-requires="admin" data-id="' + esc(s.id) + '">Handicap settings</button> '
         + '<button type="button" class="link-btn arch-btn" data-requires="admin" data-id="' + esc(s.id) + '">'
-        + (s.archived ? 'Unarchive' : 'Archive') + '</button>'
+        + (s.archived ? 'Unarchive' : 'Archive') + '</button> '
+        + '<button type="button" class="link-btn danger-btn del-btn" data-requires="admin" data-id="' + esc(s.id) + '">Delete</button>'
         + '</td></tr>';
     }).join('');
 
@@ -180,6 +181,9 @@
     });
     document.querySelectorAll('.arch-btn').forEach(b => {
       b.onclick = () => toggleArchive(b.dataset.id);
+    });
+    document.querySelectorAll('.del-btn').forEach(b => {
+      b.onclick = () => deleteSeries(b.dataset.id);
     });
     // The rows were built just now, so their per-row controls have not been gated yet.
     applyRoleGates();
@@ -195,6 +199,34 @@
       handicapAlgorithm: s.handicapAlgorithm
     });
     if (!r.ok) { alert('Could not update: ' + errorOf(r)); return; }
+    await load();
+  }
+
+  /**
+   * Delete a series and everything in it.
+   *
+   * <p>The confirmation names the season and counts its races, because "Delete series?"
+   * does not say what is about to go: the races are not visible from this page, and a
+   * season with twenty of them looks exactly like an empty one somebody created by
+   * mistake. Archiving is the reversible option and sits next to this button.
+   */
+  async function deleteSeries(id) {
+    const s = series.find(x => x.id === id);
+    if (!s) return;
+    const races = raceCounts.get(id) || 0;
+    const what = races
+      ? 'Delete "' + s.name + '" and its ' + races + ' race' + (races === 1 ? '' : 's') + '?'
+      : 'Delete "' + s.name + '"?';
+    const consequence = races
+      ? '\n\nEvery entrant list, start sheet, captured time and result in the season goes '
+        + 'with it. This cannot be undone — Archive hides a season without destroying it.'
+      : '\n\nThis cannot be undone.';
+    if (!confirm(what + consequence)) return;
+
+    const r = await deleteJson('/api/series/' + seriesPath(id));
+    if (!r.ok) { alert('Could not delete: ' + errorOf(r)); return; }
+    // The settings panel may be open on the series that just went.
+    if (configSeriesId === id) closeConfig();
     await load();
   }
 

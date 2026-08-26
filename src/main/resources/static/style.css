@@ -102,6 +102,10 @@ button.link-btn {
   padding: 0 0.35rem; font-size: 0.88rem;
 }
 button.link-btn:hover { background: none; text-decoration: underline; }
+/* The one link-button that destroys something. Coloured rather than made prominent:
+   it sits in a row of ordinary actions and has to be distinguishable from them at a
+   glance, without competing with Edit for the eye. */
+button.link-btn.danger-btn { color: var(--err-fg); }
 a.button-link {
   display: inline-block; font-size: 0.9rem; font-weight: 500;
   padding: 5px 12px; border: 1px solid var(--line-strong);

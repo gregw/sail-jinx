@@ -64,6 +64,7 @@ import org.slf4j.LoggerFactory;
  *   POST   /api/boats/import                  load the fleet from a sailing-pf export
  *   GET    /api/series                        all series
  *   POST   /api/series                        create or update a series
+ *   DELETE /api/series/{id}                   delete a series and every race in it
  *   GET    /api/series/{id}/config            per-series algorithm settings
  *   POST   /api/series/{id}/config            save them
  *   GET    /api/races                         all races
@@ -123,6 +124,9 @@ public class ApiServlet extends HttpServlet
     // so the id group has to span one. Each pattern is anchored by a fixed suffix and
     // matched whole, so there is no ambiguity about where the id ends.
     private static final Pattern SERIES_CONFIG = Pattern.compile("/series/(.+)/config");
+    // DELETE only. Series ids carry a slash (myc.org.au/2026-winter-twilight), so this
+    // cannot exclude one; a path that is not a series id simply finds no series and 404s.
+    private static final Pattern SERIES = Pattern.compile("/series/(.+)");
     private static final Pattern SERIES_RACES = Pattern.compile("/series/(.+)/races");
     private static final Pattern RACE = Pattern.compile("/races/([^/]+)");
     private static final Pattern RACE_ENTRANTS = Pattern.compile("/races/([^/]+)/entrants");
@@ -314,6 +318,8 @@ public class ApiServlet extends HttpServlet
             Matcher m = RACE_ADJUSTMENTS.matcher(path);
             if (m.matches())
                 handleUnlockRace(req, resp, m.group(1));
+            else if ((m = SERIES.matcher(path)).matches())
+                handleDeleteSeries(req, resp, m.group(1));
             else
                 resp.sendError(404);
         }
@@ -692,7 +698,25 @@ public class ApiServlet extends HttpServlet
         // keeps the id it was given, so renaming a series never orphans its races.
         String id = text(body, "id");
         if (isBlank(id))
+        {
             id = IdGenerator.generateSeriesId(config.club().domain(), name);
+            // The id is minted from the name, so a second series called the same thing
+            // would mint the same id and land on top of the first — inheriting its races
+            // and, since the create form sends archived:false, quietly unarchiving it.
+            // Archived is when this bites: the series is not on screen, so the name looks
+            // free. Refused rather than disambiguated, because two seasons a human cannot
+            // tell apart is not a fix.
+            Series clash = store.series().get(id);
+            if (clash != null)
+            {
+                resp.setStatus(409);
+                writeJson(resp, mapOf("error", clash.archived()
+                    ? ("a series called \"" + clash.name() + "\" already exists and is "
+                        + "archived. Tick \"show archived\" to find it, or pick another name.")
+                    : ("a series called \"" + clash.name() + "\" already exists.")));
+                return;
+            }
+        }
 
         Series.RaceFormat format = enumOf(Series.RaceFormat.class,
             text(body, "raceFormat"), Series.RaceFormat.PURSUIT);
@@ -716,6 +740,38 @@ public class ApiServlet extends HttpServlet
             body.path("archived").asBoolean(false));
         store.putSeries(s);
         writeJson(resp, mapOf("ok", true, "series", s));
+    }
+
+    /**
+     * Deletes a series and every race in it.
+     *
+     * <p>Admin's, and irreversible. The store takes the races' entrant lists, start
+     * sheets, captured times and adjustments with them — see
+     * {@link JsonStore#deleteSeries}. The fleet register is untouched: boats belong to
+     * the club, not to a season.
+     *
+     * <p>Audited, because it is the one action here that destroys a season's results.
+     * The entry names no race — the races are gone and their ids will never be minted
+     * again — so what it carries is the series id and how many races went with it.
+     */
+    private void handleDeleteSeries(HttpServletRequest req, HttpServletResponse resp,
+                                    String seriesId) throws Exception
+    {
+        if (denyUnless(req, resp, Role.ADMIN))
+            return;
+        Series series = store.series().get(seriesId);
+        if (series == null)
+        {
+            resp.setStatus(404);
+            writeJson(resp, mapOf("error", "no such series: " + seriesId));
+            return;
+        }
+        int races = store.deleteSeries(seriesId);
+        store.appendAudit(new AuditEntry(Instant.now(), null, "delete-series",
+            auditUser(req), 0.0, 0.0, List.of(),
+            "deleted \"" + series.name() + "\" (" + seriesId + ") and "
+                + races + " race" + (races == 1 ? "" : "s")));
+        writeJson(resp, mapOf("ok", true, "seriesId", seriesId, "racesDeleted", races));
     }
 
     /**

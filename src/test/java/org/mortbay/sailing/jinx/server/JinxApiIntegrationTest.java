@@ -899,6 +899,110 @@ class JinxApiIntegrationTest
         assertThat(r.statusCode(), equalTo(409));
     }
 
+    @Test
+    void aNewSeriesCannotTakeTheNameOfAnArchivedOne() throws Exception
+    {
+        // The id is minted from the name, so a second series called the same thing mints
+        // the same id and lands on top of the first — inheriting its races and, because
+        // the create form sends archived:false, quietly bringing it back from the
+        // archive. Archived is exactly when this bites: the series is not on screen, so
+        // the name looks free.
+        String seriesId = createSeries("2026 Winter Twilight");
+        String raceId = createRace(seriesId, "2026-06-05");
+        post("/api/series", """
+            {"id":"%s","name":"2026 Winter Twilight","archived":true,\
+"spinnakerPolicy":"MIXED","raceFormat":"PURSUIT","handicapAlgorithm":"JINX"}"""
+            .formatted(seriesId));
+
+        HttpResponse<String> clash = postRaw("/api/series",
+            "{\"name\":\"2026 Winter Twilight\"}");
+        assertThat(clash.statusCode(), equalTo(409));
+        assertThat(clash.body(), containsString("archived"));
+
+        // And the archived season is exactly as it was: still archived, still holding
+        // its race. The refusal has to leave the thing it was protecting alone.
+        JsonNode existing = get("/api/series");
+        assertThat(existing.size(), equalTo(1));
+        assertThat(existing.get(0).path("archived").asBoolean(), is(true));
+        assertThat(get("/api/races/" + raceId).path("race").path("seriesId").asText(),
+            equalTo(seriesId));
+    }
+
+    @Test
+    void aNewSeriesCannotTakeTheNameOfAnActiveOneEither() throws Exception
+    {
+        createSeries("2026 Winter Twilight");
+
+        HttpResponse<String> clash = postRaw("/api/series",
+            "{\"name\":\"2026 Winter Twilight\"}");
+        assertThat(clash.statusCode(), equalTo(409));
+    }
+
+    @Test
+    void editingASeriesIsNotBlockedByItsOwnName() throws Exception
+    {
+        // The check is on creating, not on saving: an edit carries the id it was given,
+        // and re-saving a series under the name it already has must keep working.
+        String seriesId = createSeries("2026 Winter Twilight");
+
+        JsonNode saved = post("/api/series", """
+            {"id":"%s","name":"2026 Winter Twilight","spinnakerPolicy":"NON_SPINNAKER",\
+"raceFormat":"PURSUIT","handicapAlgorithm":"JINX","archived":false}"""
+            .formatted(seriesId));
+
+        assertThat(saved.path("series").path("id").asText(), equalTo(seriesId));
+        assertThat(saved.path("series").path("spinnakerPolicy").asText(),
+            equalTo("NON_SPINNAKER"));
+    }
+
+    @Test
+    void deletingASeriesTakesItsRacesWithIt() throws Exception
+    {
+        String seriesId = createSeries("2026 Winter Twilight");
+        String other = createSeries("2026 Summer Twilight");
+        String boatId = createBoat("AUS9", "Quick Silver");
+        String race1 = createRace(seriesId, "2026-06-05");
+        String race2 = createRace(seriesId, "2026-06-12");
+        String keep = createRace(other, "2026-01-15");
+        enterBoats(race1, boatId, 1.0);
+
+        JsonNode gone = delete("/api/series/" + seriesPath(seriesId));
+
+        assertThat(gone.path("ok").asBoolean(), is(true));
+        assertThat(gone.path("racesDeleted").asInt(), equalTo(2));
+        assertThat(get("/api/series").size(), equalTo(1));
+        assertThat(getRaw("/api/races/" + race1).statusCode(), equalTo(404));
+        assertThat(getRaw("/api/races/" + race2).statusCode(), equalTo(404));
+
+        // The boats are the club's, not the season's — a deleted series must not take
+        // the fleet register with it.
+        assertThat(get("/api/boats").size(), equalTo(1));
+        assertThat(getRaw("/api/races/" + keep).statusCode(), equalTo(200));
+    }
+
+    @Test
+    void deletingAnUnknownSeriesIsA404() throws Exception
+    {
+        HttpResponse<String> r = http.send(
+            HttpRequest.newBuilder(URI.create(base + "/api/series/nope")).DELETE().build(),
+            HttpResponse.BodyHandlers.ofString());
+        assertThat(r.statusCode(), equalTo(404));
+    }
+
+    @Test
+    void deletingASeriesIsAudited() throws Exception
+    {
+        String seriesId = createSeries("2026 Winter Twilight");
+        createRace(seriesId, "2026-06-05");
+
+        delete("/api/series/" + seriesPath(seriesId));
+
+        JsonNode audit = get("/api/audit");
+        assertThat(audit.size(), equalTo(1));
+        assertThat(audit.get(0).path("action").asText(), equalTo("delete-series"));
+        assertThat(audit.get(0).path("notes").asText(), containsString("1 race"));
+    }
+
     // --- helpers -------------------------------------------------------------
 
     private String createSeries(String name) throws Exception

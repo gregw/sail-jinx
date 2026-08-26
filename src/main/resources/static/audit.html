@@ -78,8 +78,13 @@
     document.getElementById('audit-tbody').innerHTML = entries.slice().reverse().map(e =>
       '<tr>'
       + '<td>' + esc(new Date(e.timestamp).toLocaleString()) + '</td>'
-      + '<td><a href="/race.html?raceId=' + encodeURIComponent(e.raceId) + '">'
-      + esc(raceNames.get(e.raceId) || e.raceId) + '</a></td>'
+      // Not every entry is about a race: deleting a series names no race, because the
+      // races went with it and their ids will never be minted again. A link there would
+      // be a dead one labelled "null".
+      + '<td>' + (e.raceId
+        ? '<a href="/race.html?raceId=' + encodeURIComponent(e.raceId) + '">'
+          + esc(raceNames.get(e.raceId) || e.raceId) + '</a>'
+        : '<span class="hint">—</span>') + '</td>'
       + '<td>' + esc(e.action) + '</td>'
       // No user is a real answer — the entry was written with no login configured — so
       // it renders as the same dash a missing design does, not as a blank that reads

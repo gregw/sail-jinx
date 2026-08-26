@@ -318,6 +318,16 @@ as in the other, so both normalise names the same way and share `aliases.yaml`.
 The club domain in `config.yaml` scopes the last two. Set once at installation —
 changing it orphans every existing id.
 
+**A series id is minted from its name, so two series cannot share one.** Creating a
+second series called the same thing would mint the same id and land on top of the first,
+inheriting its races and — since the create form sends `archived: false` — quietly
+unarchiving it. `handleSaveSeries` answers **409** when the minted id is already taken,
+and says so differently when the clash is archived, because that is the case that bites:
+the series is not on screen, so the name looks free. The check is on *creating* only — an
+edit carries the id it was given, so re-saving a series under its own name is not a
+clash. Two *different* series with the same display name are allowed; they have different
+ids and adopt nothing from each other.
+
 Things that catch people out:
 
 - **`AUS1234`, `AUS01234` and `1234` are one boat**, and the bare form wins. The
@@ -418,7 +428,21 @@ Two more things that are easy to get wrong:
    body omits from the series defaults and would quietly give a cancelled race a
    different name or first gun.
 
-3. **Abandoning a race is a way of processing it.** The Abandon Race button flags
+3. **Deleting a series deletes its races, and there is no undo.** `JsonStore.deleteSeries`
+   takes the series row, every race in it, and every file hanging off those races —
+   entrant lists, start sheets, captured times, adjustments — plus the series config
+   override. Leaving those behind would litter the store with data no page can reach: a
+   race id embeds the date and a sequence number, so no future race will ever mint the
+   same one and adopt them. **The fleet register is untouched** — boats belong to the
+   club, not to a season. It is `ADMIN`, it is audited, and `Archive` is the reversible
+   option sitting next to it in the UI.
+
+   The audit entry it writes **names no race**, because the races are gone and their ids
+   will never be minted again; the series id and the race count go in `notes` instead.
+   `audit.html` renders a dash rather than a link for an entry with a null `raceId` —
+   without that guard the row showed a dead link labelled `null`.
+
+4. **Abandoning a race is a way of processing it.** The Abandon Race button flags
    every boat `ABN`, saves, and processes — so an abandoned race is locked like any
    other scored race, and **Unlock results is the way back from both**. There is no
    separate un-abandon button: it would be a second door into the same room, and the
@@ -435,7 +459,7 @@ Two more things that are easy to get wrong:
    happened to be round first its winner.
    `anAbandonedRaceLeavesEveryHandicapExactlyWhereItWas` pins it.
 
-4. **Flags the RO set by hand are stored; flags the times imply are not.** Most
+5. **Flags the RO set by hand are stored; flags the times imply are not.** Most
    flags are derived — DNC, DNS, DNF, OCS all follow from came/started/finished, and
    deriving them is right, because a stored one would go stale the moment a time was
    corrected. What cannot be derived is a judgement that *contradicts* the times, and
@@ -532,6 +556,7 @@ for the full list. The shape worth knowing:
 | POST | `/api/races/{id}/process-handicaps` | run the engine (computes, saves nothing) |
 | POST | `/api/races/{id}/save-handicaps` | save, and carry TCFs to the next race |
 | DELETE | `/api/races/{id}/adjustments` | unlock for reprocessing |
+| DELETE | `/api/series/{id}` | delete a series **and every race in it** |
 
 ---
 
@@ -547,7 +572,7 @@ no outbound call — exactly what the server did before a login existed.
 |---|---|---|
 | `VIEWER` | anybody, signed in or not | read every page and every GET **except `/api/audit`** |
 | `RACE_OFFICER` | a club-domain account | run a race night: times, start sheet, handicaps, unlock, and editing an entrant's TCF, division or casual flag |
-| `ADMIN` | listed in `admins:` | series, races, series config, the fleet register, and which boats are in a race at all |
+| `ADMIN` | listed in `admins:` | series (**including deleting one and its races**), races, series config, the fleet register, and which boats are in a race at all |
 
 **The audit log is the one exception to "every GET answers anybody".** It is not a
 result: it records who changed what, and since it started naming them, publishing it
@@ -714,7 +739,7 @@ Two things that will bite on that deployment specifically:
 ## Testing
 
 ```bash
-mvn test        # 245 tests, offline
+mvn test        # 254 tests, offline
 ```
 
 - `JsonStoreTest` — round-trips, atomicity, journalling, corrupt-file recovery.

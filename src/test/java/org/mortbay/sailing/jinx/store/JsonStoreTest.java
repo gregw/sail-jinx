@@ -30,6 +30,8 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.aMapWithSize;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.empty;
+import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
@@ -166,6 +168,78 @@ class JsonStoreTest
         assertThat(store.nextRaceInSeries("r-1").map(Race::id).orElse(null), equalTo("r-2"));
         assertThat(store.nextRaceInSeries("r-2").isPresent(), is(false));
         assertThat(store.nextRaceInSeries("nope").isPresent(), is(false));
+    }
+
+    // --- Deleting a series ---------------------------------------------------
+
+    @Test
+    void deletingASeriesTakesItsRacesAndEverythingHangingOffThem(@TempDir Path tmp) throws IOException
+    {
+        // A season is not just a row in series.json: every race carries an entrant list,
+        // a start sheet, captured times and possibly adjustments, each in its own file
+        // keyed by race id. Leaving those behind would litter the store with data no
+        // page can reach and no id will ever be minted for again.
+        JsonStore store = new JsonStore(tmp);
+        store.start();
+        store.putSeries(new Series("s-1", "2026 Winter Twilight", false));
+        store.putSeries(new Series("s-2", "2026 Summer Twilight", false));
+        store.putRace(new Race("r-1", "s-1", 1, "R1", LocalDate.of(2026, 6, 5),
+            LocalTime.of(18, 0), 90, false));
+        store.putRace(new Race("r-2", "s-1", 2, "R2", LocalDate.of(2026, 6, 12),
+            LocalTime.of(18, 0), 90, false));
+        store.putRace(new Race("x-1", "s-2", 1, "Other", LocalDate.of(2026, 1, 15),
+            LocalTime.of(18, 0), 90, false));
+        store.putEntrants(new RaceEntrants("r-1", Instant.now(),
+            RaceEntrants.TcfSource.MANUAL_EDIT, null, null,
+            List.of(entrant(boat("b-1", "AUS1", "Flashpoint"), 1.0))));
+        store.putRaceTimes("r-1", new RaceTimes("r-1", List.of(), null, Map.of()));
+        store.putAdjustments("r-1",
+            List.of(new Adjustment("b-1", 1, 6.0, 2.0, 4.0, 1.0, 1.0450)));
+        store.putSeriesConfig("s-1",
+            new JinxConfig.Algorithm(List.of(6.0, 4.0, 2.0), 90, 1, "18:00",
+                -34.0, 151.0, false, JinxConfig.Variant.B, null, null, null));
+
+        int removed = store.deleteSeries("s-1");
+
+        assertThat(removed, equalTo(2));
+        assertThat(store.series(), not(hasKey("s-1")));
+        assertThat(store.races(), not(hasKey("r-1")));
+        assertThat(store.races(), not(hasKey("r-2")));
+        assertThat(store.entrants("r-1"), nullValue());
+        assertThat(store.raceTimes("r-1"), nullValue());
+        assertThat(store.adjustments("r-1"), empty());
+        assertThat(store.seriesConfig("s-1"), nullValue());
+
+        // The other season is untouched.
+        assertThat(store.series(), hasKey("s-2"));
+        assertThat(store.races(), hasKey("x-1"));
+    }
+
+    @Test
+    void aDeletedSeriesStaysDeletedAcrossARestart(@TempDir Path tmp) throws IOException
+    {
+        JsonStore first = new JsonStore(tmp);
+        first.start();
+        first.putSeries(new Series("s-1", "2026 Winter Twilight", false));
+        first.putRace(new Race("r-1", "s-1", 1, "R1", LocalDate.of(2026, 6, 5),
+            LocalTime.of(18, 0), 90, false));
+        first.deleteSeries("s-1");
+
+        JsonStore reopened = new JsonStore(tmp);
+        reopened.start();
+        assertThat(reopened.series(), not(hasKey("s-1")));
+        assertThat(reopened.races(), not(hasKey("r-1")));
+    }
+
+    @Test
+    void deletingASeriesThatIsNotThereRemovesNothing(@TempDir Path tmp) throws IOException
+    {
+        JsonStore store = new JsonStore(tmp);
+        store.start();
+        store.putSeries(new Series("s-1", "2026 Winter Twilight", false));
+
+        assertThat(store.deleteSeries("s-nope"), equalTo(0));
+        assertThat(store.series(), hasKey("s-1"));
     }
 
     // --- Race entrants -------------------------------------------------------

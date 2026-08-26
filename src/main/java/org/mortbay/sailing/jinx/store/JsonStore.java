@@ -365,6 +365,56 @@ public class JsonStore
         journal("series", s.id(), s);
     }
 
+    /**
+     * Deletes a series, every race in it, and every file hanging off those races.
+     *
+     * <p>A season is not just a row in {@code series.json}. Each of its races owns an
+     * entrant list, a start sheet, captured times and possibly saved adjustments, each in
+     * its own file keyed by race id — and the series owns a config override. Leaving any
+     * of them behind would litter the store with data no page can reach: race ids embed
+     * the date and a sequence number, so a future race will never mint the same one and
+     * adopt them.
+     *
+     * <p>Irreversible, and meant to be: the journal keeps a record of what was removed,
+     * but nothing reads it back. The caller is responsible for asking first.
+     *
+     * @return the number of races removed, which is 0 for an unknown series
+     */
+    public synchronized int deleteSeries(String seriesId) throws IOException
+    {
+        if (seriesId == null || !series.containsKey(seriesId))
+            return 0;
+
+        List<Race> doomed = racesInSeries(seriesId);
+        for (Race race : doomed)
+        {
+            String raceId = race.id();
+            deleteIfPresent(entrantsDir, raceId, "entrants");
+            deleteIfPresent(startSheetDir, raceId, "start-sheet");
+            deleteIfPresent(raceTimesDir, raceId, "race-times");
+            deleteIfPresent(adjustmentsDir, raceId, "adjustments");
+            races.remove(raceId);
+            journalDelete("races", raceId);
+        }
+        if (!doomed.isEmpty())
+            write(racesFile, races);
+
+        deleteIfPresent(seriesConfigDir, fileKey(seriesId), "series-config");
+        series.remove(seriesId);
+        write(seriesFile, series);
+        journalDelete("series", seriesId);
+
+        LOG.info("Deleted series {} and {} race(s)", seriesId, doomed.size());
+        return doomed.size();
+    }
+
+    /** Removes one keyed file if it is there, journalling the removal. */
+    private void deleteIfPresent(Path dir, String key, String entity) throws IOException
+    {
+        if (Files.deleteIfExists(dir.resolve(key + ".json")))
+            journalDelete(entity, key);
+    }
+
     // --- Races ---------------------------------------------------------------
 
     public synchronized Map<String, Race> races()
