@@ -21,7 +21,6 @@ import org.mortbay.sailing.jinx.model.Entrant;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceEntrants;
 import org.mortbay.sailing.jinx.model.RaceTimes;
-import org.mortbay.sailing.jinx.model.Roster;
 import org.mortbay.sailing.jinx.model.Series;
 import org.mortbay.sailing.jinx.model.Spinnaker;
 import org.mortbay.sailing.jinx.model.StartSheet;
@@ -38,9 +37,14 @@ import static org.hamcrest.Matchers.nullValue;
 
 class JsonStoreTest
 {
-    private static Boat boat(String id, String sail, String name, double tcf)
+    private static Boat boat(String id, String sail, String name)
     {
         return new Boat(id, sail, name, null, false, true, null);
+    }
+
+    private static Entrant entrant(Boat b, double tcf)
+    {
+        return Entrant.fromBoat(b, tcf, null, null, Entrant.EntryType.ROSTER);
     }
 
     @Test
@@ -81,7 +85,7 @@ class JsonStoreTest
         // must keep rendering its name and sail number.
         JsonStore store = new JsonStore(tmp);
         store.start();
-        store.putBoat(boat("b-1", "AUS1", "Gone Fishing", 0.98));
+        store.putBoat(boat("b-1", "AUS1", "Gone Fishing"));
         store.putBoat(new Boat("b-1", "AUS1", "Gone Fishing", null, false, false, null));
 
         assertThat(store.boats(), aMapWithSize(1));
@@ -164,39 +168,6 @@ class JsonStoreTest
         assertThat(store.nextRaceInSeries("nope").isPresent(), is(false));
     }
 
-    // --- Series roster -------------------------------------------------------
-
-    @Test
-    void rosterIsNullWhenMissing(@TempDir Path tmp) throws IOException
-    {
-        JsonStore store = new JsonStore(tmp);
-        store.start();
-        assertThat(store.roster("s-1"), nullValue());
-    }
-
-    @Test
-    void rosterRoundTripsAcrossRestart(@TempDir Path tmp) throws IOException
-    {
-        JsonStore first = new JsonStore(tmp);
-        first.start();
-        first.putRoster(new Roster("s-1", List.of(
-            new Roster.Entry("b-1", 1.0450, "Div 1", Spinnaker.S),
-            new Roster.Entry("b-2", 0.9340, null, Spinnaker.NS))));
-
-        JsonStore reopened = new JsonStore(tmp);
-        reopened.start();
-        Roster read = reopened.roster("s-1");
-        assertThat(read.seriesId(), equalTo("s-1"));
-        assertThat(read.entries(), hasSize(2));
-        assertThat(read.entries().get(0).boatId(), equalTo("b-1"));
-        assertThat(read.entries().get(0).startingTcf(), equalTo(1.0450));
-        // The terms of the entry, not of the boat.
-        assertThat(read.entries().get(0).division(), equalTo("Div 1"));
-        assertThat(read.entries().get(0).spinnaker(), equalTo(Spinnaker.S));
-        assertThat(read.entries().get(1).spinnaker(), equalTo(Spinnaker.NS));
-        assertThat(read.entries().get(1).division(), nullValue());
-    }
-
     // --- Race entrants -------------------------------------------------------
 
     @Test
@@ -215,8 +186,8 @@ class JsonStoreTest
         first.putEntrants(new RaceEntrants("r-2", Instant.parse("2026-06-12T07:00:00Z"),
             RaceEntrants.TcfSource.CARRIED_FORWARD, "r-1", 1,
             List.of(
-                Entrant.fromRosterEntry(boat("b-1", "AUS1", "Flashpoint", 1.0450), new Roster.Entry("b-1", 1.0666)),
-                Entrant.fromRosterEntry(boat("b-2", "AUS2", "Slow Poke", 0.9340), new Roster.Entry("b-2", 0.9485)))));
+                entrant(boat("b-1", "AUS1", "Flashpoint"), 1.0666),
+                entrant(boat("b-2", "AUS2", "Slow Poke"), 0.9485))));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
@@ -237,13 +208,13 @@ class JsonStoreTest
         // survive race 2 being processed. SailSys only ever kept the latest.
         JsonStore store = new JsonStore(tmp);
         store.start();
-        Boat b = boat("b-1", "AUS1", "Flashpoint", 1.0450);
+        Boat b = boat("b-1", "AUS1", "Flashpoint");
         store.putEntrants(new RaceEntrants("r-1", Instant.now(),
-            RaceEntrants.TcfSource.ROSTER, null, null,
-            List.of(Entrant.fromRosterEntry(b, new Roster.Entry("b-1", 1.0450)))));
+            RaceEntrants.TcfSource.MANUAL_EDIT, null, null,
+            List.of(entrant(b, 1.0450))));
         store.putEntrants(new RaceEntrants("r-2", Instant.now(),
             RaceEntrants.TcfSource.CARRIED_FORWARD, "r-1", 1,
-            List.of(Entrant.fromRosterEntry(b, new Roster.Entry("b-1", 1.0666)))));
+            List.of(entrant(b, 1.0666))));
 
         assertThat(store.entrants("r-1").entrants().get(0).tcf(), equalTo(1.0450));
         assertThat(store.entrants("r-2").entrants().get(0).tcf(), equalTo(1.0666));
@@ -259,8 +230,8 @@ class JsonStoreTest
         JsonStore first = new JsonStore(tmp);
         first.start();
         first.putEntrants(new RaceEntrants("r-1", Instant.now(),
-            RaceEntrants.TcfSource.ROSTER, null, null,
-            List.of(Entrant.fromRosterEntry(boat("b-1", "AUS1", "Flashpoint", 1.0), new Roster.Entry("b-1", 0.9287868)))));
+            RaceEntrants.TcfSource.MANUAL_EDIT, null, null,
+            List.of(entrant(boat("b-1", "AUS1", "Flashpoint"), 0.9287868))));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
@@ -283,6 +254,25 @@ class JsonStoreTest
     }
 
     @Test
+    void anEntrantListWrittenWhenTheRosterExistedStillLoads(@TempDir Path tmp) throws IOException
+    {
+        // The series roster is gone and nothing writes TcfSource.ROSTER any more, but the
+        // club's store is the only copy there is and its early races still say it. The
+        // constant stays for exactly this: dropping it would make Jackson throw on a file
+        // nobody can regenerate.
+        JsonStore store = new JsonStore(tmp);
+        store.start();
+        Files.writeString(tmp.resolve("store/entrants/r-1.json"), """
+            {"raceId":"r-1","tcfSource":"ROSTER","entrants":[
+              {"boatId":"b-1","sailNumber":"AUS1","name":"Flashpoint","tcf":1.0450}]}""",
+            StandardCharsets.UTF_8);
+
+        RaceEntrants read = store.entrants("r-1");
+        assertThat(read.tcfSource(), equalTo(RaceEntrants.TcfSource.ROSTER));
+        assertThat(read.entrants().getFirst().boatId(), equalTo("b-1"));
+    }
+
+    @Test
     void oneOffEntrantHasNoRegisterBoat(@TempDir Path tmp) throws IOException
     {
         // Outcome 3 of the casual flow: sailed once, never to be seen again.
@@ -290,7 +280,7 @@ class JsonStoreTest
         JsonStore first = new JsonStore(tmp);
         first.start();
         first.putEntrants(new RaceEntrants("r-1", Instant.now(),
-            RaceEntrants.TcfSource.ROSTER, null, null,
+            RaceEntrants.TcfSource.MANUAL_EDIT, null, null,
             List.of(Entrant.oneOff("Visitor", "??? 42", 1.0))));
 
         JsonStore reopened = new JsonStore(tmp);
@@ -509,7 +499,7 @@ class JsonStoreTest
     {
         JsonStore store = new JsonStore(tmp);
         store.start();
-        store.putBoat(boat("b-1", "AUS1", "Flashpoint", 1.0));
+        store.putBoat(boat("b-1", "AUS1", "Flashpoint"));
         store.putRace(new Race("r-1", "s-1", 1, "R1", LocalDate.of(2026, 6, 5),
             LocalTime.of(18, 0), 60, false));
         store.putRaceTimes("r-1", new RaceTimes("r-1", List.of(), null, Map.of()));
@@ -560,7 +550,7 @@ class JsonStoreTest
     {
         JsonStore first = new JsonStore(tmp);
         first.start();
-        first.putBoat(boat("b-1", "AUS1", "Flashpoint", 1.0));
+        first.putBoat(boat("b-1", "AUS1", "Flashpoint"));
         Files.writeString(tmp.resolve("store/boats.json"), "]]] nope",
             StandardCharsets.UTF_8);
 
@@ -581,11 +571,11 @@ class JsonStoreTest
         // failing until somebody restarts the server mid-race.
         JsonStore store = new JsonStore(tmp);
         store.start();
-        store.putBoat(boat("b-1", "AUS1", "Flashpoint", 1.0));
+        store.putBoat(boat("b-1", "AUS1", "Flashpoint"));
 
         deleteRecursively(tmp.resolve("store"));
 
-        store.putBoat(boat("b-2", "AUS2", "Slow Poke", 0.9));
+        store.putBoat(boat("b-2", "AUS2", "Slow Poke"));
         store.putRaceTimes("r-1", new RaceTimes("r-1", List.of(), null, Map.of()));
 
         JsonStore reopened = new JsonStore(tmp);
@@ -610,7 +600,7 @@ class JsonStoreTest
     {
         JsonStore store = new JsonStore(tmp);
         store.start();
-        store.putBoat(boat("b-1", "AUS1", "Flashpoint", 1.0));
+        store.putBoat(boat("b-1", "AUS1", "Flashpoint"));
         store.putSeries(new Series("s-1", "2026 Winter Twilight", false));
         store.putRaceTimes("r-1", new RaceTimes("r-1", List.of(), null, Map.of()));
 

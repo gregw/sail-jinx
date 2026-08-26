@@ -12,8 +12,8 @@ package org.mortbay.sailing.jinx.model;
  * a property of a boat. A boat does not have a handicap — it has one <em>for a given
  * series</em>, and a different one by the end of it. It can sail one series in Division 1
  * and the next in Division 2, or enter one with a kite and one without. Those live on
- * {@link Roster.Entry} for the season and on {@link Entrant} for the race, which is also
- * what makes race 4's handicaps survive race 5 being processed.
+ * {@link Entrant}, per race, which is also what makes race 4's handicaps survive race 5
+ * being processed.
  *
  * <p>{@code designId} is the hull type, learned from whatever was typed when the boat was
  * entered and resolved through the alias seed. Null when unknown, which is normal — the

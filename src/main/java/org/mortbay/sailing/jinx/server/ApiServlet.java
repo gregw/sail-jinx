@@ -39,7 +39,6 @@ import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceEntrants;
 import org.mortbay.sailing.jinx.model.RaceTimes;
 import org.mortbay.sailing.jinx.model.Result;
-import org.mortbay.sailing.jinx.model.Roster;
 import org.mortbay.sailing.jinx.model.Series;
 import org.mortbay.sailing.jinx.model.Spinnaker;
 import org.mortbay.sailing.jinx.model.StartSheet;
@@ -67,13 +66,11 @@ import org.slf4j.LoggerFactory;
  *   POST   /api/series                        create or update a series
  *   GET    /api/series/{id}/config            per-series algorithm settings
  *   POST   /api/series/{id}/config            save them
- *   GET    /api/series/{id}/roster            boats entered for the series
- *   POST   /api/series/{id}/roster            save the roster
  *   GET    /api/races                         all races
  *   POST   /api/races                         create or update a race
  *   GET    /api/races/{id}                    everything the race page needs, in one call
  *   POST   /api/races/{id}/entrants           replace the entrant list
- *   POST   /api/races/{id}/entrants/seed      seed entrants from the roster or the previous race
+ *   POST   /api/races/{id}/entrants/seed      carry the previous race's entrants forward
  *   POST   /api/races/{id}/entrants/import    add entrants from a sailing-pf export
  *   POST   /api/races/{id}/abandon            call a race off, or put it back on
  *   POST   /api/races/{id}/start-times        compute and publish the pursuit start sheet
@@ -100,8 +97,8 @@ import org.slf4j.LoggerFactory;
  *                                       sheet, handicaps, unlock, and editing an
  *                                       entrant's TCF, division or casual flag
  *   ADMIN         listed in admins:   + what a race night runs on: series, races,
- *                                       roster, series config, the fleet register,
- *                                       and which boats are in a race at all
+ *                                       series config, the fleet register, and
+ *                                       which boats are in a race at all
  * </pre>
  *
  * <p>The split between the last two is <em>composing versus running</em>. Deciding that
@@ -126,7 +123,6 @@ public class ApiServlet extends HttpServlet
     // so the id group has to span one. Each pattern is anchored by a fixed suffix and
     // matched whole, so there is no ambiguity about where the id ends.
     private static final Pattern SERIES_CONFIG = Pattern.compile("/series/(.+)/config");
-    private static final Pattern SERIES_ROSTER = Pattern.compile("/series/(.+)/roster");
     private static final Pattern SERIES_RACES = Pattern.compile("/series/(.+)/races");
     private static final Pattern RACE = Pattern.compile("/races/([^/]+)");
     private static final Pattern RACE_ENTRANTS = Pattern.compile("/races/([^/]+)/entrants");
@@ -184,7 +180,7 @@ public class ApiServlet extends HttpServlet
      * A club's results are published to be read, so every page and every GET answers a
      * stranger. A club account is a {@link Role#RACE_OFFICER} and can run a race night
      * end to end. An account named in {@code admins} is an {@link Role#ADMIN} and owns
-     * what a race night runs on — the series, the races, the roster.
+     * what a race night runs on — the series and the races.
      */
     Role currentRole(HttpServletRequest req)
     {
@@ -249,8 +245,6 @@ public class ApiServlet extends HttpServlet
         Matcher m;
         if ((m = SERIES_CONFIG.matcher(path)).matches())
             writeJson(resp, seriesConfigBody(m.group(1)));
-        else if ((m = SERIES_ROSTER.matcher(path)).matches())
-            writeJson(resp, rosterBody(m.group(1)));
         else if ((m = SERIES_RACES.matcher(path)).matches())
             writeJson(resp, store.racesInSeries(m.group(1)));
         else if ((m = RACE_TIMES.matcher(path)).matches())
@@ -306,8 +300,6 @@ public class ApiServlet extends HttpServlet
             handleSaveHandicaps(req, resp, m.group(1));
         else if ((m = SERIES_CONFIG.matcher(path)).matches())
             handleSaveSeriesConfig(req, resp, m.group(1));
-        else if ((m = SERIES_ROSTER.matcher(path)).matches())
-            handleSaveRoster(req, resp, m.group(1));
         else
             resp.sendError(404);
     }
@@ -448,10 +440,9 @@ public class ApiServlet extends HttpServlet
      * boats already registered without it.
      *
      * <p>A fleet list usually carries TCF, division and spinnaker as well. Those are terms
-     * of a <em>series entry</em>, not facts about a boat, so they have nowhere to go
-     * unless a series is named: pass {@code ?seriesId=...} and they are applied to that
-     * series' roster. Without one the boats are still registered and the entry columns are
-     * reported as not applied, rather than being silently written onto the register.
+     * of a <em>race entry</em>, not facts about a boat, so this import ignores them and
+     * registers identity only. {@code /api/races/{id}/entrants/import} reads the same file
+     * and is where those columns land.
      *
      * <p>Returns a per-row report rather than a count. A bulk import of a hand-maintained
      * spreadsheet always has surprises in it, and the useful answer is which rows they
@@ -677,11 +668,6 @@ public class ApiServlet extends HttpServlet
     }
 
 
-    /**
-     * Build the roster entry for an imported boat, keeping anything the list did not
-     * supply. A fleet list with no spinnaker column should not quietly reset a boat that
-     * was already entered as non-spinnaker.
-     */
     // --- Series --------------------------------------------------------------
 
     private List<Series> sortedSeries()
@@ -761,61 +747,6 @@ public class ApiServlet extends HttpServlet
         store.putSeriesConfig(seriesId, posted);
         writeJson(resp, mapOf("ok", true, "seriesId", seriesId,
             "isCustom", true, "config", algorithmMap(posted)));
-    }
-
-    // --- Series roster -------------------------------------------------------
-
-    /**
-     * The roster joined to the register, so the page can render sail numbers
-     * and names without a second call. A roster entry whose boat has been
-     * removed from the register is dropped rather than rendered blank.
-     */
-    private Map<String, Object> rosterBody(String seriesId)
-    {
-        Roster roster = store.roster(seriesId);
-        Map<String, Boat> boats = store.boats();
-        List<Map<String, Object>> rows = new ArrayList<>();
-        if (roster != null)
-        {
-            for (Roster.Entry e : roster.entries())
-            {
-                Boat b = boats.get(e.boatId());
-                if (b == null)
-                    continue;
-                rows.add(mapOf("boatId", b.id(), "sailNumber", b.sailNumber(),
-                    "name", b.name(), "designId", b.designId(),
-                    "division", e.division(), "spinnaker", e.spinnaker(),
-                    "startingTcf", e.startingTcf()));
-            }
-        }
-        return mapOf("seriesId", seriesId, "entries", rows);
-    }
-
-    private void handleSaveRoster(HttpServletRequest req, HttpServletResponse resp,
-                                  String seriesId) throws Exception
-    {
-        if (denyUnless(req, resp, Role.ADMIN))
-            return;
-        JsonNode body = MAPPER.readTree(req.getInputStream());
-        JsonNode entries = body.isArray() ? body : body.path("entries");
-        List<Roster.Entry> out = new ArrayList<>();
-        for (JsonNode e : entries)
-        {
-            String boatId = text(e, "boatId");
-            if (isBlank(boatId))
-                continue;
-            Boat boat = store.boats().get(boatId);
-            // A boat entering a series has to be given a handicap: there is no such thing
-            // as "the boat's TCF" to fall back on. 1.0 is the scratch default — visibly a
-            // starting point rather than a considered figure.
-            double tcf = e.hasNonNull("startingTcf") ? e.path("startingTcf").asDouble() : 1.0;
-            Spinnaker spinnaker = e.hasNonNull("spinnaker")
-                ? spinnakerOf(e.path("spinnaker"))
-                : defaultSpinnakerFor(seriesId, boat);
-            out.add(new Roster.Entry(boatId, tcf, text(e, "division"), spinnaker));
-        }
-        store.putRoster(new Roster(seriesId, out));
-        writeJson(resp, mapOf("ok", true, "seriesId", seriesId, "saved", out.size()));
     }
 
     /**
@@ -1086,7 +1017,7 @@ public class ApiServlet extends HttpServlet
             return;
 
         RaceEntrants saved = new RaceEntrants(raceId, Instant.now(),
-            tcfSourceOf(body.path("tcfSource"), existing),
+            tcfSourceOf(body.path("tcfSource")),
             existing == null ? null : existing.sourceRaceId(),
             existing == null ? null : existing.sourceRaceNumber(),
             entrants);
@@ -1164,10 +1095,15 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
-     * Seed a race's entrants. The first race of a series takes the roster and
-     * its starting TCFs; any later race carries forward the previous race's
-     * entrants at their current TCFs, which is what the fleet actually is until
-     * handicaps are processed.
+     * Seed a race's entrants by carrying forward the previous race's, at their current
+     * TCFs — which is what the fleet actually is until handicaps are processed.
+     *
+     * <p>The first race of a series has nothing to carry forward, and seeds nothing. Its
+     * fleet is entered directly: the race page's add-a-boat form, or the sailing-pf
+     * import at {@code /entrants/import}, which brings the TCFs with it. There used to be
+     * a series roster seeding this case; it was a second place to record the same fleet,
+     * and the terms it held — TCF, division, spinnaker — are per-race facts that the
+     * entrant list is the real home for.
      *
      * <p><b>Additive.</b> Boats already entered are left exactly as they are, and only
      * the ones missing from this race are added — so it is safe to run on a race that
@@ -1193,7 +1129,21 @@ public class ApiServlet extends HttpServlet
         List<Entrant> already = existing == null ? List.of() : existing.entrants();
         Set<String> have = idsOf(already);
 
-        RaceEntrants source = seedFromPreviousRace(race).orElseGet(() -> seedFromRoster(race));
+        // No previous race means nothing to seed from — the first race of a series is
+        // entered by hand or imported. Answer with what the race already has rather than
+        // failing: "there was nothing to add" is a success, and the caller is usually the
+        // race page seeding itself on first view.
+        RaceEntrants source = seedFromPreviousRace(race).orElse(null);
+        if (source == null)
+        {
+            writeJson(resp, mapOf("ok", true, "raceId", raceId, "added", 0,
+                "entrants", existing == null
+                    ? new RaceEntrants(raceId, Instant.now(),
+                        RaceEntrants.TcfSource.MANUAL_EDIT, null, null, List.of())
+                    : existing));
+            return;
+        }
+
         List<Entrant> missing = source.entrants().stream()
             .filter(e -> e.boatId() != null && !e.boatId().isBlank() && !have.contains(e.boatId()))
             .toList();
@@ -1233,7 +1183,7 @@ public class ApiServlet extends HttpServlet
         if (prev == null || prev.entrants().isEmpty())
             return Optional.empty();
         Race prevRace = store.races().get(prevId);
-        // Only roster boats carry forward. One-offs have no register boat, and a casual
+        // Only season entries carry forward. One-offs have no register boat, and a casual
         // turned up once — seeding it would put a boat nobody expects on the start sheet.
         List<Entrant> carried = prev.entrants().stream()
             .filter(Entrant::seedsNextRace)
@@ -1241,24 +1191,6 @@ public class ApiServlet extends HttpServlet
         return Optional.of(new RaceEntrants(race.id(), Instant.now(),
             RaceEntrants.TcfSource.CARRIED_FORWARD, prevId,
             prevRace == null ? null : prevRace.number(), carried));
-    }
-
-    private RaceEntrants seedFromRoster(Race race)
-    {
-        Roster roster = store.roster(race.seriesId());
-        List<Entrant> entrants = new ArrayList<>();
-        if (roster != null)
-        {
-            Map<String, Boat> boats = store.boats();
-            for (Roster.Entry e : roster.entries())
-            {
-                Boat b = boats.get(e.boatId());
-                if (b != null && b.active())
-                    entrants.add(Entrant.fromRosterEntry(b, e));
-            }
-        }
-        return new RaceEntrants(race.id(), Instant.now(),
-            RaceEntrants.TcfSource.ROSTER, null, null, entrants);
     }
 
     // --- Start times ---------------------------------------------------------
@@ -1857,10 +1789,10 @@ public class ApiServlet extends HttpServlet
 
     /**
      * The source to stamp on a saved entrant list. An explicit value wins;
-     * otherwise a list that already existed is being edited, so it becomes a
-     * manual edit, and a brand new one is a roster seed.
+     * otherwise it is a manual edit either way — a list that already existed is
+     * being edited, and a brand new one was typed or imported.
      */
-    private static RaceEntrants.TcfSource tcfSourceOf(JsonNode node, RaceEntrants existing)
+    private static RaceEntrants.TcfSource tcfSourceOf(JsonNode node)
     {
         if (!node.isMissingNode() && !node.isNull())
         {
@@ -1873,9 +1805,7 @@ public class ApiServlet extends HttpServlet
                 // fall through to the derived answer
             }
         }
-        return existing == null
-            ? RaceEntrants.TcfSource.ROSTER
-            : RaceEntrants.TcfSource.MANUAL_EDIT;
+        return RaceEntrants.TcfSource.MANUAL_EDIT;
     }
 
     private static LocalDate parseDate(String s)

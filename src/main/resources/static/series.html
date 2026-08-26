@@ -46,8 +46,8 @@
       </select>
     </div>
     <p class="hint" id="new-rename-note" style="display:none; max-width:46rem;">
-      Renaming is safe: the series keeps the id it was created with, so its races,
-      roster and handicap settings stay attached. Only what is displayed changes.
+      Renaming is safe: the series keeps the id it was created with, so its races and
+      handicap settings stay attached. Only what is displayed changes.
     </p>
     <div class="toolbar">
       <button id="new-save" class="primary" type="button">Create series</button>
@@ -59,7 +59,7 @@
   <table id="series-table" style="display:none;">
     <thead>
       <tr><th>Name</th><th>Format</th><th>Handicap</th><th>Spin</th>
-        <th class="num-cell">Races</th><th class="num-cell">Roster</th><th></th></tr>
+        <th class="num-cell">Races</th><th></th></tr>
     </thead>
     <tbody id="series-tbody"></tbody>
   </table>
@@ -133,7 +133,6 @@
 <script>
   let series = [];
   let raceCounts = new Map();
-  let rosterCounts = new Map();
   let showArchived = false;
   let configSeriesId = null;
   let configDefaults = null;
@@ -157,7 +156,6 @@
 
     tbody.innerHTML = rows.map(s => {
       const races = raceCounts.get(s.id) || 0;
-      const roster = rosterCounts.get(s.id) || 0;
       return '<tr class="' + (s.archived ? 'retired' : '') + '">'
         + '<td>' + esc(s.name)
         + (s.archived ? ' <span class="tag">archived</span>' : '') + '</td>'
@@ -166,8 +164,6 @@
         + '<td>' + esc(spinLabel(s.spinnakerPolicy)) + '</td>'
         + '<td class="num-cell"><a href="/races.html?seriesId=' + encodeURIComponent(s.id) + '">'
         + races + '</a></td>'
-        + '<td class="num-cell"><a href="/roster.html?seriesId=' + encodeURIComponent(s.id) + '">'
-        + roster + '</a></td>'
         + '<td class="actions-cell">'
         + '<button type="button" class="link-btn edit-btn" data-requires="admin" data-id="' + esc(s.id) + '">Edit</button> '
         + '<button type="button" class="link-btn cfg-btn" data-requires="admin" data-id="' + esc(s.id) + '">Handicap settings</button> '
@@ -359,10 +355,13 @@
   document.getElementById('cfg-defaults').onclick = () => {
     if (configDefaults) fillConfig(configDefaults);
   };
-  document.getElementById('cfg-close').onclick = () => {
+
+  function closeConfig() {
     document.getElementById('config-panel').style.display = 'none';
     configSeriesId = null;
-  };
+  }
+
+  document.getElementById('cfg-close').onclick = closeConfig;
   document.getElementById('cfg-save').onclick = async () => {
     const penalties = document.getElementById('cfg-penalties').value
       .split(',').map(s => Number(s.trim())).filter(n => !isNaN(n));
@@ -385,10 +384,10 @@
       msg.textContent = 'Could not save: ' + errorOf(r);
       return;
     }
-    msg.className = 'banner banner-ok';
-    msg.textContent = 'Saved.';
-    document.getElementById('config-origin').textContent =
-      'This series overrides the club defaults.';
+    // Saving closes the panel, the way the series form above it does: a form that is
+    // still open with "Saved." under it reads as if something were still pending. The
+    // failure path above keeps it open, because an error has to stay on screen.
+    closeConfig();
   };
 
   // --- load ----------------------------------------------------------------
@@ -403,19 +402,13 @@
     }
     series = r.body || [];
 
-    // Race and roster counts, so the list says how far each season has got.
+    // Race counts, so the list says how far each season has got.
     const races = await fetchJson('/api/races');
     raceCounts = new Map();
     if (races.ok) {
       for (const race of races.body || [])
         raceCounts.set(race.seriesId, (raceCounts.get(race.seriesId) || 0) + 1);
     }
-    rosterCounts = new Map();
-    await Promise.all(series.map(async s => {
-      const rr = await fetchJson('/api/series/' + seriesPath(s.id) + '/roster');
-      if (rr.ok) rosterCounts.set(s.id, (rr.body.entries || []).length);
-    }));
-
     render();
   }
 

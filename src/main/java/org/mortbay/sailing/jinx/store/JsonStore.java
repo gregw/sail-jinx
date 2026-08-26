@@ -33,7 +33,6 @@ import org.mortbay.sailing.jinx.model.Entrant;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.RaceEntrants;
 import org.mortbay.sailing.jinx.model.RaceTimes;
-import org.mortbay.sailing.jinx.model.Roster;
 import org.mortbay.sailing.jinx.model.Series;
 import org.mortbay.sailing.jinx.model.StartSheet;
 import org.mortbay.sailing.jinx.model.StartTime;
@@ -50,7 +49,6 @@ import org.slf4j.LoggerFactory;
  *   designs.json                  — Map&lt;designId, Design&gt;: hull types, learned from boat entry
  *   series.json                   — Map&lt;seriesId, Series&gt;
  *   races.json                    — Map&lt;raceId, Race&gt;
- *   roster/{seriesId}.json        — boats entered for a series + starting TCFs
  *   entrants/{raceId}.json        — RaceEntrants: who is in this race, at what TCF
  *   start-sheet/{raceId}.json     — computed pursuit start times
  *   race-times/{raceId}.json      — RO-captured came / actual start / finish
@@ -105,7 +103,6 @@ public class JsonStore
     private final Path designsFile;
     private final Path seriesFile;
     private final Path racesFile;
-    private final Path rosterDir;
     private final Path entrantsDir;
     private final Path startSheetDir;
     private final Path raceTimesDir;
@@ -128,7 +125,6 @@ public class JsonStore
         this.designsFile = storeDir.resolve("designs.json");
         this.seriesFile = storeDir.resolve("series.json");
         this.racesFile = storeDir.resolve("races.json");
-        this.rosterDir = storeDir.resolve("roster");
         this.entrantsDir = storeDir.resolve("entrants");
         this.startSheetDir = storeDir.resolve("start-sheet");
         this.raceTimesDir = storeDir.resolve("race-times");
@@ -141,7 +137,7 @@ public class JsonStore
     /** Create directories if needed and load the in-memory entities. */
     public synchronized void start() throws IOException
     {
-        for (Path dir : List.of(storeDir, rosterDir, entrantsDir, startSheetDir,
+        for (Path dir : List.of(storeDir, entrantsDir, startSheetDir,
             raceTimesDir, seriesConfigDir, adjustmentsDir, journalDir))
         {
             Files.createDirectories(dir);
@@ -215,8 +211,7 @@ public class JsonStore
      *   <li>each race's captured times — the per-boat map keys, the working order, and
      *       the duty boat;</li>
      *   <li>each race's published start sheet;</li>
-     *   <li>saved handicap adjustments;</li>
-     *   <li>every series roster.</li>
+     *   <li>saved handicap adjustments.</li>
      * </ul>
      *
      * <p>If a boat already occupies the target id the two are the same hull found twice,
@@ -318,18 +313,6 @@ public class JsonStore
             touched++;
         }
 
-        for (String seriesId : idsIn(rosterDir))
-        {
-            Roster roster = roster(unsanitize(seriesId));
-            if (roster == null || roster.entries().stream().noneMatch(e -> oldId.equals(e.boatId())))
-                continue;
-            List<Roster.Entry> updated = roster.entries().stream()
-                .map(e -> oldId.equals(e.boatId()) ? new Roster.Entry(newId, e.startingTcf()) : e)
-                .toList();
-            putRoster(new Roster(roster.seriesId(), updated));
-            touched++;
-        }
-
         LOG.info("Rewrote boat id {} -> {} across {} file(s)", oldId, newId, touched);
         return touched;
     }
@@ -419,20 +402,6 @@ public class JsonStore
         return racesInSeries(race.seriesId()).stream()
             .filter(r -> r.number() > race.number())
             .findFirst();
-    }
-
-    // --- Series roster -------------------------------------------------------
-
-    /** The series roster, or {@code null} when the series has none yet. */
-    public synchronized Roster roster(String seriesId)
-    {
-        return read(rosterDir.resolve(fileKey(seriesId) + ".json"), Roster.class);
-    }
-
-    public synchronized void putRoster(Roster roster) throws IOException
-    {
-        write(rosterDir.resolve(fileKey(roster.seriesId()) + ".json"), roster);
-        journal("roster", roster.seriesId(), roster);
     }
 
     // --- Race entrants -------------------------------------------------------

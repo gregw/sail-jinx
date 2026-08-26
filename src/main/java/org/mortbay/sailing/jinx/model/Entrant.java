@@ -44,7 +44,12 @@ public record Entrant(
      */
     public enum EntryType
     {
-        /** Entered for the season on the series roster. The normal case. */
+        /**
+         * In for the season — the normal case, and what carries forward from race to
+         * race. The name is historical: it once meant "on the series roster", and the
+         * roster is gone, but the constant is stored in every entrant file and renaming
+         * it would orphan them.
+         */
         ROSTER,
         /** Turned up on the night and was added to the register there and then. */
         CASUAL,
@@ -53,20 +58,11 @@ public record Entrant(
     }
 
     /**
-     * Entrant for a registered boat on the terms of its series entry. The TCF, division
-     * and spinnaker come from the entry rather than the boat, because they are not
-     * properties of the hull — see {@link Boat}.
-     */
-    public static Entrant fromRosterEntry(Boat boat, Roster.Entry entry)
-    {
-        return new Entrant(boat.id(), boat.sailNumber(), boat.name(),
-            entry.division(), boat.designId(), entry.spinnaker(), entry.startingTcf(),
-            EntryType.ROSTER);
-    }
-
-    /**
-     * Entrant for a registered boat entered directly into a race — a casual arriving on
-     * the night, with no series entry to take its terms from.
+     * Entrant for a registered boat. The TCF, division and spinnaker are passed in
+     * rather than read off the boat, because they are terms of this race's entry and
+     * not properties of the hull — see {@link Boat}. Every entrant with a register
+     * boat comes through here: typed on the race page, imported from a fleet export,
+     * or carried forward from the previous race.
      */
     public static Entrant fromBoat(Boat boat, double tcf, String division,
                                    Spinnaker spinnaker, EntryType entryType)
@@ -100,7 +96,7 @@ public record Entrant(
     /**
      * True when this entrant should be carried into the next race automatically.
      *
-     * <p>Only boats on the series roster. A casual turned up this week and may not next
+     * <p>Only boats in for the season. A casual turned up this week and may not next
      * week, so seeding it would put a boat on the start sheet that nobody expects — and
      * the RO would have to notice and remove it every time. Adding it again takes two
      * clicks; explaining a phantom entry on a printed start sheet does not.

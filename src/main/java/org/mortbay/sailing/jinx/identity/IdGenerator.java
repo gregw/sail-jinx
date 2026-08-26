@@ -296,7 +296,7 @@ public final class IdGenerator
      * {@code "myc.org.au/twilight"} → {@code "myc.org.au--twilight"}.
      *
      * <p>Series IDs are the only ones that carry a slash, and they key files under
-     * {@code roster/} and {@code series-config/}.
+     * {@code series-config/}.
      */
     public static String sanitizeIdForFilesystem(String id)
     {

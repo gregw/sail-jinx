@@ -15,7 +15,6 @@
   <div class="toolbar">
     <label for="series-select">Series</label>
     <select id="series-select"><option value="">— all series —</option></select>
-    <a id="roster-link" href="#" style="display:none;">roster</a>
   </div>
 
   <div id="races-state" class="banner banner-info">Loading…</div>
@@ -131,9 +130,6 @@
       document.getElementById('add-panel').style.display =
         (seriesId && isAdmin()) ? '' : 'none';
     });
-    const roster = document.getElementById('roster-link');
-    roster.style.display = seriesId ? '' : 'none';
-    roster.href = '/roster.html?seriesId=' + encodeURIComponent(seriesId);
   }
 
   document.getElementById('series-select').onchange = (ev) => {

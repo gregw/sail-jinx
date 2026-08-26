@@ -37,14 +37,14 @@ public record Series(
         this(id, name, null, null, null, archived);
     }
 
-    /** What the fleet may fly, which decides the default for a roster entry. */
+    /** What the fleet may fly, which decides the default for a race entry. */
     public enum SpinnakerPolicy
     {
         /** Everyone flies one. */
         SPINNAKER,
         /** Nobody does. */
         NON_SPINNAKER,
-        /** Per boat — the roster entry decides. */
+        /** Per boat — the race entry decides. */
         MIXED;
 
         /** The spinnaker a boat entering this series defaults to, or null when it is a per-boat choice. */

@@ -15,7 +15,6 @@ import org.mortbay.sailing.jinx.model.Boat;
 import org.mortbay.sailing.jinx.model.Entrant;
 import org.mortbay.sailing.jinx.model.RaceEntrants;
 import org.mortbay.sailing.jinx.model.RaceTimes;
-import org.mortbay.sailing.jinx.model.Roster;
 import org.mortbay.sailing.jinx.model.Spinnaker;
 import org.mortbay.sailing.jinx.store.JsonStore;
 
@@ -148,17 +147,16 @@ class BoatRegistryTest
     @Test
     void anUpgradeCarriesTheBoatsHistoryWithIt() throws Exception
     {
-        // The load-bearing part: the id is in entrant lists, captured times, and rosters.
-        // Miss one and the boat's races are orphaned.
+        // The load-bearing part: the id is in entrant lists, captured times, start
+        // sheets and adjustments. Miss one and the boat's races are orphaned.
         Boat boat = add("AUS1234", "Raging Bull", null).boat();
         String oldId = boat.id();
 
         store.putEntrants(new RaceEntrants("r-1", Instant.now(),
-            RaceEntrants.TcfSource.ROSTER, null, null,
-            List.of(Entrant.fromRosterEntry(boat, new Roster.Entry(oldId, 1.0450)))));
+            RaceEntrants.TcfSource.MANUAL_EDIT, null, null,
+            List.of(Entrant.fromBoat(boat, 1.0450, null, null, Entrant.EntryType.ROSTER))));
         store.putRaceTimes("r-1", new RaceTimes("r-1", List.of(oldId), oldId,
             Map.of(oldId, new RaceTimes.BoatTimes(true, "18:00:00", "19:30:00"))));
-        store.putRoster(new Roster("s-1", List.of(new Roster.Entry(oldId, 1.0450))));
 
         String newId = add("AUS1234", "Raging Bull", "J/24").boat().id();
         assertThat(newId, not(equalTo(oldId)));
@@ -167,7 +165,6 @@ class BoatRegistryTest
         assertThat(store.raceTimes("r-1").times(), hasKey(newId));
         assertThat(store.raceTimes("r-1").boatOrder(), contains(newId));
         assertThat(store.raceTimes("r-1").dutyBoatId(), equalTo(newId));
-        assertThat(store.roster("s-1").entries().getFirst().boatId(), equalTo(newId));
         // And the finish time travelled with it, not just the key.
         assertThat(store.raceTimes("r-1").times().get(newId).finish(), equalTo("19:30:00"));
     }

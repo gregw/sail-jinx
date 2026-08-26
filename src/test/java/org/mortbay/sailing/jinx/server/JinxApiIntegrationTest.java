@@ -34,9 +34,9 @@ import static org.hamcrest.Matchers.startsWith;
  * browser does.
  *
  * <p>The point is not any single endpoint but the shape of the whole workflow
- * now that nothing external supplies data: register boats, build a roster, seed
- * entrants, compute the stagger, capture times, process handicaps, and watch
- * the new TCFs land on the next race.
+ * now that nothing external supplies data: register boats, enter them in a race,
+ * compute the stagger, capture times, process handicaps, and watch the new TCFs
+ * land on the next race — and on the one after that, by seeding.
  *
  * <p>Uses the JDK's own HTTP client. sail-jinx has no client dependency of its
  * own and must not acquire one.
@@ -153,19 +153,21 @@ class JinxApiIntegrationTest
         String boatId = createBoat("AUS9", "Quick Silver");
         String summer = createSeries("Summer");
         String winter = createSeries("Winter");
+        String summerRace = createRace(summer, "2026-01-15");
+        String winterRace = createRace(winter, "2026-06-05");
 
-        post("/api/series/" + summer + "/roster",
-            "{\"entries\":[{\"boatId\":\"" + boatId + "\",\"startingTcf\":1.0450,"
+        post("/api/races/" + summerRace + "/entrants",
+            "{\"entrants\":[{\"boatId\":\"" + boatId + "\",\"tcf\":1.0450,"
             + "\"division\":\"Div 1\",\"spinnaker\":\"S\"}]}");
-        post("/api/series/" + winter + "/roster",
-            "{\"entries\":[{\"boatId\":\"" + boatId + "\",\"startingTcf\":0.9800,"
+        post("/api/races/" + winterRace + "/entrants",
+            "{\"entrants\":[{\"boatId\":\"" + boatId + "\",\"tcf\":0.9800,"
             + "\"division\":\"Div 2\",\"spinnaker\":\"NS\"}]}");
 
-        JsonNode s = get("/api/series/" + summer + "/roster").path("entries").get(0);
-        JsonNode w = get("/api/series/" + winter + "/roster").path("entries").get(0);
+        JsonNode s = get("/api/races/" + summerRace).path("entrants").path("entrants").get(0);
+        JsonNode w = get("/api/races/" + winterRace).path("entrants").path("entrants").get(0);
 
-        assertThat(s.path("startingTcf").asDouble(), closeTo(1.0450, 1e-9));
-        assertThat(w.path("startingTcf").asDouble(), closeTo(0.9800, 1e-9));
+        assertThat(s.path("tcf").asDouble(), closeTo(1.0450, 1e-9));
+        assertThat(w.path("tcf").asDouble(), closeTo(0.9800, 1e-9));
         assertThat(s.path("division").asText(), equalTo("Div 1"));
         assertThat(w.path("division").asText(), equalTo("Div 2"));
         assertThat(s.path("spinnaker").asText(), equalTo("S"));
@@ -205,21 +207,39 @@ class JinxApiIntegrationTest
     }
 
     @Test
-    void entrantsSeedFromTheRosterOnTheFirstRace() throws Exception
+    void theFirstRaceOfASeriesHasNothingToSeedFromAndSaysSo() throws Exception
     {
+        // There is no series roster any more: the first race's fleet is typed in on the
+        // race page or imported from a fleet export. Seeding it is a no-op rather than an
+        // error, because the race page runs it unprompted on the first view of every
+        // unstarted race — a 4xx there would put a scary banner on a perfectly good race.
+        String seriesId = createSeries("2026 Winter Twilight");
+        createBoat("AUS9", "Quick Silver");
+        String raceId = createRace(seriesId, "2026-06-05");
+
+        JsonNode seeded = post("/api/races/" + raceId + "/entrants/seed", "{}");
+
+        assertThat(seeded.path("ok").asBoolean(), equalTo(true));
+        assertThat(seeded.path("added").asInt(), equalTo(0));
+        assertThat(seeded.path("entrants").path("entrants").size(), equalTo(0));
+    }
+
+    @Test
+    void theFirstRaceOfASeriesIsEnteredDirectly() throws Exception
+    {
+        // What replaced the roster. The terms of the entry — TCF, division, spinnaker —
+        // are recorded against the race, which is where they belonged all along.
         String seriesId = createSeries("2026 Winter Twilight");
         String fast = createBoat("AUS9", "Quick Silver");
         String slow = createBoat("A123", "Slow Poke");
-        putRoster(seriesId, fast, 1.0450, slow, 0.8821);
         String raceId = createRace(seriesId, "2026-06-05");
 
-        JsonNode seeded = post("/api/races/" + raceId + "/entrants/seed", "{}")
-            .path("entrants");
+        enterBoats(raceId, fast, 1.0450, slow, 0.8821);
 
-        assertThat(seeded.path("tcfSource").asText(), equalTo("ROSTER"));
-        assertThat(seeded.path("entrants").size(), equalTo(2));
-        assertThat(seeded.path("entrants").get(0).path("sailNumber").asText(), equalTo("9"));
-        assertThat(seeded.path("entrants").get(0).path("tcf").asDouble(), closeTo(1.0450, 1e-9));
+        JsonNode entrants = get("/api/races/" + raceId).path("entrants").path("entrants");
+        assertThat(entrants.size(), equalTo(2));
+        assertThat(entrants.get(0).path("sailNumber").asText(), equalTo("9"));
+        assertThat(entrants.get(0).path("tcf").asDouble(), closeTo(1.0450, 1e-9));
     }
 
     @Test
@@ -227,8 +247,9 @@ class JinxApiIntegrationTest
     {
         String seriesId = createSeries("S");
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0);
-        String raceId = createRace(seriesId, "2026-06-05");
+        String race1 = createRace(seriesId, "2026-06-05");
+        enterBoats(race1, boatId, 1.0);
+        String raceId = createRace(seriesId, "2026-06-12");
         post("/api/races/" + raceId + "/entrants/seed", "{}");
         post("/api/races/" + raceId + "/entrants",
             "{\"entrants\":[{\"boatId\":\"" + boatId + "\",\"tcf\":1.2345}]}");
@@ -236,7 +257,7 @@ class JinxApiIntegrationTest
         // Seeding again is safe rather than refused: the page now runs it on every first
         // view of an unstarted race, so it has to be a no-op when there is nothing to
         // add. The hand-typed TCF is the test of that — re-seeding over it would put the
-        // roster's 1.0 back and look like the number had never been changed.
+        // previous race's 1.0 back and look like the number had never been changed.
         JsonNode again = post("/api/races/" + raceId + "/entrants/seed", "{}");
         assertThat(again.path("added").asInt(), equalTo(0));
 
@@ -252,9 +273,8 @@ class JinxApiIntegrationTest
         String fast = createBoat("AUS9", "Quick Silver");
         String mid = createBoat("5678", "Mid Fleet");
         String slow = createBoat("A123", "Slow Poke");
-        putRoster(seriesId, fast, 1.0450, mid, 0.9450, slow, 0.8821);
         String raceId = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, fast, 1.0450, mid, 0.9450, slow, 0.8821);
 
         JsonNode sheet = post("/api/races/" + raceId + "/start-times",
             "{\"targetElapsedMinutes\":90,\"earliestStart\":\"18:00\"}").path("startSheet");
@@ -302,9 +322,8 @@ class JinxApiIntegrationTest
     {
         String seriesId = createSeries("S");
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, boatId, 1.0);
 
         post("/api/races/" + raceId + "/entrants", """
             {"entrants":[
@@ -341,10 +360,9 @@ class JinxApiIntegrationTest
         String fast = createBoat("AUS9", "Quick Silver");
         String mid = createBoat("5678", "Mid Fleet");
         String slow = createBoat("A123", "Slow Poke");
-        putRoster(seriesId, fast, 1.0, mid, 1.0, slow, 1.0);
         String race1 = createRace(seriesId, "2026-06-05");
         String race2 = createRace(seriesId, "2026-06-12");
-        post("/api/races/" + race1 + "/entrants/seed", "{}");
+        enterBoats(race1, fast, 1.0, mid, 1.0, slow, 1.0);
 
         JsonNode processed = post("/api/races/" + race1 + "/process-handicaps", """
             {"targetElapsedMinutes":90,
@@ -400,9 +418,8 @@ class JinxApiIntegrationTest
     {
         String seriesId = createSeries("S");
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, boatId, 1.0);
 
         post("/api/races/" + raceId + "/save-handicaps", """
             {"adjustments":[{"boatId":"%s","finishPosition":1,"penaltyMinutes":6.0,
@@ -430,10 +447,9 @@ class JinxApiIntegrationTest
     {
         String seriesId = createSeries("2026 Winter Twilight");
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0);
         String race1 = createRace(seriesId, "2026-06-05");
         String race2 = createRace(seriesId, "2026-06-12");
-        post("/api/races/" + race1 + "/entrants/seed", "{}");
+        enterBoats(race1, boatId, 1.0);
         post("/api/races/" + race1 + "/start-times", "{}");
 
         JsonNode bundle = get("/api/races/" + race1);
@@ -470,7 +486,7 @@ class JinxApiIntegrationTest
             .formatted(seriesId));
 
         // The id is minted from the name, so a rename would mint a different one — and
-        // every race, roster and series-config file keys off the old one. An edit keeps
+        // every race and series-config file keys off the old one. An edit keeps
         // the id it was given; that is what makes the series editable at all.
         assertThat(saved.path("series").path("id").asText(), equalTo(seriesId));
         assertThat(saved.path("series").path("name").asText(), equalTo("2026 Summer Twilight"));
@@ -519,9 +535,8 @@ class JinxApiIntegrationTest
     {
         String seriesId = createSeries("S");
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, boatId, 1.0);
         post("/api/races/" + raceId + "/save-handicaps", """
             {"adjustments":[{"boatId":"%s","finishPosition":1,"penaltyMinutes":6.0,
               "rewardMinutes":6.0,"netAdjustmentMinutes":0.0,"oldTcf":1.0,"newTcf":1.02}]}"""
@@ -562,42 +577,25 @@ class JinxApiIntegrationTest
 
         // And the override reaches the course calculator for this series' races.
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, boatId, 1.0);
         JsonNode sheet = post("/api/races/" + raceId + "/start-times", "{}").path("startSheet");
         assertThat(sheet.path("targetElapsedMinutes").asInt(), equalTo(60));
     }
 
     @Test
-    void theRosterJoinsToTheRegister() throws Exception
-    {
-        String seriesId = createSeries("S");
-        String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 0.9900);
-
-        JsonNode roster = get("/api/series/" + seriesId + "/roster");
-        assertThat(roster.path("entries").size(), equalTo(1));
-        JsonNode row = roster.path("entries").get(0);
-        assertThat(row.path("sailNumber").asText(), equalTo("9"));
-        assertThat(row.path("name").asText(), equalTo("Quick Silver"));
-        // The roster's starting TCF wins over the register's seed value.
-        assertThat(row.path("startingTcf").asDouble(), closeTo(0.9900, 1e-9));
-    }
-
-    @Test
-    void aRosterEntryWithoutATcfStartsOnScratch() throws Exception
+    void anEntrantWithoutATcfStartsOnScratch() throws Exception
     {
         // There is no "the boat's TCF" to inherit — a handicap belongs to the entry. 1.0
         // is visibly a starting point rather than a considered figure.
         String seriesId = createSeries("S");
         String boatId = createBoat("AUS9", "Quick Silver");
-        post("/api/series/" + seriesId + "/roster",
-            "{\"entries\":[{\"boatId\":\"" + boatId + "\"}]}");
+        String raceId = createRace(seriesId, "2026-06-05");
+        post("/api/races/" + raceId + "/entrants",
+            "{\"entrants\":[{\"boatId\":\"" + boatId + "\"}]}");
 
-        JsonNode roster = get("/api/series/" + seriesId + "/roster");
-        assertThat(roster.path("entries").get(0).path("startingTcf").asDouble(),
-            closeTo(1.0, 1e-9));
+        JsonNode entrants = get("/api/races/" + raceId).path("entrants").path("entrants");
+        assertThat(entrants.get(0).path("tcf").asDouble(), closeTo(1.0, 1e-9));
     }
 
     @Test
@@ -605,9 +603,8 @@ class JinxApiIntegrationTest
     {
         String seriesId = createSeries("2026 Winter Twilight");
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0450);
         String raceId = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, boatId, 1.0450);
         post("/api/races/" + raceId + "/start-times", "{}");
         post("/api/races/" + raceId + "/times", """
             {"boatOrder":["%s"],"times":{"%s":{"came":true,"actualStart":"18:00:00",
@@ -635,52 +632,50 @@ class JinxApiIntegrationTest
         // It sailed tonight and its handicap moves like anyone else's, but it turned up
         // once — seeding it would put a boat nobody expects on next week's start sheet.
         String seriesId = createSeries("Twilight");
-        String rostered = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, rostered, 1.0);
+        String seasonBoat = createBoat("AUS9", "Quick Silver");
         String race1 = createRace(seriesId, "2026-06-05");
         String race2 = createRace(seriesId, "2026-06-12");
-        post("/api/races/" + race1 + "/entrants/seed", "{}");
+        enterBoats(race1, seasonBoat, 1.0);
 
         String visitor = createBoat("MYC99", "Passing Through");
         post("/api/races/" + race1 + "/entrants", """
             {"entrants":[{"boatId":"%s","tcf":1.0,"entryType":"ROSTER"},
                          {"boatId":"%s","tcf":0.95,"entryType":"CASUAL"}]}"""
-            .formatted(rostered, visitor));
+            .formatted(seasonBoat, visitor));
         assertThat(get("/api/races/" + race1).path("entrants").path("entrants").size(),
             equalTo(2));
 
-        // Both are scored; only the roster boat is carried.
+        // Both are scored; only the season entry is carried.
         post("/api/races/" + race1 + "/save-handicaps", """
             {"adjustments":[
               {"boatId":"%s","finishPosition":1,"penaltyMinutes":6.0,"rewardMinutes":3.0,
                "netAdjustmentMinutes":3.0,"oldTcf":1.0,"newTcf":1.03},
               {"boatId":"%s","finishPosition":2,"penaltyMinutes":4.0,"rewardMinutes":7.0,
                "netAdjustmentMinutes":-3.0,"oldTcf":0.95,"newTcf":0.92}]}"""
-            .formatted(rostered, visitor));
+            .formatted(seasonBoat, visitor));
 
         JsonNode next = get("/api/races/" + race2).path("entrants").path("entrants");
         assertThat(next.size(), equalTo(1));
-        assertThat(next.get(0).path("boatId").asText(), equalTo(rostered));
+        assertThat(next.get(0).path("boatId").asText(), equalTo(seasonBoat));
     }
 
     @Test
     void aCasualIsNotCarriedBySeedingFromThePreviousRaceEither() throws Exception
     {
         String seriesId = createSeries("Twilight");
-        String rostered = createBoat("AUS9", "Quick Silver");
+        String seasonBoat = createBoat("AUS9", "Quick Silver");
         String visitor = createBoat("MYC99", "Passing Through");
-        putRoster(seriesId, rostered, 1.0);
         String race1 = createRace(seriesId, "2026-06-05");
         String race2 = createRace(seriesId, "2026-06-12");
-        post("/api/races/" + race1 + "/entrants/seed", "{}");
+        enterBoats(race1, seasonBoat, 1.0);
         post("/api/races/" + race1 + "/entrants", """
             {"entrants":[{"boatId":"%s","tcf":1.0,"entryType":"ROSTER"},
                          {"boatId":"%s","tcf":0.95,"entryType":"CASUAL"}]}"""
-            .formatted(rostered, visitor));
+            .formatted(seasonBoat, visitor));
 
         JsonNode seeded = post("/api/races/" + race2 + "/entrants/seed", "{}").path("entrants");
         assertThat(seeded.path("entrants").size(), equalTo(1));
-        assertThat(seeded.path("entrants").get(0).path("boatId").asText(), equalTo(rostered));
+        assertThat(seeded.path("entrants").get(0).path("boatId").asText(), equalTo(seasonBoat));
     }
 
     @Test
@@ -688,11 +683,10 @@ class JinxApiIntegrationTest
     {
         String seriesId = createSeries("Twilight");
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0);
         // A summer date, so there is daylight after 18:00 to be capped into. A winter
         // one has none at all and is refused instead — see the test below.
         String raceId = createRace(seriesId, "2026-01-15");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, boatId, 1.0);
 
         // Off by default: an unasked-for cap would silently shorten races.
         JsonNode uncapped = post("/api/races/" + raceId + "/start-times",
@@ -719,11 +713,10 @@ class JinxApiIntegrationTest
         // same gun. The race as described cannot be sailed, so say so.
         String seriesId = createSeries("Twilight");
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0);
         post("/api/series/" + seriesPath(seriesId) + "/config",
             "{\"limitBySunset\":true,\"latitude\":-33.8,\"longitude\":151.2833}");
         String raceId = createRace(seriesId, "2026-06-21");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, boatId, 1.0);
 
         HttpResponse<String> r = postRaw("/api/races/" + raceId + "/start-times",
             "{\"targetElapsedMinutes\":90,\"earliestStart\":\"18:00\"}");
@@ -894,9 +887,8 @@ class JinxApiIntegrationTest
     {
         String seriesId = createSeries("Twilight");
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, boatId, 1.0);
         post("/api/races/" + raceId + "/save-handicaps", """
             {"adjustments":[{"boatId":"%s","finishPosition":1,"penaltyMinutes":6.0,
               "rewardMinutes":6.0,"netAdjustmentMinutes":0.0,"oldTcf":1.0,"newTcf":1.0}]}"""
@@ -929,18 +921,23 @@ class JinxApiIntegrationTest
             .path("race").path("id").asText();
     }
 
-    /** {@code putRoster(seriesId, boatId, tcf, boatId, tcf, ...)}. */
-    private void putRoster(String seriesId, Object... boatIdsAndTcfs) throws Exception
+    /**
+     * Enter boats in a race: {@code enterBoats(raceId, boatId, tcf, boatId, tcf, ...)}.
+     *
+     * <p>This is how a fleet gets into the first race of a series now that there is no
+     * roster — the same call the race page's add-a-boat form makes.
+     */
+    private void enterBoats(String raceId, Object... boatIdsAndTcfs) throws Exception
     {
-        StringBuilder sb = new StringBuilder("{\"entries\":[");
+        StringBuilder sb = new StringBuilder("{\"entrants\":[");
         for (int i = 0; i + 1 < boatIdsAndTcfs.length; i += 2)
         {
             if (i > 0) sb.append(',');
             sb.append("{\"boatId\":\"").append(boatIdsAndTcfs[i])
-                .append("\",\"startingTcf\":").append(boatIdsAndTcfs[i + 1]).append('}');
+                .append("\",\"tcf\":").append(boatIdsAndTcfs[i + 1]).append('}');
         }
         sb.append("]}");
-        post("/api/series/" + seriesId + "/roster", sb.toString());
+        post("/api/races/" + raceId + "/entrants", sb.toString());
     }
 
     /** Series ids carry a slash; encode each segment and keep the separator. */
@@ -1003,9 +1000,8 @@ class JinxApiIntegrationTest
     {
         String seriesId = createSeries("2026 Winter Twilight");
         String boatId = createBoat("AUS9", "Quick Silver");
-        putRoster(seriesId, boatId, 1.0);
         String raceId = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, boatId, 1.0);
 
         // Came, started, never finished. The times alone say DNF; the RO says the boat
         // retired, which is a different fact about a different thing — DNF eases a
@@ -1068,9 +1064,8 @@ class JinxApiIntegrationTest
         String seriesId = createSeries("2026 Winter Twilight");
         String fast = createBoat("AUS9", "Quick Silver");
         String slow = createBoat("A123", "Slow Poke");
-        putRoster(seriesId, fast, 1.0450, slow, 0.8821);
         String raceId = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + raceId + "/entrants/seed", "{}");
+        enterBoats(raceId, fast, 1.0450, slow, 0.8821);
 
         // What the page sends when Abandon Race is pressed: every boat ABN. One of them
         // has a finish time, because a race is usually called off with boats already
@@ -1098,10 +1093,9 @@ class JinxApiIntegrationTest
         String seriesId = createSeries("2026 Winter Twilight");
         String fast = createBoat("AUS9", "Quick Silver");
         String slow = createBoat("A123", "Slow Poke");
-        putRoster(seriesId, fast, 1.0450, slow, 0.8821);
 
         String race1 = createRace(seriesId, "2026-06-05");
-        post("/api/races/" + race1 + "/entrants/seed", "{}");
+        enterBoats(race1, fast, 1.0450, slow, 0.8821);
         // A casual turns up to race 1. It sailed, so it is scored — but it is nobody's
         // expectation for next week.
         String casual = createBoat("MYC7", "Just Visiting");
@@ -1110,7 +1104,7 @@ class JinxApiIntegrationTest
                          {"boatId":"%s","tcf":1.0,"entryType":"CASUAL"}]}"""
             .formatted(fast, slow, casual));
 
-        // Race 2 already has one of the two roster boats — somebody added it by hand.
+        // Race 2 already has one of the two boats — somebody added it by hand.
         String race2 = createRace(seriesId, "2026-06-12");
         post("/api/races/" + race2 + "/entrants",
             "{\"entrants\":[{\"boatId\":\"" + fast + "\",\"tcf\":1.1111}]}");

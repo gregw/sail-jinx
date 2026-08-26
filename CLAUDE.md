@@ -325,8 +325,8 @@ Things that catch people out:
 - **A design is part of the boat's ID.** A boat imported without one is
   `A123-slowpoke`; when a later import supplies the design it is *upgraded* to
   `A123-slowpoke-sydney38` and `JsonStore.rewriteBoatId` moves every reference —
-  entrants, captured times, start sheets, adjustments, rosters. Miss one and a
-  race is orphaned.
+  entrants, captured times, start sheets, adjustments. Miss one and a race is
+  orphaned.
 - **`- GM` / `- U18` suffixes are stripped**, so `Foobar - GM` and `Foobar` are
   one boat. `Sticky`, `Sticky 2` and `Sticky II` collapse too, under the same
   sail number.
@@ -358,7 +358,6 @@ projects, not just a local regression.
 | `boats.json` | the fleet register: identity only — sail number, name, design |
 | `designs.json` | hull types, learned from boat entry |
 | `series.json`, `races.json` | seasons and race dates |
-| `roster/{seriesId}.json` | who is in for the season, **and the terms they enter on** |
 | `entrants/{raceId}.json` | who is in this race **and the TCF it was sailed on** |
 | `start-sheet/{raceId}.json` | the published stagger |
 | `race-times/{raceId}.json` | came / actual start / finish as typed, **and the flags the RO overrode** |
@@ -368,14 +367,14 @@ projects, not just a local regression.
 ### What belongs to a boat, and what does not
 
 **TCF, division and spinnaker are not properties of a boat.** A boat does not have
-a handicap — it has one *for a given series*, and a different one by the end of
-it. It can sail one season in Division 1 and the next in Division 2, and enter
-one series with a kite and one without.
+a handicap — it has one *for a given race*, and a different one the week after.
+It can sail one season in Division 1 and the next in Division 2, and enter one
+series with a kite and one without. **`Entrant` is the only place they live**;
+there is no series-level copy, which is what the roster used to be.
 
 | Lives on | Holds |
 |---|---|
 | `Boat` | sail number, name, design, active, casual, notes |
-| `Roster.Entry` | starting TCF, division, spinnaker — the terms of a **series** entry |
 | `Entrant` | the TCF actually in force for a **race**, plus division and spinnaker |
 | `Design` | `noSpinnaker` — a cat rig genuinely cannot fly one; that *is* a hull fact |
 
@@ -481,18 +480,35 @@ answers:
   ROSTER.** A casual turned up once, and a boat nobody expects appearing on a
   printed start sheet costs more than the two clicks to add it again.
 
+`EntryType.ROSTER` means "in for the season" and is **not** a reference to the
+series roster, which is gone. The name is stored in every entrant file, so it stays.
+
 **Seeding is additive, and it runs itself.** `POST /api/races/{id}/entrants/seed` adds
 the boats missing from this race and leaves the ones already in it exactly as they are —
 a TCF somebody typed by hand is a decision, and re-seeding over it would quietly undo
 it. It used to refuse outright once a race had anybody in it, which left it useful for
 one moment in a race's life and made "a boat joined the series" a per-race chore.
 
+**It seeds from the previous race, and nothing else.** The first race of a series has
+nothing to carry forward, so it seeds nothing and says `added: 0` — a success, not an
+error, because the race page calls it unprompted. Its fleet is entered directly: the
+add-a-boat form, or `POST /api/races/{id}/entrants/import`, which brings TCFs with it.
+
+**There is no series roster, deliberately.** There was one — `roster/{seriesId}.json`,
+a page, and two endpoints — holding a starting TCF, division and spinnaker per boat per
+season. It was a second place to record the same fleet, and the facts it held are
+per-race ones: a boat's handicap changes every week, so a "starting TCF" was only ever
+true for race 1, and it drifted out of agreement with the entrant lists that were doing
+the real work. Re-adding it would reintroduce that disagreement. `TcfSource.ROSTER`
+survives as a legacy enum constant because the club's early entrant files say it, and
+`anEntrantListWrittenWhenTheRosterExistedStillLoads` pins that they still load.
+
 The race page runs it on the **first view of the page**, when an admin is looking, the
 start sheet is not published, and the results are not locked. Once per page load, not
 once per `load()` — that runs again after every save and every process, and re-seeding
 there would put back a boat somebody had just deliberately removed. It replaced a Seed
-entrants button that did nothing visible when the roster was empty: seeding zero boats
-onto zero boats looks exactly like a dead button.
+entrants button that did nothing visible when there was nothing to seed from: seeding
+zero boats onto zero boats looks exactly like a dead button.
 
 TCFs are held to four decimal places (`model/Tcf.java`), rounded half-up, at
 every point one is recorded. They get read aloud and retyped; a value that
@@ -510,7 +526,7 @@ for the full list. The shape worth knowing:
 | GET | `/api/races/{id}` | **everything the race page needs, in one call** |
 | POST | `/api/boats/import` | load the fleet from a sailing-pf export (`?dryRun=true` previews) |
 | POST | `/api/races/{id}/entrants/import` | add entrants from the same export, with TCFs |
-| POST | `/api/races/{id}/entrants/seed` | add the boats this race is missing, from the roster or the previous race |
+| POST | `/api/races/{id}/entrants/seed` | add the boats this race is missing, from the previous race |
 | POST | `/api/races/{id}/abandon` | call a race off, or put it back on |
 | POST | `/api/races/{id}/start-times` | compute and publish the stagger (applies the sunset cap) |
 | POST | `/api/races/{id}/process-handicaps` | run the engine (computes, saves nothing) |
@@ -531,7 +547,7 @@ no outbound call — exactly what the server did before a login existed.
 |---|---|---|
 | `VIEWER` | anybody, signed in or not | read every page and every GET **except `/api/audit`** |
 | `RACE_OFFICER` | a club-domain account | run a race night: times, start sheet, handicaps, unlock, and editing an entrant's TCF, division or casual flag |
-| `ADMIN` | listed in `admins:` | series, races, roster, series config, the fleet register, and which boats are in a race at all |
+| `ADMIN` | listed in `admins:` | series, races, series config, the fleet register, and which boats are in a race at all |
 
 **The audit log is the one exception to "every GET answers anybody".** It is not a
 result: it records who changed what, and since it started naming them, publishing it
@@ -698,7 +714,7 @@ Two things that will bite on that deployment specifically:
 ## Testing
 
 ```bash
-mvn test        # 169 tests, offline
+mvn test        # 245 tests, offline
 ```
 
 - `JsonStoreTest` — round-trips, atomicity, journalling, corrupt-file recovery.

@@ -30,7 +30,12 @@ public record RaceEntrants(
     /** Where this race's TCFs came from. */
     public enum TcfSource
     {
-        /** Seeded from the series roster — the first race of a series. */
+        /**
+         * Legacy. Written when a series roster seeded the first race of a series; the
+         * roster is gone and nothing produces this any more. The constant stays because
+         * entrant files written before it went carry the value, and Jackson has to be
+         * able to read the club's store.
+         */
         ROSTER,
         /** Produced by processing the handicaps of {@code sourceRaceId}. */
         CARRIED_FORWARD,

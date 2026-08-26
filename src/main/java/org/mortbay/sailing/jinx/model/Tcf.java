@@ -18,8 +18,8 @@ import java.math.RoundingMode;
  * that now, and truncating on every race would walk the whole fleet's handicaps
  * gently downward across a season.
  *
- * <p>Quantising happens in the compact constructors of {@link Boat},
- * {@link Entrant} and {@link Roster.Entry}, so a TCF is rounded once, at the
+ * <p>Quantising happens in the compact constructors of {@link Boat} and
+ * {@link Entrant}, so a TCF is rounded once, at the
  * point it is recorded, on every path in and out of the store — including
  * deserialisation of files written before this rule existed. The handicap
  * engine still works in full precision internally; only what gets stored and

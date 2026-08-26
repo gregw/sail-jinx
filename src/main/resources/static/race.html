@@ -417,7 +417,7 @@ for."><input type="checkbox" id="allow-remove">
       } },
     { key: 'spin', label: 'Spin',
       // Display only: the Jinx handicap does not separate spinnaker from non-spinnaker
-      // boats, the TCF absorbs it. Set on the roster, or by the JSON import.
+      // boats, the TCF absorbs it. Set here, or by the JSON import.
       get: e => e.spinnaker || '',
       render: e => e.spinnaker
         ? esc(e.spinnaker)
@@ -2178,10 +2178,13 @@ for."><input type="checkbox" id="allow-remove">
    * Fill in the boats this race is missing, without being asked.
    *
    * <p>This was a Seed entrants button, offered when a race had nobody in it. Two things
-   * were wrong with it. It did nothing visible when the roster was empty — seeding zero
-   * boats onto zero boats looks identical to a dead button — and it was only ever
-   * offered on an empty race, so a boat that joined the series after this race's list
+   * were wrong with it. It did nothing visible when there was nothing to seed from —
+   * seeding zero boats onto zero boats looks identical to a dead button — and it was only
+   * ever offered on an empty race, so a boat that joined the series after this race's list
    * was built had to be added to every remaining race by hand.
+   *
+   * <p>The first race of a series has no previous race and so seeds nothing: its fleet is
+   * typed in below or imported. That is the case the dead button looked worst on.
    *
    * <p>So it runs by itself, on the first view of the page, under three conditions:
    * an admin is looking (the endpoint is an admin's, and it decides who is in a race);

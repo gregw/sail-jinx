@@ -431,8 +431,8 @@ class AuthIntegrationTest
             "{\"times\":{}}"), is(200));
 
         // But not who is in the race. Registering a boat, seeding the entrants from the
-        // roster, importing them, and adding or removing one by hand are all the same
-        // question — which boats this race is scored over — and it is the admin's.
+        // previous race, importing them, and adding or removing one by hand are all the
+        // same question — which boats this race is scored over — and it is the admin's.
         assertThat(postAs(officer, "/api/boats",
             "{\"sailNumber\":\"AUS9\",\"name\":\"Quick Silver\"}"), is(403));
         assertThat(postAs(officer, "/api/races/" + raceId + "/entrants/seed", "{}"),
@@ -445,8 +445,6 @@ class AuthIntegrationTest
         assertThat(postAs(officer, "/api/series", "{\"name\":\"2027 Winter\"}"), is(403));
         assertThat(postAs(officer, "/api/races",
             "{\"seriesId\":\"" + seriesId + "\",\"date\":\"2026-06-12\"}"), is(403));
-        assertThat(postAs(officer, "/api/series/" + seriesId + "/roster",
-            "{\"entries\":[]}"), is(403));
     }
 
     @Test

@@ -96,8 +96,8 @@ public class BoatRegistry
      * A boat's identity as typed, before any normalisation.
      *
      * <p>Only what belongs to the hull. TCF, division and spinnaker are terms of a
-     * series entry, not facts about a boat, so they are not here — a caller importing a
-     * fleet list applies those to the roster itself. See {@link Boat}.
+     * race entry, not facts about a boat, so they are not here — a caller importing a
+     * fleet list applies those to the entrant list itself. See {@link Boat}.
      */
     public record RawBoat(
         String sailNumber,

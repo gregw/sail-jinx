@@ -13,10 +13,11 @@ adjusts every boat's handicap for next week.
 
 It has two layers:
 
-- A **race-officer UI**. Enter the fleet once, build a season roster, add the
-  race dates. On the night: seed the entrants, compute and print the start
-  sheet, then capture came / actual-start / finish / flags as boats cross —
-  with NOW buttons for live timing, drag-to-reorder, filters, and a duty boat.
+- A **race-officer UI**. Enter the fleet once and add the race dates. Enter the
+  boats in the first race; every race after it seeds itself from the one before.
+  On the night: compute and print the start sheet, then capture came /
+  actual-start / finish / flags as boats cross — with NOW buttons for live
+  timing, drag-to-reorder, filters, and a duty boat.
 
 - The **Jinx handicap algorithm**. After the race, fixed penalties are applied
   to the place-getters and the whole pool is redistributed across the fleet,
@@ -83,7 +84,7 @@ timezone, the handicap algorithm defaults, and the port. Everything else is
 entered through the UI.
 
 Open <http://localhost:8080/> and work through: **Boats** → **Series** →
-roster → **Races**.
+**Races** → open the first race and enter its fleet.
 
 The fleet can be entered a boat at a time or loaded from a
 [sailing-pf](https://github.com/gregw/sailing-pf) handicap export
@@ -178,8 +179,8 @@ A boat's record holds only what is true of the hull: what it is called, what is
 on its sail, and what it was built as. **Handicap, division and spinnaker are
 not there** — a boat does not have a TCF, it has one for a given series and a
 different one by the end of it, and the same hull can sail one season in
-Division 1 with a kite and the next in Division 2 without. Those are set on a
-series roster, which is also where a fleet list's TCF column lands.
+Division 1 with a kite and the next in Division 2 without. Those are set on the
+race entry, which is also where a fleet list's TCF column lands.
 
 Boats are identified the same way as in
 [sailing-pf](https://github.com/gregw/sailing-pf), which analyses this fleet's
