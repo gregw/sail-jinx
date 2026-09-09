@@ -28,20 +28,20 @@ import static org.hamcrest.Matchers.hasSize;
 class PursuitHandicapEngineTest
 {
     private static final JinxConfig.Algorithm DEFAULT_ALG = new JinxConfig.Algorithm(
-        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 1, "18:00", -33.8000, 151.2833, false,
-        null, null, null, null);
+        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, "18:00", -33.8000, 151.2833, false,
+        null, null, null, null, null);
 
     private static final double TOLERANCE = 0.01;
 
-    /** The default the club gets when it says nothing: C — per-hour penalties, even giveback. */
+    /** The default the club gets when it says nothing: A — fixed penalties, even giveback. */
     private final PursuitHandicapEngine engine = new PursuitHandicapEngine(DEFAULT_ALG);
 
     /** A corner of the square this file needs by name rather than by default. */
     private static PursuitHandicapEngine engine(JinxConfig.PenaltyScaling scaling, double gamma)
     {
         return new PursuitHandicapEngine(new JinxConfig.Algorithm(
-            List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, 1, "18:00", -33.8000, 151.2833, false,
-            null, scaling, gamma, null));
+            List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, "18:00", -33.8000, 151.2833, false,
+            null, scaling, gamma, null, null));
     }
 
     /** The pair the engine works on: an id to key the answer by, and the TCF in force. */
@@ -122,6 +122,15 @@ class PursuitHandicapEngineTest
      * — the property the blend exists for. Under the exponent form it would have been
      * zero here, and zero at γ = 0.01 too.
      */
+    /**
+     * An intermediate γ is genuinely intermediate, read off the boats that may receive.
+     *
+     * <p>It used to be read off the winner, whose share fell from an even split to
+     * nothing as the dial turned. The winner is on the ladder and draws nothing at every
+     * γ now, so that reading has become constant — the dial is visible between 6th and
+     * 7th instead, where at γ = 0 they draw the same and at γ = 1 they draw in the ratio
+     * of {@code 1 + gap/maxGap}.
+     */
     @Test
     void anIntermediateGammaIsHalfEvenAndHalfGapWeighted()
     {
@@ -129,21 +138,26 @@ class PursuitHandicapEngineTest
         Race race = race(90);
         Map<String, Result> results = workedExampleResults();
 
-        Adjustment first = engine(JinxConfig.PenaltyScaling.FIXED, 0.5)
-            .processResults(boats, race, results).stream()
-            .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
-            .findFirst().orElseThrow();
+        for (double gamma : new double[] {0.0, 0.5, 1.0})
+        {
+            Map<String, Adjustment> byId = engine(JinxConfig.PenaltyScaling.FIXED, gamma)
+                .processResults(boats, race, results).stream()
+                .collect(Collectors.toMap(Adjustment::boatId, a -> a));
 
-        assertThat(first.penaltyMinutes(), closeTo(5.0, TOLERANCE));
-        assertThat(first.rewardMinutes(), closeTo(0.9375, TOLERANCE));
-        assertThat(first.netAdjustmentMinutes(), closeTo(4.0625, TOLERANCE));
+            // The five on the ladder draw nothing, whatever γ says.
+            for (String id : List.of("p1", "p2", "p3", "p4", "p5"))
+                assertThat("γ=" + gamma + " " + id, byId.get(id).rewardMinutes(),
+                    closeTo(0.0, 1e-12));
 
-        // Exactly half of the even share it would get at γ = 0.
-        Adjustment even = engine(JinxConfig.PenaltyScaling.FIXED, 0.0)
-            .processResults(boats, race, results).stream()
-            .filter(a -> a.finishPosition() != null && a.finishPosition() == 1)
-            .findFirst().orElseThrow();
-        assertThat(first.rewardMinutes(), closeTo(even.rewardMinutes() / 2.0, TOLERANCE));
+            // The fleet finishes five minutes apart, so 6th and 7th are 25 and 30
+            // minutes behind the leader and 30 is the widest gap among the eligible.
+            // Their raw weights are 1 + γ·25/30 and 1 + γ·30/30, and the ratio between
+            // them is the whole of what γ decides.
+            double sixth = byId.get("p6").rewardMinutes();
+            double seventh = byId.get("p7").rewardMinutes();
+            assertThat("γ=" + gamma, seventh / sixth,
+                closeTo((1.0 + gamma) / (1.0 + gamma * 25.0 / 30.0), 1e-9));
+        }
     }
 
     /**
@@ -331,15 +345,27 @@ class PursuitHandicapEngineTest
         List<Competitor> boats = List.of(
             boat("a", "A", "1", 1.0),
             boat("b", "B", "2", 1.0),
-            boat("c", "C", "3", 1.0));
+            boat("c", "C", "3", 1.0),
+            boat("away", "Away", "4", 1.0));
         Race race = race(60);
         LocalTime start = LocalTime.of(18, 0);
+        // "away" is on the entry list and never came. It is here because the pool has to
+        // have somewhere to go: with a five-rung ladder and two finishers, every boat
+        // that raced is penalised, nobody may receive, and the engine charges nothing at
+        // all. See HandicapVariantTest.aFleetNoBiggerThanThePenaltyListIsChargedNothing.
         Map<String, Result> results = Map.of(
             "a", fin("a", start, start.plusMinutes(55)),
             "b", fin("b", start, start.plusMinutes(65)),
-            "c", new Result("c", FinishStatus.DSQ, start, null, null));
+            "c", new Result("c", FinishStatus.DSQ, start, null, null),
+            "away", new Result("away", FinishStatus.DNC, null, null, null));
 
-        Map<String, Adjustment> byId = engine.processResults(boats, race, results).stream()
+        // A one-rung ladder, sized to a fleet this small: only the winner pays, so "b"
+        // is a boat that may receive and the direction of its correction is visible.
+        // With the club's five-rung list both finishers would be on the ladder.
+        PursuitHandicapEngine oneRung = new PursuitHandicapEngine(new JinxConfig.Algorithm(
+            List.of(5.0), 90, "18:00", -33.8000, 151.2833, false,
+            null, JinxConfig.PenaltyScaling.FIXED, 0.0, null, null));
+        Map<String, Adjustment> byId = oneRung.processResults(boats, race, results).stream()
             .collect(Collectors.toMap(Adjustment::boatId, a -> a));
 
         assertThat(byId.get("a").newTcf() > byId.get("a").oldTcf(), equalTo(true));
@@ -361,15 +387,19 @@ class PursuitHandicapEngineTest
         List<Competitor> boats = List.of(
             boat("first",  "First",  "1", 1.0),
             boat("ocs",    "OcsBoat", "2", 1.0),
-            boat("third",  "Third",  "3", 1.0));
+            boat("third",  "Third",  "3", 1.0),
+            boat("away",   "Away",   "4", 1.0));
         Race race = race(60);
         LocalTime start = LocalTime.of(18, 0);
         // OCS boat sailed for 40 min (shortest raw elapsed) but finished 3rd
         // officially. The official 1st-place boat sailed for 50 min.
+        // "away" never came, and is here so the pool has somewhere to go: three
+        // finishers against a five-rung ladder leaves nobody who may receive.
         Map<String, Result> results = Map.of(
             "first", new Result("first", FinishStatus.FIN, start, start.plusMinutes(50), null, 1),
             "ocs",   new Result("ocs",   FinishStatus.FIN, start, start.plusMinutes(40), null, 3),
-            "third", new Result("third", FinishStatus.FIN, start, start.plusMinutes(60), null, 2));
+            "third", new Result("third", FinishStatus.FIN, start, start.plusMinutes(60), null, 2),
+            "away",  new Result("away",  FinishStatus.DNC, null, null, null));
 
         // Fixed scaling, so the ladder reads as the plain figures from penaltyList and
         // the test stays about which boat gets which rung.

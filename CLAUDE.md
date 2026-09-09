@@ -157,12 +157,12 @@ rather than approximating it.
 
 | Variant | `penaltyScaling` | `givebackGamma` |
 |---|---|---|
-| A | `fixed` | 0.0 |
-| **B** | `fixed` | **1.0** — the default |
+| **A** | `fixed` | **0.0** — the default |
+| B | `fixed` | 1.0 |
 | C | `perHour` | 0.0 |
 | D | `perHour` | 1.0 |
 
-`variant: B` is shorthand for setting both. Either knob may be set alone; an
+`variant: A` is shorthand for setting both. Either knob may be set alone; an
 explicit knob beats a variant that contradicts it, with a warning. `givebackGamma`
 is continuous, so the letters are corners of a square, not a menu — 0.35 is a real
 setting.
@@ -172,42 +172,101 @@ named combinations rather than explaining them, and a club reading "variant C" c
 tell what it has chosen. The key is still read, so config files written against it keep
 working; the form shows and sends the two knobs.
 
-**γ shares the pool by the finish gap, not by elapsed time.** At γ = 1 a boat's
-share is proportional to how far behind the leader it finished, so the first boat
-home gets nothing back and a boat ten minutes back gets twice one five minutes
-back. Elapsed was the old measure and was close to meaningless here: the stagger
-makes `elapsed = gap + τ + constant` where τ depends only on a boat's rating, and τ
-spreads further across a fleet than a night's finishing does — so it mostly rewarded
-low-rated boats for being low-rated.
+### The giveback comes back to the entry list, not to the starters
 
-Two things about that which look like mistakes and are not:
+**This is the 2026 change and the one to understand.** The pool of penalty minutes is
+shared over **everybody entered in the race**, by weights counted in *ordinary
+finishers* — one boat that got round and was not on the penalty ladder:
 
-- **The weight is a linear blend, `(1−γ)·mean(gap) + γ·gap`, not `gap^γ`.** The
-  exponent has a cliff at the origin: `0^γ` is zero for every γ above zero, so the
-  leader would drop from a full even share to nothing the instant the dial left 0.
-  The blend agrees with the exponent at both ends and moves smoothly between them.
-- **Measuring from the leader is safe here even though the spec once forbade it.**
-  The old draft anchored on the winner in *elapsed* terms, which can go negative when
-  a slow-rated boat wins. A finish gap cannot: the first boat home is the minimum by
-  definition.
+| Who | Weight |
+|---|---|
+| a boat in a penalty place | `0` |
+| any other finisher | `1 + γ·gap/maxGap` — just `1` at the default γ = 0 |
+| DNF | the last finisher's weight + (`dnfWeight` − 1), i.e. + 0.2 |
+| DNC | `dncWeight` (0.2) × (stayed home / entered) |
+| RET, DSQ, DNS, ABN | `0` — frozen |
+
+It used to go to the boats that *raced*, which divided a fixed pool by a varying fleet,
+so a boat's gain went as **1/turnout**. Thirty out and the fifteen minutes spread thirty
+ways; five out on a filthy night and the same fifteen came straight back to the five that
+had just been charged them — the boat finishing **last of five** collected six minutes
+against a one-minute penalty, a better handicap outcome than winning, while the
+twenty-five at home did not move. `GivebackWeightsTest` is the executable spec.
+
+Four things about it that look wrong and are not:
+
+- **A penalty place draws nothing, at every γ.** The ladder is the club's statement of
+  what a good result costs; handing part of it back in the same breath makes the printed
+  5, 4, 3, 2, 1 a fiction. This also replaced γ = 1's one real job — stopping the winner
+  drawing its own penalty back — and does it for *every* penalised place rather than only
+  the one whose gap happened to be zero. **That is why the default moved from B to A.**
+- **A non-starter's weight rises as the fleet empties.** `d/N` is the share of the entry
+  list that stayed home. On a full night the two or three absentees are worth almost
+  nothing; on a thin one most of the pool leaves the racing fleet, which is the point —
+  five boats out of thirty all took a good result off a night the rest sat out. The
+  product is bounded by one, so **absence is never worth more than racing**.
+- **It is a de facto scaling of the penalties, deliberately placed here.** If the boats
+  at home take a third of the pool then a five-minute penalty is worth 3:20 to the racing
+  fleet — but the headline stays five minutes and nobody explains a fraction on a start
+  sheet. Scaling `penaltyList` by turnout is the same arithmetic and unreadable: "first
+  place, 0.83 minutes".
+- **γ gives an extra boat for how far behind a boat was.** The weight is
+  `1 + γ·gap/maxGap`, not the bare gap: one boat for getting round, up to one more for how
+  far behind. `dnfWeight` and `dncWeight` do not scale with it, so turning γ up moves the
+  pool towards the boats that got round. **These weights are deliberately not
+  normalised** — a version that divided the finishers through by their own mean left them
+  holding the same total weight at every γ, so the dial only reshuffled the pool among them
+  and never shifted any of it their way. It survived the whole suite because every γ test
+  compared two finishers with each other, and a ratio cannot see a factor common to both.
+  Gap, not elapsed: the
+  stagger makes `elapsed = gap + τ + constant` where τ depends only on rating, and τ
+  spreads further than a night's finishing does. Anchoring at the leader is safe in
+  *finish* terms — the first boat home is the minimum by definition — where the old
+  elapsed anchor went negative whenever a slow-rated boat won.
+
+**Nobody may receive ⇒ nothing is charged.** Every boat that raced on the ladder, no DNF,
+nobody at home: `Σw = 0`, and the engine charges no penalty rather than keeping the pool.
+That is a fleet no bigger than `penaltyList` — one boat alone, or a five-boat series on
+`[5,4,3,2,1]`. **The answer is a shorter ladder, about one rung per six boats**, and the
+series settings screen says what fleet a list suits. It is *series* size, not turnout: a
+thirty-boat series keeps `[5,4,3,2,1]` on a six-boat night because the absentees absorb
+the pool.
 
 **DNF and RET are handicapped differently, and used to be identical.** DNF means the
 boat was still racing when the race ended — it ran out of time, which is about its
 speed, so its handicap eases. RET means it stopped for a reason of its own (gear,
 injury, somewhere to be), which says nothing about its speed, so it is **frozen**
-alongside DSQ/DNC/DNS and takes no part in the arithmetic. Easing a retirement's
+alongside DSQ/DNS/ABN and takes no part in the arithmetic. Easing a retirement's
 handicap would reward a bad night with a better start, and a boat that retired often
 would ratchet down the fleet without ever sailing a race. Both halves are pinned by
 tests; do not re-merge the two cases.
 
-A DNF is scored at the last finisher plus `dnfAllowance`, so it draws the largest
-single share — intended, since a boat that did not finish is the one whose
-handicap should ease most. **`dnfAllowance` defaults to 1 minute, not 5**, because
-the knob does two jobs on very different scales: against a 90-minute elapsed time
-five minutes is a nudge, against a ten-minute fleet spread it is larger than the
-spread itself. At 5 a retirement took 37.5% of the pool (1.5× the last boat home);
-at 1 it takes 30.6% (1.1×). `retirementsDrawTheLargestShareAndThisIsHowLarge` pins
-those numbers so the tradeoff stays visible.
+A DNF draws the largest single share at **every** γ — it is scored at **what the last boat
+home draws, plus `dnfWeight − 1`**, a constant 0.2 above the furthest-behind finisher.
+Intended: a boat that could not get round in the time is the one whose handicap should ease
+most.
+
+**Additive, not multiplicative, and that is load-bearing.** Two readings were tried and each
+broke one of two properties that pull against each other:
+
+| reading | retirement always draws most | γ's bonus reaches the finishers |
+|---|---|---|
+| flat `1.2` | no — overtaken at about γ = 0.2 | yes |
+| `1.2 × lastHome` | yes | no — their total goes flat |
+| **`lastHome + 0.2`** | **yes** | **yes** |
+
+All three are the same number at the club's γ = 0, so this only bites a club that turns the
+dial up. `aRetirementOutdrawsEveryFinisherAtEveryGamma` and
+`theProportionalWeightingMovesThePoolTowardsTheBoatsThatRaced` are the two tests, and each
+rejected reading fails one of them — do not "simplify" this back.
+
+**Said as a weight, because `dnfAllowance` said it as a distance and retired.** Scoring a
+DNF at the last finisher plus so many minutes made what it actually drew depend on how
+spread out the fleet was that night — five minutes was a nudge against a 90-minute race
+and larger than the whole spread against a ten-minute finish, which is why the value had
+to come down to 1 and why the right setting was never obvious. A weight has no scale in
+it. Its other job was already dead: a DNF pays no penalty, so its elapsed never sized
+anything. `aBoatThatRanOutOfTimeDrawsTheLargestShareAndThisIsHowLarge` pins it.
 
 Three things it is easy to get wrong here:
 
@@ -263,18 +322,13 @@ night is exactly when there are enough of them to drag the median up. This was a
 indefensible and a setting with one defensible value is not a setting. Old config files
 carrying the key still load — unknown properties are ignored.
 
-**`givebackFleet` decides who the pool comes back to**, as a share counted from the back:
-`1.0` the whole fleet, `0.33` the bottom third, `0` nobody. "The back" is by **finish
-gap**, the same quantity the weighting shares by — not by elapsed, which in a pursuit
-race mostly measures a boat's rating, so the bottom third by elapsed would be the third
-with the earliest guns. The count rounds to the nearest boat, and ties at the cut break
-by finish order.
-
-**At `0` the pool is kept, and `Σ net = pool` rather than zero.** That is the one setting
-that deliberately breaks conservation, and it is a real choice: a club can penalise the
-place-getters without compensating anybody. Below about a third a small fleet rounds to
-very few boats or to none, which the arithmetic cannot know in advance — the series form
-warns instead.
+**`givebackFleet` retired too.** It aimed the pool at the back of the fleet as a share
+counted by finish gap. Weight zero on the penalty places is that idea stated exactly
+rather than as a fraction, and the pool now reaches boats with no finish gap to be counted
+by, so the setting has no well-defined meaning. Old `config.yaml` and saved
+`series-config/*.json` carrying either retired key still load — `Algorithm` carries its
+own `@JsonIgnoreProperties`, **not** just the YAML mapper's setting, because a series
+override comes back through the servlet's mapper, which does not disable the check.
 
 ### The corrected/scored distinction
 
@@ -739,7 +793,7 @@ Two things that will bite on that deployment specifically:
 ## Testing
 
 ```bash
-mvn test        # 254 tests, offline
+mvn test        # 264 tests, offline
 ```
 
 - `JsonStoreTest` — round-trips, atomicity, journalling, corrupt-file recovery.
@@ -748,6 +802,9 @@ mvn test        # 254 tests, offline
   workflow.
 - `PursuitHandicapEngineTest` — executable spec for the algorithm, mapped to
   wiki sections.
+- `GivebackWeightsTest` — the giveback as weights over the entry list, including
+  two rows checked straight off the committee's spreadsheet. If a change moves those
+  numbers, the model is what has to move first.
 - `BoatRegistryTest`, `AliasesTest`, `DesignCatalogueTest` — identity and
   matching, including the design upgrade and its reference rewriting.
 - `SailingPfCompatibilityTest` — the cross-project contract described above.

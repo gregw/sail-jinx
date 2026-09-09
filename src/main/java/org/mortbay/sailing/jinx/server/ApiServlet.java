@@ -1661,9 +1661,9 @@ public class ApiServlet extends HttpServlet
         m.put("defaultRaceDuration", a.defaultRaceDuration());
         m.put("penaltyScaling", a.penaltyScaling().name());
         m.put("givebackGamma", a.givebackGamma());
-        m.put("givebackFleet", a.givebackFleet());
         m.put("variant", a.asVariant().map(Enum::name).orElse(null));
-        m.put("dnfAllowance", a.dnfAllowance());
+        m.put("dnfWeight", a.dnfWeight());
+        m.put("dncWeight", a.dncWeight());
         m.put("earliestStart", a.earliestStart());
         m.put("latitude", a.latitude());
         m.put("longitude", a.longitude());

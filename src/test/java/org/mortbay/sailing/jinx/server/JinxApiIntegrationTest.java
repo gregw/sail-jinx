@@ -360,25 +360,31 @@ class JinxApiIntegrationTest
         String fast = createBoat("AUS9", "Quick Silver");
         String mid = createBoat("5678", "Mid Fleet");
         String slow = createBoat("A123", "Slow Poke");
+        // Entered for the season and not there on the night. It is what the pool comes
+        // back to: this club's penaltyList is [6,4,2] and three boats finished, so
+        // without a boat at home every starter would be on the ladder, nobody could
+        // receive, and the engine would charge nothing at all.
+        String absent = createBoat("A7", "Stayed Home");
         String race1 = createRace(seriesId, "2026-06-05");
         String race2 = createRace(seriesId, "2026-06-12");
-        enterBoats(race1, fast, 1.0, mid, 1.0, slow, 1.0);
+        enterBoats(race1, fast, 1.0, mid, 1.0, slow, 1.0, absent, 1.0);
 
         JsonNode processed = post("/api/races/" + race1 + "/process-handicaps", """
             {"targetElapsedMinutes":90,
              "boats":[
                {"boatId":"%s","currentTcf":1.0,"status":"FIN","elapsedMinutes":88.0,"finishPosition":1},
                {"boatId":"%s","currentTcf":1.0,"status":"FIN","elapsedMinutes":92.0,"finishPosition":2},
-               {"boatId":"%s","currentTcf":1.0,"status":"FIN","elapsedMinutes":96.0,"finishPosition":3}
-             ]}""".formatted(fast, mid, slow));
+               {"boatId":"%s","currentTcf":1.0,"status":"FIN","elapsedMinutes":96.0,"finishPosition":3},
+               {"boatId":"%s","currentTcf":1.0,"status":"DNC"}
+             ]}""".formatted(fast, mid, slow, absent));
 
         JsonNode adjustments = processed.path("adjustments");
-        assertThat(adjustments.size(), equalTo(3));
+        assertThat(adjustments.size(), equalTo(4));
         // The winner is penalised, so its TCF rises and it starts later next time.
         JsonNode winner = adjustments.get(0);
         assertThat(winner.path("boatId").asText(), equalTo(fast));
-        // Variant B's penalties are fixed, so this is the penaltyList entry itself —
-        // under a per-hour scaling it would be 6.0 x this boat's own elapsed / 60.
+        // The default variant's penalties are fixed, so this is the penaltyList entry
+        // itself — under a per-hour scaling it would be 6.0 x this boat's own elapsed/60.
         assertThat(winner.path("penaltyMinutes").asDouble(), closeTo(6.0, 1e-9));
         assertThat(winner.path("newTcf").asDouble(), greaterThan(1.0));
 
@@ -388,7 +394,7 @@ class JinxApiIntegrationTest
         JsonNode saved = post("/api/races/" + race1 + "/save-handicaps",
             "{\"adjustments\":" + adjustments + "}");
         assertThat(saved.path("nextRaceId").asText(), equalTo(race2));
-        assertThat(saved.path("carriedEntrants").asInt(), equalTo(3));
+        assertThat(saved.path("carriedEntrants").asInt(), equalTo(4));
 
         // Race 2 now carries the new TCFs, attributed to race 1.
         JsonNode race2Entrants = get("/api/races/" + race2).path("entrants");
@@ -460,11 +466,16 @@ class JinxApiIntegrationTest
         assertThat(bundle.path("spinnakerPolicy").asText(), equalTo("MIXED"));
         assertThat(bundle.path("algorithm").path("defaultRaceDuration").asInt(), equalTo(90));
         // The page is told which variant is in force, so it can say so.
-        assertThat(bundle.path("algorithm").path("variant").asText(), equalTo("B"));
+        assertThat(bundle.path("algorithm").path("variant").asText(), equalTo("A"));
         assertThat(bundle.path("algorithm").path("penaltyScaling").asText(),
             equalTo("FIXED"));
         assertThat(bundle.path("algorithm").path("givebackGamma").asDouble(),
-            closeTo(1.0, 1e-12));
+            closeTo(0.0, 1e-12));
+        // …and the two giveback weights, which the settings form edits.
+        assertThat(bundle.path("algorithm").path("dnfWeight").asDouble(),
+            closeTo(1.2, 1e-12));
+        assertThat(bundle.path("algorithm").path("dncWeight").asDouble(),
+            closeTo(0.2, 1e-12));
         assertThat(bundle.path("entrants").path("entrants").size(), equalTo(1));
         assertThat(bundle.path("startSheet").path("starts").size(), equalTo(1));
         assertThat(bundle.path("locked").asBoolean(), is(false));
@@ -558,11 +569,15 @@ class JinxApiIntegrationTest
         assertThat(before.path("isCustom").asBoolean(), is(false));
         assertThat(before.path("config").path("defaultRaceDuration").asInt(), equalTo(90));
 
-        // C, deliberately not B: B is what the club is on, so overriding to it would
+        // C, deliberately not A: A is what the club is on, so overriding to it would
         // pass whether the override worked or not.
+        //
+        // dnfAllowance rides along because a real saved override on the club's Pi has it:
+        // the key is retired, and it must be ignored rather than refused, or the series'
+        // settings would fail to load with it.
         post("/api/series/" + seriesId + "/config",
             "{\"penaltyList\":[10,5],\"defaultRaceDuration\":60,\"dnfAllowance\":7,"
-                + "\"variant\":\"C\"}");
+                + "\"dnfWeight\":1.5,\"dncWeight\":0.5,\"variant\":\"C\"}");
 
         JsonNode after = get("/api/series/" + seriesId + "/config");
         assertThat(after.path("isCustom").asBoolean(), is(true));
@@ -570,10 +585,13 @@ class JinxApiIntegrationTest
         // A series can be scored on a different variant from the rest of the club.
         assertThat(after.path("config").path("variant").asText(), equalTo("C"));
         assertThat(after.path("config").path("givebackGamma").asDouble(), closeTo(0.0, 1e-12));
-        assertThat(after.path("config").path("dnfAllowance").asInt(), equalTo(7));
+        assertThat(after.path("config").path("dnfWeight").asDouble(), closeTo(1.5, 1e-12));
+        assertThat(after.path("config").path("dncWeight").asDouble(), closeTo(0.5, 1e-12));
+        // The retired key is gone from the answer rather than echoed back.
+        assertThat(after.path("config").has("dnfAllowance"), is(false));
         // Defaults still travel alongside so the form can offer "restore".
         assertThat(after.path("defaults").path("defaultRaceDuration").asInt(), equalTo(90));
-        assertThat(after.path("defaults").path("variant").asText(), equalTo("B"));
+        assertThat(after.path("defaults").path("variant").asText(), equalTo("A"));
 
         // And the override reaches the course calculator for this series' races.
         String boatId = createBoat("AUS9", "Quick Silver");

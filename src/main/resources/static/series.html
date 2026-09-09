@@ -68,14 +68,20 @@
     <h2>Handicap settings — <span id="config-series-name"></span></h2>
     <p class="lead" id="config-origin"></p>
     <div class="form-grid">
-      <label for="cfg-penalties">Penalties (minutes, 1st, 2nd, …)</label>
-      <input id="cfg-penalties" placeholder="6, 4, 2">
+      <label for="cfg-penalties">Penalties (minutes, 1st, 2nd, …)<strong>*</strong></label>
+      <span>
+        <input id="cfg-penalties" placeholder="6, 4, 2">
+        <span class="hint" id="cfg-penalties-note"></span>
+      </span>
 
       <label for="cfg-duration">Default expected race duration (min)</label>
       <input id="cfg-duration" type="number" min="1">
 
-      <label for="cfg-dnf">DNF allowance<strong>*</strong></label>
-      <input id="cfg-dnf" type="number" min="1">
+      <label for="cfg-dnf">DNF weight<strong>**</strong></label>
+      <input id="cfg-dnf" type="number" min="0" step="0.05" class="hhmm-input">
+
+      <label for="cfg-dnc">Non-starter weight<strong>***</strong></label>
+      <input id="cfg-dnc" type="number" min="0" max="1" step="0.05" class="hhmm-input">
 
       <label for="cfg-earliest">Earliest start</label>
       <input id="cfg-earliest" placeholder="18:00">
@@ -92,33 +98,43 @@
       </select>
 
       <label for="cfg-gamma">Giveback weighting (0&nbsp;=&nbsp;even,
-        1.0&nbsp;=&nbsp;proportional*)</label>
+        1.0&nbsp;=&nbsp;proportional<strong>†</strong>)</label>
       <input id="cfg-gamma" type="number" min="0" max="1" step="0.05" class="hhmm-input">
-
-      <label for="cfg-fleet">Giveback fleet***</label>
-      <span>
-        <input id="cfg-fleet" type="number" min="0" max="1" step="0.01" class="hhmm-input">
-        <span class="hint" id="cfg-fleet-note"></span>
-      </span>
     </div>
     <p class="hint" style="max-width:46rem;">
-        <strong>*</strong> A boat that did not finish is scored this many minutes behind
-        the last boat that did, and that is what its share of the giveback is worked out
-        from. It is the largest single share, which is the intent: a boat that ran out of
-        time is the one whose handicap should ease most.
+      The penalties above are charged to the first few boats home, and every one of those
+      minutes comes back to <strong>the whole entry list</strong> — the boats that
+      finished outside the penalties, the boats that ran out of time, and, at a reduced
+      rate, the boats that never came. The weights below are all counted in ordinary
+      finishers: a boat that finished outside the penalties is one boat.
     </p>
     <p class="hint" style="max-width:46rem;">
-      <strong>**</strong> How the pool of penalty minutes is shared out. At 0 every boat
-      that gets a share gets the same one. At 1.0 the share is proportional to how far
-      behind the first boat home each one finished — so the boat that won gets nothing
-      back and pays its penalty in full, and a boat ten minutes back gets twice what one
-      five minutes back gets. Anything in between is a blend of the two.
+      <strong>*</strong> Size the ladder to the fleet — roughly one rung per six boats,
+      counting down. A ladder nearly as long as the fleet puts every boat that raced on
+      it, and then there is nobody left to give the pool back to.
     </p>
     <p class="hint" style="max-width:46rem;">
-      <strong>***</strong> The share of the fleet the pool comes back to, counted from
-      the back — 1.0 the whole fleet, 0.33 the bottom third, 0 nobody at all. "The back"
-      means furthest behind the first boat home. At 0 the penalty minutes are simply kept,
-      so the fleet's handicaps tighten overall rather than moving against each other.
+      <strong>**</strong> What a boat that ran out of time draws. It is scored at what the
+      last boat home draws plus a fifth of a boat, so at 1.2 it is a fifth again what the
+      last boat home gets — the largest single share, which is the intent: a boat that
+      could not get round in the time is the one whose handicap should ease most.
+    </p>
+    <p class="hint" style="max-width:46rem;">
+      <strong>***</strong> Scales what a boat that never came draws. Its actual weight is
+      this figure times the share of the fleet that stayed home, so on a full night the
+      few absentees are worth almost nothing and the pool circulates among the boats that
+      raced. On a thin night most of the fleet is at home and most of the pool goes there
+      — which is the point: a good result on a night nobody sailed should be worth less.
+      At 0 the pool comes back only to the boats that raced, which is what this did
+      before, and on a thin night hands the penalties straight back to the few that
+      turned up.
+    </p>
+    <p class="hint" style="max-width:46rem;">
+      <strong>†</strong> An extra share for how far behind a boat was. At 0 every boat
+      that may receive gets the same. At 1.0 a boat is worth one boat for getting round
+      and up to one more for how far behind the first boat home it crossed — so turning it
+      up moves the pool towards the boats that got round, and away from the boats that
+      ran out of time or never came. The penalty places get nothing back at any setting.
     </p>
     <div class="toolbar">
       <button id="cfg-save" class="primary" type="button">Save settings</button>
@@ -334,55 +350,43 @@
   function fillConfig(c) {
     document.getElementById('cfg-penalties').value = (c.penaltyList || []).join(', ');
     document.getElementById('cfg-duration').value = c.defaultRaceDuration;
-    document.getElementById('cfg-dnf').value = c.dnfAllowance;
+    document.getElementById('cfg-dnf').value = c.dnfWeight == null ? 1.2 : c.dnfWeight;
+    document.getElementById('cfg-dnc').value = c.dncWeight == null ? 0.2 : c.dncWeight;
     document.getElementById('cfg-earliest').value = c.earliestStart;
     document.getElementById('cfg-sunset').checked = !!c.limitBySunset;
     document.getElementById('cfg-scaling').value = c.penaltyScaling || 'PER_HOUR';
     document.getElementById('cfg-gamma').value =
       c.givebackGamma == null ? 0 : c.givebackGamma;
-    document.getElementById('cfg-fleet').value =
-      c.givebackFleet == null ? 1 : c.givebackFleet;
-    showFleetNote();
+    showLadderNote();
   }
 
   /**
-   * Say what a fraction of the fleet works out to, and warn where it stops working.
+   * Say what fleet this ladder suits, and where it stops working.
    *
-   * <p>The form cannot know how many boats will start, and that is exactly the risk: a
-   * third of thirty is ten boats and a third of six is two. Below a third the pool lands
-   * on so few boats that one of them can take most of it, and on a small enough fleet it
-   * rounds to nobody and the pool is silently kept.
+   * <p>The form cannot know how many boats will start, and that is exactly the risk. A
+   * boat in a penalty place draws nothing back, so a ladder as long as the fleet leaves
+   * nobody who may receive — and then nothing is charged at all, which looks like the
+   * app having done nothing rather than like a setting being wrong. The club's rule of
+   * thumb is about one rung per six boats, counting down: thirty boats want 5, 4, 3, 2,
+   * 1; twelve want 2, 1; eight or fewer want a single rung.
    */
-  function showFleetNote() {
-    const el = document.getElementById('cfg-fleet-note');
-    const raw = document.getElementById('cfg-fleet').value;
-    const v = Number(raw);
-    if (raw.trim() === '' || isNaN(v)) { el.textContent = ''; el.className = 'hint'; return; }
-    if (v <= 0) {
-      el.className = 'hint';
-      el.textContent = 'no giveback — the penalty minutes are kept';
-      return;
-    }
-    if (v >= 1) {
-      el.className = 'hint';
-      el.textContent = 'the whole fleet';
-      return;
-    }
-    const example = Math.round(30 * v);
-    if (v < 0.3) {
+  function showLadderNote() {
+    const el = document.getElementById('cfg-penalties-note');
+    const rungs = document.getElementById('cfg-penalties').value
+      .split(',').map(s => Number(s.trim())).filter(n => !isNaN(n) && n > 0).length;
+    if (rungs === 0) {
       el.className = 'hint cfg-warn';
-      el.textContent = '⚠ ' + Math.round(v * 100) + '% — ' + example + ' boats in a fleet '
-        + 'of 30, but only ' + Math.round(8 * v) + ' in a fleet of 8. On a small fleet a '
-        + 'share this narrow gives most of the pool to one or two boats, and can round to '
-        + 'nobody at all.';
+      el.textContent = '⚠ no penalties, so nothing is charged and no handicap moves';
       return;
     }
     el.className = 'hint';
-    el.textContent = 'the back ' + Math.round(v * 100) + '% — about ' + example
-      + ' boats in a fleet of 30';
+    el.textContent = rungs + (rungs === 1 ? ' rung' : ' rungs') + ' — suits a fleet of '
+      + 'about ' + (rungs * 6) + '. Nothing is charged at all on a night when '
+      + (rungs === 1 ? 'only the winner finishes' : rungs + ' or fewer boats finish')
+      + ' and nobody is entered who stayed home.';
   }
 
-  document.getElementById('cfg-fleet').oninput = showFleetNote;
+  document.getElementById('cfg-penalties').oninput = showLadderNote;
 
   document.getElementById('cfg-defaults').onclick = () => {
     if (configDefaults) fillConfig(configDefaults);
@@ -400,14 +404,14 @@
     const payload = {
       penaltyList: penalties,
       defaultRaceDuration: Number(document.getElementById('cfg-duration').value),
-      dnfAllowance: Number(document.getElementById('cfg-dnf').value),
+      dnfWeight: Number(document.getElementById('cfg-dnf').value),
+      dncWeight: Number(document.getElementById('cfg-dnc').value),
       earliestStart: document.getElementById('cfg-earliest').value.trim(),
       limitBySunset: document.getElementById('cfg-sunset').checked,
       // The knobs themselves. The server takes a variant name too, for a config file
       // that says one; this form has no use for the shorthand.
       penaltyScaling: document.getElementById('cfg-scaling').value,
-      givebackGamma: Number(document.getElementById('cfg-gamma').value),
-      givebackFleet: Number(document.getElementById('cfg-fleet').value)
+      givebackGamma: Number(document.getElementById('cfg-gamma').value)
     };
     const r = await postJson('/api/series/' + seriesPath(configSeriesId) + '/config', payload);
     const msg = document.getElementById('cfg-msg');

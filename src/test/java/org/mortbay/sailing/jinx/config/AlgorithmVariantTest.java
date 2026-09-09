@@ -54,23 +54,32 @@ class AlgorithmVariantTest
         assertThat(Variant.D.givebackGamma(), closeTo(1.0, 1e-12));
     }
 
+    /**
+     * The default is A — fixed penalties, shared evenly over everyone eligible.
+     *
+     * <p>It was B, fixed penalties shared by finish gap, back when γ was the only thing
+     * keeping the winner from drawing its own penalty straight back. A boat in a penalty
+     * place carries weight zero now, which does that job directly and for every penalised
+     * place rather than only the one whose gap happened to be zero — so the proportional
+     * weighting became an option rather than the default.
+     */
     @Test
-    void anAbsentAlgorithmBlockIsVariantB(@TempDir Path tmp) throws IOException
+    void anAbsentAlgorithmBlockIsVariantA(@TempDir Path tmp) throws IOException
     {
         Path file = tmp.resolve("config.yaml");
         Files.writeString(file, "club:\n  domain: \"myc.org.au\"\n");
         Algorithm a = JinxConfig.load(file).algorithm();
         assertThat(a.penaltyScaling(), equalTo(PenaltyScaling.FIXED));
-        assertThat(a.givebackGamma(), closeTo(1.0, 1e-12));
-        assertThat(a.asVariant(), equalTo(java.util.Optional.of(Variant.B)));
+        assertThat(a.givebackGamma(), closeTo(0.0, 1e-12));
+        assertThat(a.asVariant(), equalTo(java.util.Optional.of(Variant.A)));
     }
 
     @Test
-    void anAlgorithmBlockWithNeitherVariantNorKnobsIsB(@TempDir Path tmp) throws IOException
+    void anAlgorithmBlockWithNeitherVariantNorKnobsIsA(@TempDir Path tmp) throws IOException
     {
         Algorithm a = load(tmp, "  penaltyList: [5, 4, 3, 2, 1]");
         assertThat(a.penaltyScaling(), equalTo(PenaltyScaling.FIXED));
-        assertThat(a.givebackGamma(), closeTo(1.0, 1e-12));
+        assertThat(a.givebackGamma(), closeTo(0.0, 1e-12));
     }
 
     @Test
@@ -129,7 +138,7 @@ class AlgorithmVariantTest
     {
         Algorithm a = load(tmp, "  variant: Q");
         assertThat(a.penaltyScaling(), equalTo(PenaltyScaling.FIXED));
-        assertThat(a.givebackGamma(), closeTo(1.0, 1e-12));
+        assertThat(a.givebackGamma(), closeTo(0.0, 1e-12));
 
         assertThat(load(tmp, "  penaltyScaling: sideways").penaltyScaling(),
             equalTo(PenaltyScaling.FIXED));
@@ -147,19 +156,36 @@ class AlgorithmVariantTest
     }
 
     @Test
-    void theGivebackGoesToTheWholeFleetUnlessAShareIsAsked(@TempDir Path tmp)
+    void theTwoGivebackWeightsHaveDefaultsAndAreClamped(@TempDir Path tmp)
         throws IOException
     {
-        // What every race scored before this setting existed did.
-        assertThat(load(tmp, "  penaltyList: [5]").givebackFleet(), closeTo(1.0, 1e-12));
-        assertThat(load(tmp, "  givebackFleet: 0.33").givebackFleet(), closeTo(0.33, 1e-12));
-        assertThat(load(tmp, "  givebackFleet: 0").givebackFleet(), closeTo(0.0, 1e-12));
+        // What the club modelled and adopted: a boat that ran out of time counts as 1.2
+        // ordinary finishers, and one that never came counts as 0.2 of the share of the
+        // fleet that stayed home.
+        assertThat(load(tmp, "  penaltyList: [5]").dnfWeight(), closeTo(1.2, 1e-12));
+        assertThat(load(tmp, "  penaltyList: [5]").dncWeight(), closeTo(0.2, 1e-12));
+        assertThat(load(tmp, "  dnfWeight: 1.5").dnfWeight(), closeTo(1.5, 1e-12));
+        assertThat(load(tmp, "  dncWeight: 0.5").dncWeight(), closeTo(0.5, 1e-12));
 
-        // A share of the fleet, so outside 0..1 there is nothing it could mean. Clamped
-        // rather than refused, like the weighting, so one bad character does not stop a
-        // race night.
-        assertThat(load(tmp, "  givebackFleet: 1.5").givebackFleet(), closeTo(1.0, 1e-12));
-        assertThat(load(tmp, "  givebackFleet: -1").givebackFleet(), closeTo(0.0, 1e-12));
+        // dncWeight scales a fraction that is already at most one, and the product is
+        // what a boat that stayed home draws. Above one that boat could out-draw a boat
+        // that came out and finished, which is the one thing it must never do. Clamped
+        // rather than refused, like γ, so one bad character does not stop a race night.
+        assertThat(load(tmp, "  dncWeight: 1.5").dncWeight(), closeTo(1.0, 1e-12));
+        assertThat(load(tmp, "  dncWeight: -1").dncWeight(), closeTo(0.0, 1e-12));
+        assertThat(load(tmp, "  dnfWeight: -1").dnfWeight(), closeTo(0.0, 1e-12));
+    }
+
+    @Test
+    void theRetiredGivebackFleetAndDnfAllowanceKeysStillLoad(@TempDir Path tmp)
+        throws IOException
+    {
+        // The club's config.yaml and its saved series overrides carry both of these
+        // today. Retiring the settings must not stop a file loading — an unknown
+        // property is ignored, not an error.
+        JinxConfig.Algorithm a = load(tmp, "  givebackFleet: 0.33\n  dnfAllowance: 5");
+        assertThat(a.dnfWeight(), closeTo(1.2, 1e-12));
+        assertThat(a.dncWeight(), closeTo(0.2, 1e-12));
     }
 
     @Test

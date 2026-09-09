@@ -34,19 +34,29 @@ import static org.hamcrest.Matchers.not;
  */
 class HandicapVariantTest
 {
-    private static final List<Double> PENALTIES = List.of(5.0, 4.0, 3.0, 2.0, 1.0);
+    /**
+     * A two-rung ladder, because every fixture in this file is a five-boat fleet.
+     *
+     * <p>It used to be {@code [5,4,3,2,1]}, which put every boat in the fixture on the
+     * ladder — and since a penalised boat now draws nothing back, that leaves nobody to
+     * give the pool to and the engine charges nothing at all. Several tests here went on
+     * passing while asserting things about zero. The club's sizing rule is roughly one
+     * rung per six boats; two rungs on five boats is generous and leaves three boats
+     * eligible, which is what these tests need to say anything.
+     */
+    private static final List<Double> PENALTIES = List.of(5.0, 4.0);
 
     private static JinxConfig.Algorithm alg(PenaltyScaling scaling, double gamma)
     {
-        return alg(scaling, gamma, 1.0);
+        return alg(scaling, gamma, 1.2, 0.2);
     }
 
-    /** …and with the share of the fleet the pool comes back to. */
+    /** …and with the two giveback weights, each counted in ordinary finishers. */
     private static JinxConfig.Algorithm alg(PenaltyScaling scaling, double gamma,
-        double givebackFleet)
+        double dnfWeight, double dncWeight)
     {
-        return new JinxConfig.Algorithm(PENALTIES, 90, 1, "18:00", -33.8, 151.2833,
-            false, null, scaling, gamma, givebackFleet);
+        return new JinxConfig.Algorithm(PENALTIES, 90, "18:00", -33.8, 151.2833,
+            false, null, scaling, gamma, dnfWeight, dncWeight);
     }
 
     private static JinxConfig.Algorithm alg(Variant v)
@@ -188,17 +198,28 @@ class HandicapVariantTest
         List<Adjustment> out = new PursuitHandicapEngine(alg(Variant.C))
             .processResults(competitors(fleet()), race(), resultsOf(fleet(), 1.0));
         double pool = out.stream().mapToDouble(Adjustment::penaltyMinutes).sum();
-        double expected = pool / 5;
-        for (Adjustment a : out)
-            assertThat(a.rewardMinutes(), closeTo(expected, 1e-12));
+        // Evenly over the boats that MAY receive — the three outside the two-rung
+        // ladder. The two that paid draw nothing, at every γ.
+        double expected = pool / 3;
+        Map<String, Adjustment> byId = byId(out);
+        for (String id : List.of("c", "d", "e"))
+            assertThat(id, byId.get(id).rewardMinutes(), closeTo(expected, 1e-12));
+        for (String id : List.of("a", "b"))
+            assertThat(id, byId.get(id).rewardMinutes(), closeTo(0.0, 1e-12));
     }
 
     /**
      * At γ = 1 the pool is shared by how far behind the leader each boat finished.
      *
-     * <p>The fleet finishes 0 / 2 / 5 / 8 / 10 minutes apart, so the shares run
-     * 0 / 2 / 5 / 8 / 10 twenty-fifths of the pool. The boat 10 minutes back gets exactly
-     * twice the boat 5 minutes back, and the winner gets nothing.
+     * <p>The weight is {@code 1 + gap/maxGap}, not the gap itself. The fleet finishes
+     * 0 / 2 / 5 / 8 / 10 minutes apart and the first two are on the ladder, so the three
+     * that may receive carry 1.5, 1.8 and 2.0 against a widest gap of ten minutes.
+     *
+     * <p><b>Not proportional to the gap.</b> A boat twice as far back draws 1.33 times
+     * as much, not twice — the weight starts at one for a boat that may receive at all,
+     * because it turned up and got round, and the gap adds to that rather than being it.
+     * The old form was the bare gap, which handed the boat just outside the ladder
+     * almost nothing on a night when the fleet finished close together.
      */
     @Test
     void gammaOneSharesThePoolByHowFarBehindTheLeaderTheyFinished()
@@ -209,16 +230,18 @@ class HandicapVariantTest
             .processResults(boats, race(), pursuit(pursuitFleet())));
 
         double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
-        assertThat("the leader gets nothing back",
+        assertThat("the two on the ladder get nothing back",
             out.get("fast").rewardMinutes(), closeTo(0.0, 1e-12));
-        assertThat(out.get("f2").rewardMinutes(),   closeTo(pool * 2.0 / 25.0, 1e-9));
-        assertThat(out.get("mid").rewardMinutes(),  closeTo(pool * 5.0 / 25.0, 1e-9));
-        assertThat(out.get("s2").rewardMinutes(),   closeTo(pool * 8.0 / 25.0, 1e-9));
-        assertThat(out.get("slow").rewardMinutes(), closeTo(pool * 10.0 / 25.0, 1e-9));
+        assertThat(out.get("f2").rewardMinutes(), closeTo(0.0, 1e-12));
 
-        // The property in one line: twice as far back, twice as much back.
-        assertThat(out.get("slow").rewardMinutes(),
-            closeTo(2 * out.get("mid").rewardMinutes(), 1e-9));
+        // 1 + 5/10, 1 + 8/10, 1 + 10/10 over their sum.
+        assertThat(out.get("mid").rewardMinutes(),  closeTo(pool * 1.5 / 5.3, 1e-9));
+        assertThat(out.get("s2").rewardMinutes(),   closeTo(pool * 1.8 / 5.3, 1e-9));
+        assertThat(out.get("slow").rewardMinutes(), closeTo(pool * 2.0 / 5.3, 1e-9));
+
+        // Further back is more back, which is the whole of what γ says.
+        assertThat(out.get("slow").rewardMinutes() > out.get("s2").rewardMinutes(), is(true));
+        assertThat(out.get("s2").rewardMinutes() > out.get("mid").rewardMinutes(), is(true));
     }
 
     /**
@@ -240,11 +263,14 @@ class HandicapVariantTest
             .processResults(boats, race(), pursuit(pursuitFleet())));
 
         // Elapsed order is slow(100) > s2(93) > mid(85) > f2(77) > fast(70): the exact
-        // reverse of the finish order. The shares follow the finish order.
-        assertThat(out.get("fast").rewardMinutes() < out.get("f2").rewardMinutes(), is(true));
-        assertThat(out.get("f2").rewardMinutes() < out.get("mid").rewardMinutes(), is(true));
+        // reverse of the finish order. The shares follow the finish order, among the
+        // three that are not on the ladder.
         assertThat(out.get("mid").rewardMinutes() < out.get("s2").rewardMinutes(), is(true));
         assertThat(out.get("s2").rewardMinutes() < out.get("slow").rewardMinutes(), is(true));
+        // Were the weighting on elapsed, "slow" would be first in the queue rather than
+        // last: it was on the water thirty minutes longer than the winner, because it was
+        // given the earliest gun.
+        assertThat(out.get("slow").rewardMinutes() > out.get("mid").rewardMinutes(), is(true));
 
         // …and the whole pool still comes back.
         assertThat(out.values().stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum(),
@@ -252,13 +278,14 @@ class HandicapVariantTest
     }
 
     /**
-     * γ is a dial with no step in it. At γ = 0 the split is even; at γ = 1 it is the
-     * finish gap; in between it is a real blend, computed as
-     * {@code (1−γ)·mean(delta) + γ·delta} rather than {@code delta^γ}.
+     * γ is a dial with no step in it: {@code 1 + γ·gap/maxGap}, normalised so the
+     * eligible finishers always average one boat. At 0 they all draw the same, at 1 the
+     * last boat home draws twice what a boat on the leader's gap would.
      *
-     * <p>The exponent form would have put a cliff at the origin: {@code 0^γ} is 0 for
-     * every γ above zero, so the leader would drop from an even share to nothing the
-     * instant the dial left 0, and "0.35 is a real setting" would stop being true.
+     * <p>It is watched at the BACK of the fleet now. It used to be watched at the leader,
+     * whose share fell to nothing as γ rose — but the leader is on the ladder and draws
+     * nothing at every γ, so that reading has become constant and would pass whatever the
+     * dial did.
      */
     @Test
     void gammaIsContinuousFromEvenToGapWeighted()
@@ -267,19 +294,21 @@ class HandicapVariantTest
             .map(s -> new Competitor(s.id(), s.tcf())).toList();
         Map<String, Result> results = pursuit(pursuitFleet());
 
-        double previous = Double.MAX_VALUE;
+        double previous = 0.0;
         for (double gamma : new double[]{0.0, 0.01, 0.25, 0.5, 0.75, 0.99, 1.0})
         {
             Map<String, Adjustment> out = byId(
                 new PursuitHandicapEngine(alg(PenaltyScaling.PER_HOUR, gamma))
                     .processResults(boats, race(), results));
             double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
-            double leader = out.get("fast").rewardMinutes();
+            double last = out.get("slow").rewardMinutes();
 
-            // The leader's share falls smoothly from an even split to nothing.
-            assertThat("γ=" + gamma, leader, closeTo(pool * (1 - gamma) / 5.0, 1e-9));
-            assertThat("γ=" + gamma + " must not step", leader < previous + 1e-12, is(true));
-            previous = leader;
+            // Three eligible boats on gaps 5, 8 and 10 behind a widest gap of 10:
+            // raw weights 1+γ/2, 1+0.8γ and 1+γ, and the last of them over their sum.
+            double sum = (1 + gamma * 0.5) + (1 + gamma * 0.8) + (1 + gamma);
+            assertThat("γ=" + gamma, last, closeTo(pool * (1 + gamma) / sum, 1e-9));
+            assertThat("γ=" + gamma + " must not step", last > previous - 1e-12, is(true));
+            previous = last;
             assertThat("γ=" + gamma + " conserves",
                 out.values().stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum(),
                 closeTo(0.0, 1e-9));
@@ -302,31 +331,42 @@ class HandicapVariantTest
         List<Competitor> boats = tied.stream()
             .map(s -> new Competitor(s.id(), s.tcf())).toList();
 
-        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(Variant.D))
+        // A one-rung ladder, so two of the three may receive — with the file's usual
+        // two rungs there would be a single eligible boat and nothing to split.
+        JinxConfig.Algorithm oneRung = new JinxConfig.Algorithm(List.of(5.0), 90,
+            "18:00", -33.8, 151.2833, false, null, PenaltyScaling.PER_HOUR, 1.0, 1.2, 0.2);
+        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(oneRung)
             .processResults(boats, race(), pursuit(tied)));
         double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
-        for (Adjustment a : out.values())
-            assertThat(a.rewardMinutes(), closeTo(pool / 3.0, 1e-9));
+        for (String id : List.of("b", "c"))
+            assertThat(id, out.get(id).rewardMinutes(), closeTo(pool / 2.0, 1e-9));
     }
 
     /**
-     * Retirements draw the largest share, and this is how large.
+     * A boat that ran out of time draws the largest single share, and this is how large:
+     * {@code dnfWeight} times what the last boat home draws. At the default 1.2 that is
+     * a fifth as much again.
      *
-     * <p>A DNF is scored at the last finisher plus {@code dnfAllowance}, so in gap terms
-     * its delta is the fleet's whole spread plus that allowance. The allowance is one
-     * minute, and the reason it is not five is visible here: this fleet finishes within
-     * ten minutes end to end, so a five-minute allowance made a retirement's gap half
-     * again the last boat home's — 37.5% of the pool to one boat that did not finish,
-     * and two of them taking most of it between them. At one minute a retirement draws
-     * 30.6%, a shade over the last boat home.
+     * <p><b>Said as a weight, not as an allowance.</b> It used to be expressed by scoring
+     * a DNF at the last finisher plus {@code dnfAllowance} minutes and then sharing by
+     * the gap — so what a retirement actually drew depended on how spread out the fleet
+     * was that night. Five minutes was a nudge against a ninety-minute race and half the
+     * fleet's spread again against a ten-minute finish, which is why the allowance had to
+     * come down to one and why the right value was never obvious. A weight has no such
+     * scale in it: 1.2 boats is 1.2 boats on any night.
      *
-     * <p>The knob does two jobs on very different scales: against a 90-minute elapsed
-     * time five minutes was a nudge, against a ten-minute fleet spread it was larger than
-     * the spread itself. This test exists to keep that visible — if the shares ever look
-     * wrong after a stormy night, this is the number to revisit, not the weighting.
+     * <p>The shape is intended and should stay: the boat that could not get round in the
+     * time is the one whose handicap should ease most.
+     *
+     * <p>It holds at <b>every</b> γ, because the weight is {@code lastHome + (dnfWeight −
+     * 1)} — a constant margin above the furthest-behind finisher rather than a multiple of
+     * it. So the ratio to the last boat home is {@code (dnfWeight + γ) / (1 + γ)}: the
+     * headline 1.2× at the club's γ = 0, narrowing as the dial rises because the finisher
+     * it is measured against is itself worth more. See
+     * {@link #aRetirementOutdrawsEveryFinisherAtEveryGamma}.
      */
     @Test
-    void retirementsDrawTheLargestShareAndThisIsHowLarge()
+    void aBoatThatRanOutOfTimeDrawsTheLargestShareAndThisIsHowLarge()
     {
         List<Sailing> raced = pursuitFleet();
         Map<String, Result> results = new LinkedHashMap<>(pursuit(raced));
@@ -336,18 +376,45 @@ class HandicapVariantTest
             .map(s -> new Competitor(s.id(), s.tcf())).toList());
         boats.add(new Competitor("quit", 1.0));
 
-        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(Variant.D))
-            .processResults(boats, race(), results));
-        double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
+        for (double gamma : new double[] {0.0, 0.5, 1.0})
+        {
+            Map<String, Adjustment> out = byId(new PursuitHandicapEngine(
+                alg(PenaltyScaling.PER_HOUR, gamma)).processResults(boats, race(), results));
 
-        // Deltas are 0/2/5/8/10 for the finishers and 10+1 = 11 for the retirement.
-        assertThat(out.get("quit").rewardMinutes(), closeTo(pool * 11.0 / 36.0, 1e-9));
-        // …which is 30.6% of the pool: more than the last boat home, but only just.
-        assertThat(out.get("quit").rewardMinutes(),
-            closeTo(1.1 * out.get("slow").rewardMinutes(), 1e-9));
-        // Still the largest single share, which is the intended shape.
-        for (String id : List.of("fast", "f2", "mid", "s2", "slow"))
-            assertThat(out.get("quit").rewardMinutes() > out.get(id).rewardMinutes(), is(true));
+            // The last boat home is worth 1 + γ; the retirement is worth that plus 0.2.
+            // At γ = 0 that reads as the headline "a fifth again"; above it the ratio
+            // narrows, because the boat it is measured against is itself worth more.
+            assertThat("γ=" + gamma, out.get("quit").rewardMinutes(),
+                closeTo((1.2 + gamma) / (1.0 + gamma) * out.get("slow").rewardMinutes(), 1e-9));
+
+            // Still the largest single share, which is the intended shape.
+            for (String id : List.of("fast", "f2", "mid", "s2", "slow"))
+                assertThat("γ=" + gamma + " vs " + id,
+                    out.get("quit").rewardMinutes() > out.get(id).rewardMinutes(), is(true));
+
+            // And the pool still balances.
+            assertThat("γ=" + gamma,
+                out.values().stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum(),
+                closeTo(0.0, 1e-9));
+        }
+    }
+
+    /** The same weight, read off the other end: turn it down and the share follows. */
+    @Test
+    void theDnfWeightIsWhatDecidesHowMuchARetirementDraws()
+    {
+        List<Sailing> raced = pursuitFleet();
+        Map<String, Result> results = new LinkedHashMap<>(pursuit(raced));
+        results.put("quit", new Result("quit", FinishStatus.DNF, null, null, null));
+        List<Competitor> boats = new ArrayList<>(raced.stream()
+            .map(s -> new Competitor(s.id(), s.tcf())).toList());
+        boats.add(new Competitor("quit", 1.0));
+
+        Map<String, Adjustment> level = byId(new PursuitHandicapEngine(
+            alg(PenaltyScaling.PER_HOUR, 0.0, 1.0, 0.2)).processResults(boats, race(), results));
+        assertThat("at 1.0 it draws exactly what the last boat home draws",
+            level.get("quit").rewardMinutes(),
+            closeTo(level.get("slow").rewardMinutes(), 1e-9));
     }
 
     // --- knob 1: what a penalty is measured against ---------------------------
@@ -525,11 +592,10 @@ class HandicapVariantTest
         // Fixed scaling, so the ladder reads as the plain figures.
         assertThat(out.get("casual").penaltyMinutes(), closeTo(5.0, 1e-9));
         assertThat(out.get("a").penaltyMinutes(), closeTo(5.0, 1e-9));
-        // …and the rest of the series fleet is unshifted, down the ladder 4, 3, 2, 1.
+        // …and the rest of the series fleet is unshifted, down the two-rung ladder.
         assertThat(out.get("b").penaltyMinutes(), closeTo(4.0, 1e-9));
-        assertThat(out.get("c").penaltyMinutes(), closeTo(3.0, 1e-9));
-        assertThat(out.get("d").penaltyMinutes(), closeTo(2.0, 1e-9));
-        assertThat(out.get("e").penaltyMinutes(), closeTo(1.0, 1e-9));
+        for (String id : List.of("c", "d", "e"))
+            assertThat(id, out.get(id).penaltyMinutes(), closeTo(0.0, 1e-9));
     }
 
     /**
@@ -652,8 +718,23 @@ class HandicapVariantTest
         assertThat("its handicap eases", dnf.newTcf() < dnf.oldTcf(), is(true));
     }
 
+    /**
+     * A boat that never came draws a share, and this is the test that used to say the
+     * opposite.
+     *
+     * <p>It was frozen — no penalty, no share, TCF untouched — and that was the whole
+     * cause of the failure this scheme was written for. The pool was divided among the
+     * boats that raced, so it went as 1/turnout: thirty boats out and the fifteen minutes
+     * spread thirty ways, five boats out and the same fifteen minutes came straight back
+     * to the five that had just been charged it.
+     *
+     * <p>So DNC now carries a weight of {@code dncWeight × (stayed home / entered)} — a
+     * fraction of an ordinary finisher, rising as the fleet empties. It still pays
+     * nothing and it still has no place; what it no longer does is stand outside the
+     * arithmetic while the boats that turned up hand the pool back to each other.
+     */
     @Test
-    void aDncBoatIsFrozenAndOutOfTheArithmetic()
+    void aDncBoatDrawsAShareWithoutChangingAnybodysPenalty()
     {
         List<Competitor> boats = new ArrayList<>(competitors(fleet()));
         boats.add(new Competitor("ghost", 1.0));
@@ -663,10 +744,18 @@ class HandicapVariantTest
         Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(Variant.C))
             .processResults(boats, race(), results));
 
-        assertThat(out.get("ghost").newTcf(), equalTo(1.0));
+        // One of six entered stayed home, so it is worth 0.2 × 1/6 of a finisher.
+        double perFinisher = out.get("c").rewardMinutes();
+        assertThat(out.get("ghost").rewardMinutes(),
+            closeTo(perFinisher * 0.2 / 6.0, 1e-9));
+        assertThat("its handicap eases, a little",
+            out.get("ghost").newTcf() < out.get("ghost").oldTcf(), is(true));
+        assertThat(out.get("ghost").penaltyMinutes(), closeTo(0.0, 1e-12));
         assertThat(out.get("ghost").finishPosition(), is((Integer) null));
-        // A boat that never came cannot change what anybody else is charged: the
-        // winner's penalty is still a rate against its own 80 minutes.
+
+        // A boat that never came still cannot change what anybody else is CHARGED: the
+        // winner's penalty is a rate against its own 80 minutes, and nobody else's night
+        // can reach it.
         assertThat(out.get("a").penaltyMinutes(), closeTo(5.0 * 80.0 / 60.0, 1e-9));
     }
 
@@ -804,93 +893,101 @@ class HandicapVariantTest
             new Competitor("third", 1.00), new Competitor("last", 1.00));
     }
 
+    /**
+     * A fleet no bigger than the penalty list is charged nothing at all.
+     *
+     * <p>Four boats and {@code [5,4,3,2,1]}: every boat that raced is on the ladder, so
+     * every boat carries weight zero, and there is nobody at home to catch the pool
+     * either. Keeping it would move the whole fleet's handicaps against a fleet that is
+     * not there, and wiki §9 has always promised a boat racing alone finishes the night
+     * where it started.
+     *
+     * <p>The club's answer to a series this small is a shorter {@code penaltyList} — the
+     * ladder wants to be about a sixth of the fleet — and the series form says so. The
+     * engine's job is only to refuse to invent a number.
+     */
     @Test
-    void theWholeFleetSharesThePoolWhenGivebackFleetIsOne()
+    void aFleetNoBiggerThanThePenaltyListIsChargedNothing()
     {
-        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(PenaltyScaling.FIXED, 1.0, 1.0))
+        JinxConfig.Algorithm longLadder = new JinxConfig.Algorithm(
+            List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, "18:00", -33.8, 151.2833, false,
+            null, PenaltyScaling.FIXED, 0.0, 1.2, 0.2);
+        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(longLadder)
             .processResults(fourBoats(), race(), spreadOfFour()));
 
-        // Gaps 0, 5, 10, 15 and γ = 1, so the shares are in that ratio and the boat that
-        // won draws nothing — which is the whole-fleet behaviour, unchanged.
-        double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
-        assertThat(out.get("first").rewardMinutes(), closeTo(0.0, 1e-9));
-        assertThat(out.get("second").rewardMinutes(), closeTo(pool * 5 / 30.0, 1e-9));
-        assertThat(out.get("third").rewardMinutes(), closeTo(pool * 10 / 30.0, 1e-9));
-        assertThat(out.get("last").rewardMinutes(), closeTo(pool * 15 / 30.0, 1e-9));
+        for (Adjustment a : out.values())
+        {
+            assertThat(a.boatId(), a.penaltyMinutes(), closeTo(0.0, 1e-9));
+            assertThat(a.boatId(), a.rewardMinutes(), closeTo(0.0, 1e-9));
+            assertThat(a.boatId(), a.newTcf(), closeTo(a.oldTcf(), 1e-12));
+        }
     }
 
+    /**
+     * The same four boats, scored on a ladder that fits them: only the winner pays, and
+     * the three behind it share the five minutes.
+     *
+     * <p>This is the pair to the test above — the fix for a small fleet is the length of
+     * the list, not anything in the arithmetic.
+     */
     @Test
-    void halfTheFleetMeansTheBackHalfTakesAllOfIt()
+    void aLadderThatFitsTheFleetBehavesNormally()
     {
-        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(PenaltyScaling.FIXED, 1.0, 0.5))
+        JinxConfig.Algorithm shortLadder = new JinxConfig.Algorithm(List.of(5.0), 90,
+            "18:00", -33.8, 151.2833, false, null, PenaltyScaling.FIXED, 0.0, 1.2, 0.2);
+        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(shortLadder)
             .processResults(fourBoats(), race(), spreadOfFour()));
 
-        double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
-        // The two nearest the front are out of it entirely — not a smaller share, none.
+        assertThat(out.get("first").penaltyMinutes(), closeTo(5.0, 1e-9));
         assertThat(out.get("first").rewardMinutes(), closeTo(0.0, 1e-9));
-        assertThat(out.get("second").rewardMinutes(), closeTo(0.0, 1e-9));
-        // …and the two behind them share the whole pool, still weighted by their gaps.
-        assertThat(out.get("third").rewardMinutes(), closeTo(pool * 10 / 25.0, 1e-9));
-        assertThat(out.get("last").rewardMinutes(), closeTo(pool * 15 / 25.0, 1e-9));
-
-        // Nothing is lost on the way: the pool is redistributed in full, to fewer boats.
-        assertThat(out.values().stream().mapToDouble(Adjustment::rewardMinutes).sum(),
-            closeTo(pool, 1e-9));
+        for (String id : List.of("second", "third", "last"))
+            assertThat(id, out.get(id).rewardMinutes(), closeTo(5.0 / 3.0, 1e-9));
         assertThat(out.values().stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum(),
             closeTo(0.0, 1e-9));
     }
 
+    /**
+     * A retirement outdraws every boat that got round, at both ends of the γ dial.
+     *
+     * <p>This is the test that made the choice visible. Two readings of {@code dnfWeight}
+     * were tried and each broke one of the two properties the dial has to keep:
+     *
+     * <ul>
+     *   <li><b>Flat.</b> 1.2 boats whatever γ says — the reading that lets γ hand its
+     *       extra weight to the finishers alone. But γ adds up to a whole boat to a
+     *       finisher's weight and a flat 1.2 does not move, so at about γ = 0.2 the boats
+     *       furthest behind overtake the DNF and <b>this test fails</b>.</li>
+     *   <li><b>{@code dnfWeight × lastHome}.</b> This test passes, but the DNF then takes
+     *       γ's bonus in proportion too and cancels the shift the dial exists to make —
+     *       the finishers' total goes flat across it, and
+     *       {@code GivebackWeightsTest.theProportionalWeightingMovesThePoolTowardsTheBoatsThatRaced}
+     *       fails instead.</li>
+     * </ul>
+     *
+     * <p>{@code lastHome + (dnfWeight − 1)} is the form that satisfies both: a constant
+     * margin above the furthest-behind finisher, so a retirement always draws most, while
+     * γ's extra boat still reaches the boats that got round. All three agree at γ = 0.
+     */
     @Test
-    void aThirdOfFourBoatsIsOneBoat()
+    void aRetirementOutdrawsEveryFinisherAtEveryGamma()
     {
-        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(PenaltyScaling.FIXED, 1.0, 0.33))
-            .processResults(fourBoats(), race(), spreadOfFour()));
+        List<Sailing> raced = pursuitFleet();
+        Map<String, Result> results = new LinkedHashMap<>(pursuit(raced));
+        results.put("quit", new Result("quit", FinishStatus.DNF, null, null, null));
+        List<Competitor> boats = new ArrayList<>(raced.stream()
+            .map(s -> new Competitor(s.id(), s.tcf())).toList());
+        boats.add(new Competitor("quit", 1.0));
 
-        // 0.33 x 4 = 1.32, which is one boat. The committee's example is a thirty-boat
-        // fleet, where it is ten; the rounding only becomes interesting when the fleet is
-        // small, which is what the form warns about.
-        double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
-        assertThat(out.get("last").rewardMinutes(), closeTo(pool, 1e-9));
-        for (String id : List.of("first", "second", "third"))
-            assertThat(out.get(id).rewardMinutes(), closeTo(0.0, 1e-9));
-    }
-
-    @Test
-    void zeroMeansThePenaltiesAreKeptAndNobodyIsGivenAnything()
-    {
-        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(PenaltyScaling.FIXED, 1.0, 0.0))
-            .processResults(fourBoats(), race(), spreadOfFour()));
-
-        double pool = out.values().stream().mapToDouble(Adjustment::penaltyMinutes).sum();
-        assertThat(pool, closeTo(5.0 + 4.0 + 3.0 + 2.0, 1e-9));
-        for (Adjustment a : out.values())
+        for (double gamma : new double[] {0.0, 0.2, 0.5, 1.0})
         {
-            assertThat(a.rewardMinutes(), closeTo(0.0, 1e-9));
-            assertThat(a.netAdjustmentMinutes(), closeTo(a.penaltyMinutes(), 1e-9));
+            Map<String, Adjustment> out = byId(new PursuitHandicapEngine(
+                alg(PenaltyScaling.PER_HOUR, gamma)).processResults(boats, race(), results));
+            for (String id : List.of("fast", "f2", "mid", "s2", "slow"))
+                assertThat("γ=" + gamma + " vs " + id,
+                    out.get("quit").rewardMinutes() > out.get(id).rewardMinutes(), is(true));
+            assertThat("γ=" + gamma + " conserves",
+                out.values().stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum(),
+                closeTo(0.0, 1e-9));
         }
-
-        // Conservation is deliberately broken here, and this is the one setting that
-        // breaks it: the pool is not shared out, so the fleet's handicaps tighten
-        // overall rather than moving against each other.
-        assertThat(out.values().stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum(),
-            closeTo(pool, 1e-9));
-    }
-
-    @Test
-    void theBackOfTheFleetIsDecidedByFinishGapNotByElapsed()
-    {
-        // The pursuit fixture's slowest-rated boat starts first and sails longest, so
-        // ranking by elapsed and ranking by finish gap disagree. "Bottom of the fleet"
-        // has to mean furthest behind the first boat home — the boat that sailed longest
-        // is the one that was given the earliest gun, and that is not a performance.
-        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg(PenaltyScaling.FIXED, 1.0, 0.5))
-            .processResults(fourBoats(), race(), spreadOfFour()));
-
-        // "last" finished last but sailed 105 minutes; "first" won and sailed 75. Were
-        // the split made on elapsed, the same two boats would be chosen here — so the
-        // discriminating case is the pair in the middle, whose elapsed order is the
-        // reverse of their finish order.
-        assertThat(out.get("third").rewardMinutes(), greaterThan(0.0));
-        assertThat(out.get("second").rewardMinutes(), closeTo(0.0, 1e-9));
     }
 }

@@ -8,6 +8,7 @@ import java.util.Locale;
 import java.util.Optional;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -42,7 +43,7 @@ public record JinxConfig(
             club = new Club(null, null, null, null, null, null, null, null);
         if (algorithm == null)
             algorithm = new Algorithm(
-                null, 0, 0, null, null, null, false, null, null, null, null);
+                null, 0, null, null, null, false, null, null, null, null, null);
         if (server == null)
             server = new Server(0, false);
     }
@@ -165,9 +166,10 @@ public record JinxConfig(
      * on its own; naming a variant is a shorthand for setting both. Gamma is continuous,
      * so A/B/C/D are corners of a square rather than a list of alternatives.
      *
-     * <p>γ = 0 splits the penalty pool evenly; γ = 1 shares it by how far behind the
-     * leader each boat finished, so the first boat home gets nothing back. In between is
-     * a genuine blend — see {@code PursuitHandicapEngine.givebacks}.
+     * <p>γ shapes the weight an eligible finisher carries: 0 gives every one of them the
+     * same, 1 shares by how far behind the first boat home each crossed. It no longer
+     * decides whether the winner draws anything — a boat in a penalty place carries
+     * weight zero at every γ. See {@code PursuitHandicapEngine.givebackWeights}.
      */
     public enum Variant
     {
@@ -207,8 +209,16 @@ public record JinxConfig(
         }
     }
 
-    /** What the club gets when it says nothing: fixed penalties, shared by finish gap. */
-    public static final Variant DEFAULT_VARIANT = Variant.B;
+    /**
+     * What the club gets when it says nothing: fixed penalties, shared evenly over
+     * everyone eligible.
+     *
+     * <p>It was B — fixed penalties shared by finish gap — while γ was what kept the
+     * winner from drawing its own penalty back. The penalty places carry weight zero
+     * now, which does that job directly and better, so the proportional weighting is an
+     * option rather than the default. A is what the club modelled and adopted.
+     */
+    public static final Variant DEFAULT_VARIANT = Variant.A;
 
     /**
      * Parameters for the Jinx pursuit handicap engine. Defaults are tuned to
@@ -225,25 +235,36 @@ public record JinxConfig(
      * that disagrees with it, with a warning, because the specific setting is the one
      * somebody went to the trouble of writing.
      *
-     * <p>{@code dnfAllowance} is how far past the last finisher a boat that retired is
-     * scored, in minutes. One minute, not five: the knob now does two jobs on very
-     * different scales. Against a 90-minute elapsed time five minutes is a nudge, but
-     * against the <em>gap</em> the giveback shares by — a fleet finishing within ten
-     * minutes of each other — five minutes was larger than the whole fleet's spread, and
-     * two retirements took most of the pool between them.
+     * <p>{@code dnfWeight} and {@code dncWeight} are the two weights the giveback is
+     * shared by, both counted in ordinary finishers. {@code dnfWeight} is what a boat
+     * that ran out of time draws — 1.2 boats, a little more than one that got round,
+     * because running out of time is the clearest statement a night makes about a boat's
+     * speed. {@code dncWeight} scales what a boat that never came draws, which is
+     * {@code dncWeight × (stayed home / entered)}: on a full night the handful of
+     * absentees are worth almost nothing, and on an empty one they carry most of the
+     * fleet's weight. That is what stops a thin night handing its whole pool straight
+     * back to the few boats that turned up.
      *
-     * <p>{@code givebackFleet} is the share of the fleet the pool comes back to, counted
-     * from the back: {@code 1.0} the whole fleet, {@code 0.33} the bottom third,
-     * {@code 0} nobody. "Back" is by finish gap — furthest behind the first boat home —
-     * which is the same quantity the weighting already shares by, and not by elapsed
-     * time, which in a pursuit race mostly measures a boat's rating.
+     * <p><b>Retired: {@code dnfAllowance}.</b> It scored a DNF at the last finisher plus
+     * so many minutes, which was how a DNF's share of the pool used to be expressed —
+     * indirectly, in the units of the finish gap, so the right value depended on how
+     * spread out the fleet was that night. {@code dnfWeight} says the same thing
+     * directly and is scale-free. Its other job was already dead: a DNF pays no penalty,
+     * so its elapsed time never sized anything.
      *
-     * <p>At {@code 0} the pool is collected and kept, so the fleet's handicaps tighten
-     * overall instead of moving against each other. That is the one setting here that
-     * deliberately breaks conservation, and it is a real choice rather than an accident:
-     * a club that wants the place-getters penalised without compensating anybody can say
-     * so. Below about a third, a small fleet rounds down to very few boats — the series
-     * form warns about that, since the arithmetic cannot know how many boats will start.
+     * <p><b>Retired: {@code givebackFleet}.</b> It aimed the pool at the back of the
+     * fleet, as a share counted by finish gap. The penalty places carry weight zero now,
+     * which is that idea stated exactly rather than as a fraction, and the pool goes to
+     * the whole entry list — including boats that have no finish gap to be counted by,
+     * so the setting no longer has a well-defined meaning. Old files carrying either key
+     * still load; both are ignored.
+     *
+     * <p>That last sentence is why this record carries {@code @JsonIgnoreProperties} of
+     * its own rather than relying on the YAML mapper's setting. A series override is
+     * stored as JSON in {@code data/store/series-config/} and comes back through the
+     * servlet's mapper, which does <em>not</em> disable the check — so a saved override
+     * written before a setting was retired would have failed to load and taken the
+     * series' handicap settings with it.
      *
      * <p>There was a {@code dnfInRaceDuration} here, deciding whether retirements
      * contributed their allowance-derived elapsed time to the median the fleet was
@@ -276,11 +297,11 @@ public record JinxConfig(
      * the result. Old files that still carry the key load fine — both mappers ignore
      * unknown properties.
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record Algorithm(
         @JsonProperty("penaltyList") List<Double> penaltyList,
         @JsonProperty("defaultRaceDuration")
         @JsonAlias({"idealRaceDuration", "idealRaceLength"}) int defaultRaceDuration,
-        @JsonProperty("dnfAllowance") int dnfAllowance,
         @JsonProperty("earliestStart") String earliestStart,
         @JsonProperty("latitude") Double latitude,
         @JsonProperty("longitude") Double longitude,
@@ -288,7 +309,8 @@ public record JinxConfig(
         @JsonProperty("variant") Variant variant,
         @JsonProperty("penaltyScaling") PenaltyScaling penaltyScaling,
         @JsonProperty("givebackGamma") Double givebackGamma,
-        @JsonProperty("givebackFleet") Double givebackFleet)
+        @JsonProperty("dnfWeight") Double dnfWeight,
+        @JsonProperty("dncWeight") Double dncWeight)
     {
         public Algorithm
         {
@@ -296,8 +318,6 @@ public record JinxConfig(
                 penaltyList = List.of(5.0, 4.0, 3.0, 2.0, 1.0);
             if (defaultRaceDuration <= 0)
                 defaultRaceDuration = 90;
-            if (dnfAllowance <= 0)
-                dnfAllowance = 1;
             if (earliestStart == null || earliestStart.isBlank())
                 earliestStart = "18:00";
             if (latitude == null)
@@ -338,17 +358,27 @@ public record JinxConfig(
 
             // The whole fleet unless the club says otherwise, which is what every race
             // scored before this setting existed did.
-            if (givebackFleet == null)
-                givebackFleet = 1.0;
-            // A share of the fleet, so outside 0..1 there is nothing it could mean: above
-            // one is still the whole fleet, and below zero would be a negative number of
-            // boats. Clamped rather than refused, like γ, so one bad character in a YAML
-            // file does not stop a race night.
-            if (givebackFleet < 0.0 || givebackFleet > 1.0)
+            // Counted in ordinary finishers, so any non-negative figure means
+            // something; only a negative one does not.
+            if (dnfWeight == null)
+                dnfWeight = 1.2;
+            if (dnfWeight < 0.0)
             {
-                LOG.warn("algorithm.givebackFleet {} is outside 0.0..1.0 — clamping",
-                    givebackFleet);
-                givebackFleet = Math.min(1.0, Math.max(0.0, givebackFleet));
+                LOG.warn("algorithm.dnfWeight {} is negative — using 0", dnfWeight);
+                dnfWeight = 0.0;
+            }
+            // Bounded above by one deliberately: it scales a fraction that is itself at
+            // most one, and the product is what a boat that stayed home draws. Above one
+            // that boat could out-draw a boat that came out and finished, which is the
+            // one thing this weight must never do. Clamped rather than refused, like γ,
+            // so one bad character in a YAML file does not stop a race night.
+            if (dncWeight == null)
+                dncWeight = 0.2;
+            if (dncWeight < 0.0 || dncWeight > 1.0)
+            {
+                LOG.warn("algorithm.dncWeight {} is outside 0.0..1.0 — clamping",
+                    dncWeight);
+                dncWeight = Math.min(1.0, Math.max(0.0, dncWeight));
             }
         }
 

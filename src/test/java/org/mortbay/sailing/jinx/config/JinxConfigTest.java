@@ -31,7 +31,10 @@ class JinxConfigTest
             algorithm:
               penaltyList: [6, 4, 2]
               idealRaceLength: 75         # legacy key — must still load via @JsonAlias
-              dnfAllowance: 7
+              dnfAllowance: 7            # retired key — must be ignored, not fatal
+              givebackFleet: 0.33        # retired key — must be ignored, not fatal
+              dnfWeight: 1.4
+              dncWeight: 0.5
               earliestStart: "17:45"
               latitude: -34.1234
               longitude: 150.9876
@@ -50,7 +53,8 @@ class JinxConfigTest
         assertThat(config.club().timezone(), equalTo("Australia/Sydney"));
         assertThat(config.algorithm().penaltyList(), contains(6.0, 4.0, 2.0));
         assertThat(config.algorithm().defaultRaceDuration(), equalTo(75));
-        assertThat(config.algorithm().dnfAllowance(), equalTo(7));
+        assertThat(config.algorithm().dnfWeight(), closeTo(1.4, 1e-12));
+        assertThat(config.algorithm().dncWeight(), closeTo(0.5, 1e-12));
         assertThat(config.algorithm().earliestStart(), equalTo("17:45"));
         assertThat(config.algorithm().latitude(), closeTo(-34.1234, 1e-9));
         assertThat(config.algorithm().longitude(), closeTo(150.9876, 1e-9));
@@ -91,7 +95,10 @@ class JinxConfigTest
         // Algorithm defaults (wiki §10)
         assertThat(config.algorithm().penaltyList(), equalTo(List.of(5.0, 4.0, 3.0, 2.0, 1.0)));
         assertThat(config.algorithm().defaultRaceDuration(), equalTo(90));
-        assertThat(config.algorithm().dnfAllowance(), equalTo(1));
+        // A boat that ran out of time counts as 1.2 ordinary finishers; one that never
+        // came counts as 0.2 of the share of the fleet that stayed home.
+        assertThat(config.algorithm().dnfWeight(), closeTo(1.2, 1e-12));
+        assertThat(config.algorithm().dncWeight(), closeTo(0.2, 1e-12));
         assertThat(config.algorithm().earliestStart(), equalTo("18:00"));
         // Manly Yacht Club ground truth — defaults are tuned to the originating
         // use case; another club overrides via config.yaml.

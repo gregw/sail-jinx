@@ -28,16 +28,29 @@ club:
 algorithm:
   # How the penalties are sized, and how the pool of them comes back.
 
+  # The ladder. Size it to the fleet: about one rung per six boats, counting down.
+  # Thirty boats want [5,4,3,2,1]; twelve want [2,1]; eight or fewer want [1]. A ladder
+  # nearly as long as the fleet puts every boat that raced on it, which leaves nobody to
+  # give the pool back to — at which point nothing is charged at all.
   penaltyList: [5,4,3,2,1]         # minutes for 1st, 2nd, 3rd — per hour under perHour
 
   penaltyScaling: fixed            # fixed = the penaltyList minutes as written;
                                    # perHour = a rate, scaled by how long the race took
-  givebackGamma: 1.0               # 0 = every share the same
-                                   # 1 = proportional to how far behind the first boat
-                                   #     home each one finished
-  givebackFleet: 1.0               # 0 = no giveback; 0.5 = bottom half; 1 = all fleet giveback
-  dnfAllowance: 1                  # minutes past the last finisher a DNF boat scores,
-                                   # and what its share of the giveback is worked from
+
+  # The pool of penalty minutes comes back to the WHOLE ENTRY LIST, shared by weights
+  # counted in ordinary finishers. A boat on the ladder draws nothing; every other
+  # finisher counts as one boat.
+  dnfWeight: 1.2                   # what a boat that ran out of time draws: the last
+                                   # boat home, plus a fifth of a boat. Always the
+                                   # largest single share, at any givebackGamma.
+  dncWeight: 0.2                   # scales what a boat that never came draws, which is
+                                   # dncWeight x (stayed home / entered). On a full night
+                                   # the few absentees are worth almost nothing; on a
+                                   # thin one they hold most of the fleet's weight, so a
+                                   # good result on a night nobody sailed is worth less.
+  givebackGamma: 0.0               # 0 = every eligible finisher draws the same
+                                   # 1 = 1 + gap/widest gap, so the boats further behind
+                                   #     the first boat home draw more
   defaultRaceDuration: 90          # pre-race target when a race does not say; start
                                    # times only, never the handicap arithmetic
   earliestStart: "18:00"           # the slowest boat's gun
