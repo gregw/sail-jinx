@@ -130,11 +130,10 @@ public record JinxConfig(
      *
      * <p><b>Retired keys still load and are ignored:</b> {@code variant},
      * {@code penaltyScaling}, {@code givebackGamma}, {@code dnfWeight} and
-     * {@code dncWeight} (the weighted giveback, kept on the {@code weighted-giveback}
-     * branch), and before them {@code dnfAllowance}, {@code givebackFleet},
-     * {@code dnfInRaceDuration} and {@code v0knots}. That is why this record carries
-     * {@code @JsonIgnoreProperties} of its own rather than relying on the YAML mapper's
-     * setting: a series override comes back through the servlet's mapper, which does
+     * {@code dncWeight} (the previous iteration's weighted giveback), and before them
+     * {@code dnfAllowance}, {@code givebackFleet}, {@code dnfInRaceDuration} and
+     * {@code v0knots}. That is why this record carries {@code @JsonIgnoreProperties} of
+     * its own rather than relying on the YAML mapper's setting: a series override comes back through the servlet's mapper, which does
      * <em>not</em> ignore unknown properties, and an override saved before a key was
      * retired would otherwise fail to load.
      */

@@ -18,8 +18,8 @@ import static org.hamcrest.Matchers.equalTo;
  * saved series overrides carry them, and retiring a setting must not stop a race night.
  *
  * <p>The weighted giveback's keys — {@code variant}, {@code penaltyScaling},
- * {@code givebackGamma}, {@code dnfWeight}, {@code dncWeight} — went with the minute
- * giveback; that model is on the {@code weighted-giveback} branch.
+ * {@code givebackGamma}, {@code dnfWeight}, {@code dncWeight} — went when the minute
+ * giveback replaced it.
  */
 class RetiredAlgorithmKeysTest
 {

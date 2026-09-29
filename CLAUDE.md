@@ -36,9 +36,10 @@ concurrency control.
 Deliberately preserved pluggability:
 
 - `HandicapEngine` is an interface; `PursuitHandicapEngine` is the one implementation.
-- **One giveback, no variants.** The weighted giveback (variants A–D, γ, per-hour
-  penalties, DNF/DNC weights) was replaced by the minute giveback; it survives on the
-  `weighted-giveback` branch, and its YAML keys still load and are ignored.
+- **One giveback, no variants.** A boat gets back a whole minute, or an even share
+  among the DNFs or the DNCs — nothing else. The previous iteration's knobs (variants
+  A–D, γ, per-hour penalties, DNF/DNC weights) are gone; their YAML keys still load
+  and are ignored.
 - Club identity and algorithm parameters are configuration (`config.yaml`), not code.
 - **Pursuit only.** `division` survives on `Entrant` so fleet starts can be added
   without a data migration; nothing reads it except the display.
