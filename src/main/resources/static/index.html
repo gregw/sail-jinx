@@ -161,12 +161,12 @@
     const parts = [];
 
     if (name) {
-      parts.push('This site carries the Jinx results for '
+      parts.push('This site carries the timing results only for '
         + (club.website ? link(club.website, name) : '<b>' + esc(name) + '</b>') + '.');
     }
     if (club.otherResults)
-      parts.push('For non-Jinx results, see the club\u2019s '
-        + link(club.otherResults, 'other system') + '.');
+      parts.push('For point scores and other series, see the club\u2019s '
+        + link(club.otherResults, 'main results site') + '.');
     if (club.seriesEntry)
       parts.push('To enter a series, see the club\u2019s '
         + link(club.seriesEntry, 'series entry page') + '.');
