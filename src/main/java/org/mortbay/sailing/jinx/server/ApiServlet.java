@@ -58,6 +58,7 @@ import org.slf4j.LoggerFactory;
  * <h2>Endpoints</h2>
  * <pre>
  *   GET    /api/config                        server + algorithm defaults, store health
+ *   GET    /api/whoami                        who is signed in, and what they may do
  *   GET    /api/boats                         the fleet register
  *   GET    /api/designs                       hull types, learned from boat entry
  *   POST   /api/boats                         create or update a boat
@@ -67,6 +68,7 @@ import org.slf4j.LoggerFactory;
  *   DELETE /api/series/{id}                   delete a series and every race in it
  *   GET    /api/series/{id}/config            per-series algorithm settings
  *   POST   /api/series/{id}/config            save them
+ *   GET    /api/series/{id}/races             the races in one series
  *   GET    /api/races                         all races
  *   POST   /api/races                         create or update a race
  *   GET    /api/races/{id}                    everything the race page needs, in one call
@@ -80,7 +82,7 @@ import org.slf4j.LoggerFactory;
  *   POST   /api/races/{id}/process-handicaps  run the Jinx algorithm (computes, saves nothing)
  *   POST   /api/races/{id}/save-handicaps     save adjustments, carry TCFs to the next race
  *   DELETE /api/races/{id}/adjustments        unlock the race for reprocessing
- *   GET    /api/audit                         the audit log
+ *   GET    /api/audit                         the audit log (admin only)
  * </pre>
  *
  * <h2>Authorisation</h2>
@@ -438,30 +440,15 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
-     * Bulk-load the fleet from CSV. Body is the file's text, either as {@code text/csv} or
-     * as {@code {"csv": "..."}}.
-     *
-     * <p>Every row goes through {@link BoatRegistry}, so importing the same list twice
-     * matches rather than duplicating, and a list that gained a design column upgrades the
-     * boats already registered without it.
-     *
-     * <p>A fleet list usually carries TCF, division and spinnaker as well. Those are terms
-     * of a <em>race entry</em>, not facts about a boat, so this import ignores them and
-     * registers identity only. {@code /api/races/{id}/entrants/import} reads the same file
-     * and is where those columns land.
-     *
-     * <p>Returns a per-row report rather than a count. A bulk import of a hand-maintained
-     * spreadsheet always has surprises in it, and the useful answer is which rows they
-     * were — the ones that conflicted, the ones matched under another name, and the
-     * columns that were not understood.
-     */
-    /**
      * Load the fleet from a sailing-pf export (see {@link FleetJson}). Body is the file's
      * text, either as {@code application/json} or wrapped as {@code {"json": "..."}}.
      *
      * <p><b>Handicap and variant are ignored here.</b> Neither is a property of a boat —
-     * a handicap belongs to a series entry, and so does a spinnaker choice — so this
-     * endpoint takes identity only. The race-entrants import is where those land.
+     * both belong to a race entry — so this endpoint takes identity only. The
+     * race-entrants import is where those land.
+     *
+     * <p>{@code ?dryRun=true} recognises boats by exact id only; alias and name matching
+     * happen on the real import.
      *
      * <p>Every row goes through {@link BoatRegistry}, so importing the same file twice
      * matches rather than duplicating, a boat held without a design is upgraded from the
@@ -1122,9 +1109,9 @@ public class ApiServlet extends HttpServlet
      * cancelled race a different name or a different first gun. Abandoning changes one
      * boolean and should be unable to change anything else.
      *
-     * <p>Reversible, because "abandoned" is a decision made in a squall and the squall
-     * sometimes passes. The alternative to putting it back is creating a second race for
-     * a night that only had one.
+     * <p>The race page calls it with {@code true} from Abandon Race, which also flags every
+     * boat ABN and processes the results, and with {@code false} from Unlock results on an
+     * abandoned race.
      *
      * <p>A race officer's, not an admin's: calling a race off is the archetypal
      * race-night judgement, made on the water by whoever is running it. It is the one
@@ -1370,27 +1357,11 @@ public class ApiServlet extends HttpServlet
         writeJson(resp, mapOf("ok", true, "raceId", raceId));
     }
 
-    // --- Course planning -----------------------------------------------------
+    // --- Sunset cap ----------------------------------------------------------
 
     /**
-     * Turn a target race duration into a course length: a boat sails
-     * {@code TCF × V₀ × hours} nautical miles, and the course is sized to the
-     * slowest boat in the fleet so nobody is still out there after dark.
-     *
-     * <p>Body: {@code {targetElapsedMinutes?, slowestTcf?}}. Both default from
-     * the race and its entrants. When the series is configured with
-     * {@code limitBySunset}, the duration is capped so the slowest boat is
-     * expected to finish by sunset on the race date.
-     */
-    /**
-     * The target elapsed time actually used, capped so the slowest boat is expected to be
-     * home by sunset.
-     *
-     * <p>The cap belongs on the duration, not on a course length: what the RO controls on
-     * the night is how long the race is meant to take, and sailing past sundown is the
-     * thing being prevented. If sunset falls at or before the earliest start — an
-     * out-of-season date where it is already dark — the cap still engages, clamped to
-     * zero and flagged, rather than silently doing nothing.
+     * The expected duration, capped so the fleet is expected home by sunset. Returns 0
+     * when sunset is at or before the earliest start, which the caller refuses.
      */
     static int capBySunset(int requested, LocalTime earliestStart, LocalTime sunset)
     {
@@ -1416,25 +1387,12 @@ public class ApiServlet extends HttpServlet
         }
     }
 
-    /** The (possibly sunset-capped) duration and the course length it implies. */
-    /**
-     * Pure course-length calculation. A boat's predicted speed is
-     * {@code TCF × v0Knots}, so over {@code t} hours it sails
-     * {@code TCF × v0 × t} nm; the course is sized to {@code slowestTcf} and
-     * rounded to 0.1 nm.
-     *
-     * <p>When {@code limitBySunset} and a {@code sunset} are given, the
-     * duration is capped so {@code earliestStart + duration ≤ sunset}. If
-     * sunset is at or before {@code earliestStart} — an out-of-season date
-     * where it is already dark at the start — the cap still engages, clamped to
-     * zero and flagged, rather than silently doing nothing.
-     */
     // --- Handicaps -----------------------------------------------------------
 
     /**
      * Run the Jinx algorithm against a client-supplied snapshot of the race and
-     * return the adjustments. Computes only — nothing is written, so the admin
-     * can preview before committing.
+     * return the adjustments. Computes only — nothing is written; the race page
+     * follows it straight away with save-handicaps.
      *
      * <p>The snapshot comes from the client rather than the store because the
      * client is where the scoring primitives of wiki §5.1 live: effective
@@ -1442,10 +1400,11 @@ public class ApiServlet extends HttpServlet
      * have applied but not yet saved. Body:
      * <pre>{@code
      *   { "targetElapsedMinutes": 90,
-     *     "boats": [ { "boatId": "b-1", "currentTcf": 1.0,
+     *     "boats": [ { "boatId": "b-1", "currentTcf": 1.0, "seeded": true,
      *                  "status": "FIN", "elapsedMinutes": 85.0,
-     *                  "finishPosition": 1 }, ... ] }
+     *                  "correctedFinishSeconds": 70200, "finishPosition": 1 }, ... ] }
      * }</pre>
+     * <p>The browser builds it in {@code scoring.js handicapEngineInput}.
      */
     private void handleProcessHandicaps(HttpServletRequest req, HttpServletResponse resp,
                                         String raceId) throws Exception
@@ -1529,12 +1488,19 @@ public class ApiServlet extends HttpServlet
 
         Race forEngine = new Race(raceId, race == null ? null : race.seriesId(), 0, "",
             null, null, tTarget, false);
-        List<Adjustment> adjustments =
-            new PursuitHandicapEngine(alg).processResults(boats, forEngine, results);
+        // The new TCFs are sailed in the next race, so a time adjustment is measured
+        // against that race's expected duration — see PursuitHandicapEngine §6.1. Save
+        // does not recompute, so a next race whose target is edited afterwards keeps the
+        // TCFs it was carried; unlocking and processing again is the way to pick it up.
+        Integer nextRaceMinutes = store.nextRaceInSeries(raceId)
+            .map(Race::targetElapsedMinutes).orElse(null);
+        List<Adjustment> adjustments = new PursuitHandicapEngine(alg)
+            .processResults(boats, forEngine, results, nextRaceMinutes);
 
         writeJson(resp, mapOf(
             "raceId", raceId,
             "targetElapsedMinutes", tTarget,
+            "nextRaceMinutes", nextRaceMinutes,
             "algorithm", algorithmMap(alg),
             "adjustments", adjustments));
     }
@@ -1659,11 +1625,6 @@ public class ApiServlet extends HttpServlet
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("penaltyList", a.penaltyList());
         m.put("defaultRaceDuration", a.defaultRaceDuration());
-        m.put("penaltyScaling", a.penaltyScaling().name());
-        m.put("givebackGamma", a.givebackGamma());
-        m.put("variant", a.asVariant().map(Enum::name).orElse(null));
-        m.put("dnfWeight", a.dnfWeight());
-        m.put("dncWeight", a.dncWeight());
         m.put("earliestStart", a.earliestStart());
         m.put("latitude", a.latitude());
         m.put("longitude", a.longitude());

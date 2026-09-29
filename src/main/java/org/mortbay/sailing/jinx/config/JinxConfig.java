@@ -4,12 +4,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Locale;
-import java.util.Optional;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
@@ -42,8 +39,7 @@ public record JinxConfig(
         if (club == null)
             club = new Club(null, null, null, null, null, null, null, null);
         if (algorithm == null)
-            algorithm = new Algorithm(
-                null, 0, null, null, null, false, null, null, null, null, null);
+            algorithm = new Algorithm(null, 0, null, null, null, false);
         if (server == null)
             server = new Server(0, false);
     }
@@ -117,185 +113,30 @@ public record JinxConfig(
     }
 
     /**
-     * How a penalty scales with the length of the race that earned it.
+     * Parameters for the Jinx pursuit handicap engine: the club defaults from
+     * {@code config.yaml}, which a series may override on its Handicap settings form
+     * (stored in {@code data/store/series-config/{seriesId}.json}). How the ladder is
+     * charged and given back is {@code PursuitHandicapEngine.minuteGiveback}.
      *
-     * <p>{@code FIXED} takes the figure from {@code penaltyList} as it stands, so the
-     * same win costs the same on a 45-minute night as on a two-hour one. {@code PER_HOUR}
-     * reads it as a rate and multiplies by the penalised boat's own elapsed, so a win
-     * costs in proportion to the racing that boat did. Its own, not the fleet's median:
-     * a boat out there for two hours has earned twice the penalty of one out for one.
-     */
-    public enum PenaltyScaling
-    {
-        FIXED,
-        PER_HOUR;
-
-        /** Tolerant of how a person writes it: perHour, per_hour, PERHOUR, per-hour. */
-        @JsonCreator
-        public static PenaltyScaling parse(String raw)
-        {
-            if (raw == null)
-                return null;
-            String v = raw.trim().toLowerCase(Locale.ENGLISH).replaceAll("[^a-z]", "");
-            return switch (v)
-            {
-                case "fixed" -> FIXED;
-                case "perhour" -> PER_HOUR;
-                default ->
-                {
-                    LOG.warn("Unknown algorithm.penaltyScaling '{}' — using {}",
-                        raw, DEFAULT_VARIANT.penaltyScaling());
-                    yield null;
-                }
-            };
-        }
-    }
-
-    /**
-     * The four handicap variants, as the two knobs they actually are.
+     * <p><b>{@code penaltyList} is whole minutes.</b> The giveback returns the pool a
+     * minute at a time, so a fractional rung would leave a fraction nobody can be handed.
+     * A fractional figure is rounded half-up with a warning rather than refused, so one bad
+     * character in a YAML file does not stop a race night.
      *
-     * <pre>
-     *   Variant | penaltyScaling | givebackGamma
-     *      A    | fixed          | 0.0
-     *      B    | fixed          | 1.0   &lt;-- default
-     *      C    | perHour        | 0.0
-     *      D    | perHour        | 1.0
-     * </pre>
+     * <p>{@code defaultRaceDuration} is given to each new race as its expected duration,
+     * and is the fallback for a race without one. That duration sets the stagger and is
+     * what a time adjustment is measured against when it becomes a TCF change. It accepts
+     * the old names {@code idealRaceDuration} and {@code idealRaceLength}.
      *
-     * <p>A convenience only. The knobs are what the engine reads, and either may be set
-     * on its own; naming a variant is a shorthand for setting both. Gamma is continuous,
-     * so A/B/C/D are corners of a square rather than a list of alternatives.
-     *
-     * <p>γ shapes the weight an eligible finisher carries: 0 gives every one of them the
-     * same, 1 shares by how far behind the first boat home each crossed. It no longer
-     * decides whether the winner draws anything — a boat in a penalty place carries
-     * weight zero at every γ. See {@code PursuitHandicapEngine.givebackWeights}.
-     */
-    public enum Variant
-    {
-        A(PenaltyScaling.FIXED, 0.0),
-        B(PenaltyScaling.FIXED, 1.0),
-        C(PenaltyScaling.PER_HOUR, 0.0),
-        D(PenaltyScaling.PER_HOUR, 1.0);
-
-        private final PenaltyScaling penaltyScaling;
-        private final double givebackGamma;
-
-        Variant(PenaltyScaling penaltyScaling, double givebackGamma)
-        {
-            this.penaltyScaling = penaltyScaling;
-            this.givebackGamma = givebackGamma;
-        }
-
-        public PenaltyScaling penaltyScaling() { return penaltyScaling; }
-
-        public double givebackGamma() { return givebackGamma; }
-
-        @JsonCreator
-        public static Variant parse(String raw)
-        {
-            if (raw == null || raw.isBlank())
-                return null;
-            String v = raw.trim().toUpperCase(Locale.ENGLISH);
-            try
-            {
-                return valueOf(v);
-            }
-            catch (IllegalArgumentException e)
-            {
-                LOG.warn("Unknown algorithm.variant '{}' — using {}", raw, DEFAULT_VARIANT);
-                return null;
-            }
-        }
-    }
-
-    /**
-     * What the club gets when it says nothing: fixed penalties, shared evenly over
-     * everyone eligible.
-     *
-     * <p>It was B — fixed penalties shared by finish gap — while γ was what kept the
-     * winner from drawing its own penalty back. The penalty places carry weight zero
-     * now, which does that job directly and better, so the proportional weighting is an
-     * option rather than the default. A is what the club modelled and adopted.
-     */
-    public static final Variant DEFAULT_VARIANT = Variant.A;
-
-    /**
-     * Parameters for the Jinx pursuit handicap engine. Defaults are tuned to
-     * the originating MYC Twilight use case; another club overrides via
-     * {@code config.yaml}, and a single series can override further via the
-     * Series Configure form (stored per-series in
-     * {@code data/store/series-config/{seriesId}.json}).
-     *
-     * <p>{@code limitBySunset} caps the race duration so the slowest boat is expected
-     * to finish by sunset on the race date.
-     *
-     * <p>{@code variant} is shorthand for the two knobs below it and is resolved away
-     * here — the engine never sees it. An explicitly given knob wins over the variant
-     * that disagrees with it, with a warning, because the specific setting is the one
-     * somebody went to the trouble of writing.
-     *
-     * <p>{@code dnfWeight} and {@code dncWeight} are the two weights the giveback is
-     * shared by, both counted in ordinary finishers. {@code dnfWeight} is what a boat
-     * that ran out of time draws — 1.2 boats, a little more than one that got round,
-     * because running out of time is the clearest statement a night makes about a boat's
-     * speed. {@code dncWeight} scales what a boat that never came draws, which is
-     * {@code dncWeight × (stayed home / entered)}: on a full night the handful of
-     * absentees are worth almost nothing, and on an empty one they carry most of the
-     * fleet's weight. That is what stops a thin night handing its whole pool straight
-     * back to the few boats that turned up.
-     *
-     * <p><b>Retired: {@code dnfAllowance}.</b> It scored a DNF at the last finisher plus
-     * so many minutes, which was how a DNF's share of the pool used to be expressed —
-     * indirectly, in the units of the finish gap, so the right value depended on how
-     * spread out the fleet was that night. {@code dnfWeight} says the same thing
-     * directly and is scale-free. Its other job was already dead: a DNF pays no penalty,
-     * so its elapsed time never sized anything.
-     *
-     * <p><b>Retired: {@code givebackFleet}.</b> It aimed the pool at the back of the
-     * fleet, as a share counted by finish gap. The penalty places carry weight zero now,
-     * which is that idea stated exactly rather than as a fraction, and the pool goes to
-     * the whole entry list — including boats that have no finish gap to be counted by,
-     * so the setting no longer has a well-defined meaning. Old files carrying either key
-     * still load; both are ignored.
-     *
-     * <p>That last sentence is why this record carries {@code @JsonIgnoreProperties} of
-     * its own rather than relying on the YAML mapper's setting. A series override is
-     * stored as JSON in {@code data/store/series-config/} and comes back through the
-     * servlet's mapper, which does <em>not</em> disable the check — so a saved override
-     * written before a setting was retired would have failed to load and taken the
-     * series' handicap settings with it.
-     *
-     * <p>There was a {@code dnfInRaceDuration} here, deciding whether retirements
-     * contributed their allowance-derived elapsed time to the median the fleet was
-     * scaled by. The committee removed the setting, and then the median it referred to:
-     * a per-hour penalty is now charged against the penalised boat's own elapsed and the
-     * TCF conversion is anchored to the race's expected duration, so nothing in the
-     * arithmetic is a median of the fleet's times at all. Old files carrying the key
-     * still load — both mappers ignore unknown properties.
-     *
-     * <p>{@code defaultRaceDuration} is the fallback <em>pre-race</em> target: how long a
-     * race is meant to take when nobody has said. It publishes the start times, and it is
-     * also what a time adjustment is measured against when it becomes a TCF change — for
-     * a race that carries no target of its own.
-     *
-     * <p>That second job used to belong to the median of what the fleet actually sailed.
-     * The committee moved it: the number being computed is the handicap for the
-     * <em>next</em> race, and the next race is far more likely to run close to its
-     * expected duration than to the duration of the one just sailed.
-     *
-     * <p>It carries the old name {@code idealRaceDuration} as an alias, because that key
-     * held this value too. Its other job is gone: γ used to be derived from it, as
-     * {@code t_target / (t_target + ideal)}. γ is an explicit knob now. One key doing a
-     * shaping constant and a default target at once is how the two got conflated.
-     *
-     * <p>There was a {@code v0knots} here — V₀, the speed of a notional 1.000-TCF boat.
-     * It had two jobs and has neither. Sizing a course from a target duration went when
-     * course length did; and in the post-race TCF conversion it cancelled out, because
-     * {@code D_race} was derived from it and then divided by it again. A setting that
-     * cannot change an answer is worse than no setting: somebody tunes it and believes
-     * the result. Old files that still carry the key load fine — both mappers ignore
-     * unknown properties.
+     * <p><b>Retired keys still load and are ignored:</b> {@code variant},
+     * {@code penaltyScaling}, {@code givebackGamma}, {@code dnfWeight} and
+     * {@code dncWeight} (the weighted giveback, kept on the {@code weighted-giveback}
+     * branch), and before them {@code dnfAllowance}, {@code givebackFleet},
+     * {@code dnfInRaceDuration} and {@code v0knots}. That is why this record carries
+     * {@code @JsonIgnoreProperties} of its own rather than relying on the YAML mapper's
+     * setting: a series override comes back through the servlet's mapper, which does
+     * <em>not</em> ignore unknown properties, and an override saved before a key was
+     * retired would otherwise fail to load.
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Algorithm(
@@ -305,17 +146,20 @@ public record JinxConfig(
         @JsonProperty("earliestStart") String earliestStart,
         @JsonProperty("latitude") Double latitude,
         @JsonProperty("longitude") Double longitude,
-        @JsonProperty("limitBySunset") boolean limitBySunset,
-        @JsonProperty("variant") Variant variant,
-        @JsonProperty("penaltyScaling") PenaltyScaling penaltyScaling,
-        @JsonProperty("givebackGamma") Double givebackGamma,
-        @JsonProperty("dnfWeight") Double dnfWeight,
-        @JsonProperty("dncWeight") Double dncWeight)
+        @JsonProperty("limitBySunset") boolean limitBySunset)
     {
         public Algorithm
         {
             if (penaltyList == null || penaltyList.isEmpty())
                 penaltyList = List.of(5.0, 4.0, 3.0, 2.0, 1.0);
+            if (penaltyList.stream().anyMatch(p -> p == null || p != Math.rint(p)))
+            {
+                LOG.warn("algorithm.penaltyList {} is not whole minutes — rounding",
+                    penaltyList);
+                penaltyList = penaltyList.stream()
+                    .map(p -> p == null ? 0.0 : (double)Math.round(p))
+                    .toList();
+            }
             if (defaultRaceDuration <= 0)
                 defaultRaceDuration = 90;
             if (earliestStart == null || earliestStart.isBlank())
@@ -324,74 +168,6 @@ public record JinxConfig(
                 latitude = -33.8000;
             if (longitude == null)
                 longitude = 151.2833;
-
-            // Resolve the variant away, so everything downstream reads two plain knobs.
-            Variant base = variant != null ? variant : DEFAULT_VARIANT;
-            if (variant != null && penaltyScaling != null
-                && penaltyScaling != variant.penaltyScaling())
-            {
-                LOG.warn("algorithm.variant {} says penaltyScaling {}, but penaltyScaling "
-                    + "is set to {} — the explicit setting wins",
-                    variant, variant.penaltyScaling(), penaltyScaling);
-            }
-            if (variant != null && givebackGamma != null
-                && Double.compare(givebackGamma, variant.givebackGamma()) != 0)
-            {
-                LOG.warn("algorithm.variant {} says givebackGamma {}, but givebackGamma "
-                    + "is set to {} — the explicit setting wins",
-                    variant, variant.givebackGamma(), givebackGamma);
-            }
-            if (penaltyScaling == null)
-                penaltyScaling = base.penaltyScaling();
-            if (givebackGamma == null)
-                givebackGamma = base.givebackGamma();
-            // γ blends between "even" and "shared by the gap behind the leader". Outside
-            // 0..1 it is not a stronger opinion, it is a typo, so it is clamped rather
-            // than obeyed: a γ above 1 would give the leader a negative share and take
-            // time off the boats that finished behind it.
-            if (givebackGamma < 0.0 || givebackGamma > 1.0)
-            {
-                LOG.warn("algorithm.givebackGamma {} is outside 0.0..1.0 — clamping",
-                    givebackGamma);
-                givebackGamma = Math.min(1.0, Math.max(0.0, givebackGamma));
-            }
-
-            // The whole fleet unless the club says otherwise, which is what every race
-            // scored before this setting existed did.
-            // Counted in ordinary finishers, so any non-negative figure means
-            // something; only a negative one does not.
-            if (dnfWeight == null)
-                dnfWeight = 1.2;
-            if (dnfWeight < 0.0)
-            {
-                LOG.warn("algorithm.dnfWeight {} is negative — using 0", dnfWeight);
-                dnfWeight = 0.0;
-            }
-            // Bounded above by one deliberately: it scales a fraction that is itself at
-            // most one, and the product is what a boat that stayed home draws. Above one
-            // that boat could out-draw a boat that came out and finished, which is the
-            // one thing this weight must never do. Clamped rather than refused, like γ,
-            // so one bad character in a YAML file does not stop a race night.
-            if (dncWeight == null)
-                dncWeight = 0.2;
-            if (dncWeight < 0.0 || dncWeight > 1.0)
-            {
-                LOG.warn("algorithm.dncWeight {} is outside 0.0..1.0 — clamping",
-                    dncWeight);
-                dncWeight = Math.min(1.0, Math.max(0.0, dncWeight));
-            }
-        }
-
-        /** The knobs as the variant they correspond to, or empty at an intermediate γ. */
-        public Optional<Variant> asVariant()
-        {
-            for (Variant v : Variant.values())
-            {
-                if (v.penaltyScaling() == penaltyScaling
-                    && Double.compare(v.givebackGamma(), givebackGamma) == 0)
-                    return Optional.of(v);
-            }
-            return Optional.empty();
         }
     }
 

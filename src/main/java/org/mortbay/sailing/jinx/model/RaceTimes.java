@@ -9,11 +9,9 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * Race officer's captured times for one race, stored as
  * {@code data/store/race-times/{raceId}.json}.
  *
- * <p>What the Race page persists when the user clicks SAVE: the drag-ordered
- * list of boats, the optional duty boat (rotated through the fleet — gets the
- * AVG flag and its times are ignored), and per boat whether it came to the
- * start ({@code came}) plus the wall-clock {@code actualStart} and
- * {@code finish}.
+ * <p>What the race page saves: the optional duty boat (scored AVG, its times
+ * ignored), and per boat whether it came ({@code came}), the wall-clock
+ * {@code actualStart} and {@code finish}, and any flags the RO overrode.
  *
  * <p>Times are kept as the raw {@code HH:MM:SS} strings the RO typed, or that
  * the NOW button stamped, so we round-trip exactly what was entered without

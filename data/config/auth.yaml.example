@@ -15,9 +15,10 @@
 #
 # With it ON there are three tiers, and signing in is an invitation rather than a gate:
 #
-#   nobody signed in   reads every page and changes nothing
-#   a club account     runs a race night — entrants, times, start sheet, handicaps
-#   an admin below     owns the season — series, races, roster, fleet import
+#   nobody signed in   reads every page (except the audit log) and changes nothing
+#   a club account     runs a race night — times, start sheet, handicaps, TCF edits
+#   an admin below     owns the season — series, races, the fleet register, and
+#                      which boats are in a race
 #
 # So turning this on does not hide the club's results from members without accounts.
 # It decides who can change them.

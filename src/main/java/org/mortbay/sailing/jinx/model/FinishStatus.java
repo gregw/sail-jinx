@@ -1,17 +1,17 @@
 package org.mortbay.sailing.jinx.model;
 
 /**
- * Per-boat finish disposition, as used by the algorithm. See
- * {@code wiki/myc-twilight-handicap-v2.md} section 5 for the rules.
+ * Per-boat finish disposition, as the engine reads it. What each one draws from the
+ * pool is {@code PursuitHandicapEngine.minuteGiveback}; the browser maps its flags onto
+ * these in {@code scoring.js jinxStatus}.
  */
 public enum FinishStatus
 {
     /** Finished — actual elapsed time used. */
     FIN,
     /**
-     * Did not finish — still racing when the race ended. Effective elapsed = slowest
-     * finisher + dnfAllowance, and the handicap eases: running out of time is a
-     * statement about the boat's speed.
+     * Did not finish — still racing when the race ended. Draws the largest share of the
+     * pool, so the handicap eases: running out of time is a statement about speed.
      */
     DNF,
     /**
@@ -26,7 +26,7 @@ public enum FinishStatus
     RET,
     /** Disqualified — excluded from adjustments, TCF unchanged. */
     DSQ,
-    /** Did not compete — never on the water. TCF unchanged. */
+    /** Did not come. Pays nothing, and draws a share that grows as the fleet empties. */
     DNC,
     /** Did not start — on the water, did not start. TCF unchanged. */
     DNS,

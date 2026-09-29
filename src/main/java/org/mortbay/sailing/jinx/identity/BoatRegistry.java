@@ -41,8 +41,8 @@ import org.slf4j.LoggerFactory;
  *   <li><b>same design</b> — the same boat;</li>
  *   <li><b>candidate has none, incoming has one</b> — the same boat, and the record is
  *       <em>upgraded</em>: its id gains the design and every reference is rewritten.
- *       This is the case that matters for a CSV import where the design column was blank
- *       the first time and filled in later;</li>
+ *       This is the case that matters for a boat typed in without a design and later
+ *       imported with one;</li>
  *   <li><b>candidate has one, incoming has none</b> — the same boat; the known design
  *       wins over the missing one;</li>
  *   <li><b>two different designs</b> — <em>not</em> matched. Either two boats really do
@@ -198,7 +198,7 @@ public class BoatRegistry
     }
 
     /**
-     * Record an alias that the caller discovered, e.g. the raw spelling a CSV used for a
+     * Record an alias that the caller discovered, e.g. the raw spelling an import used for a
      * boat that resolved to a different canonical identity. Persisted immediately.
      */
     public synchronized void recordAlias(Boat boat, String rawSail, String rawName)

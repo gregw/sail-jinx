@@ -19,10 +19,12 @@
         boat's handicap is adjusted to change its next start time:
     </p>
     <ul>
-        <li><b>Top finishers receive time penalties</b> by place — for example,
-            6 minutes for first, 4 for second, 2 for third. </li>
-        <li><b>The total penalty time is given back to the fleet</b>, distributed so that slower boats get a larger share.</li>
-        <li><b>The fleet is re-anchored</b> so the slowest boat starts exactly on the earliest allowed start time.</li>
+        <li><b>Top finishers receive time penalties</b> by place<span id="penalty-example"></span>.</li>
+        <li><b>Those minutes are given back to the rest of the entry list</b> — shared by the
+            boats that finished outside the penalties, most to a boat that ran out of time,
+            and a little to boats that stayed home.</li>
+        <li><b>The next start sheet is recomputed</b> so the slowest boat starts on the
+            earliest start time.</li>
     </ul>
 
     <div id="store-errors" class="banner banner-err" style="display:none;"></div>
@@ -72,6 +74,7 @@
     }
 
     renderClub(cfg);
+    renderPenaltyExample(cfg);
 
     const [racesR, seriesR] = await Promise.all([
       fetchJson('/api/races'),
@@ -132,6 +135,16 @@
       + '</li>').join('') + '</ul>';
   })();
 
+  /** The club's default ladder, so the example is the one actually in use. */
+  function renderPenaltyExample(cfg) {
+    const list = (cfg && cfg.algorithm && cfg.algorithm.penaltyList) || [];
+    if (!list.length) return;
+    const ords = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth'];
+    const parts = list.slice(0, ords.length).map((m, i) => m + ' for ' + ords[i]);
+    document.getElementById('penalty-example').textContent =
+      ' — by default ' + parts.join(', ') + ' (minutes)';
+  }
+
   /**
    * What this site is, and where the rest of the club's racing lives.
    *
@@ -155,8 +168,8 @@
       parts.push('For non-Jinx results, see the club\u2019s '
         + link(club.otherResults, 'other system') + '.');
     if (club.seriesEntry)
-      parts.push('To enter all club series use '
-        + link(club.seriesEntry, 'links for this page') + '.');
+      parts.push('To enter a series, see the club\u2019s '
+        + link(club.seriesEntry, 'series entry page') + '.');
     if (club.noticeBoard)
       parts.push('See the official ' + link(club.noticeBoard, 'notice board')
         + ' for SIs, amendments and other notices.');

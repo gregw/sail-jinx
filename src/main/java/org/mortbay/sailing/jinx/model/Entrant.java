@@ -6,9 +6,9 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * One boat entered in one race, with the TCF that applies to it <em>for that
  * race</em>.
  *
- * <p>Identity is denormalised on purpose. {@code sailNumber}, {@code name},
- * {@code division} and {@code spinnaker} are copied from the register at entry
- * time rather than looked up on read, so that
+ * <p>Identity is denormalised on purpose. {@code sailNumber}, {@code name} and
+ * {@code designId} are copied from the register at entry time rather than looked up
+ * on read, so that
  * <ul>
  *   <li>a one-off entrant — which has no register boat at all — renders the
  *       same way as everyone else, and</li>

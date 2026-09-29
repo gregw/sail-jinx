@@ -125,7 +125,8 @@ public record AuthConfig(
     }
 
     /**
-     * Whether this account may edit handicaps and unlock races.
+     * Whether this account is an admin rather than a race officer — see
+     * {@code ApiServlet.Role}.
      *
      * <p>An empty {@code admins} list means everyone who can sign in is an admin, which is
      * the honest default for a club where the same two people do everything. Naming

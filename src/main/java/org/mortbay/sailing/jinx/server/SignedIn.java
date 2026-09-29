@@ -16,7 +16,7 @@ import org.mortbay.sailing.jinx.config.AuthConfig;
  *
  * @param email  the club address, lower-cased, or null when nobody is signed in
  * @param name   the display name Google supplies, or null
- * @param admin  whether this account may edit handicaps and unlock races
+ * @param admin  whether this account is an admin (see {@code AuthConfig.isAdmin})
  * @param domain the {@code hd} claim — the Workspace domain Google asserts
  */
 public record SignedIn(String email, String name, boolean admin, String domain)

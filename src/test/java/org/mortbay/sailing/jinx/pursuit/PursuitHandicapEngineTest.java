@@ -2,6 +2,8 @@ package org.mortbay.sailing.jinx.pursuit;
 
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,21 +30,12 @@ import static org.hamcrest.Matchers.hasSize;
 class PursuitHandicapEngineTest
 {
     private static final JinxConfig.Algorithm DEFAULT_ALG = new JinxConfig.Algorithm(
-        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, "18:00", -33.8000, 151.2833, false,
-        null, null, null, null, null);
+        List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, "18:00", -33.8000, 151.2833, false);
 
     private static final double TOLERANCE = 0.01;
 
-    /** The default the club gets when it says nothing: A — fixed penalties, even giveback. */
+    /** The default the club gets when it says nothing. */
     private final PursuitHandicapEngine engine = new PursuitHandicapEngine(DEFAULT_ALG);
-
-    /** A corner of the square this file needs by name rather than by default. */
-    private static PursuitHandicapEngine engine(JinxConfig.PenaltyScaling scaling, double gamma)
-    {
-        return new PursuitHandicapEngine(new JinxConfig.Algorithm(
-            List.of(5.0, 4.0, 3.0, 2.0, 1.0), 90, "18:00", -33.8000, 151.2833, false,
-            null, scaling, gamma, null, null));
-    }
 
     /** The pair the engine works on: an id to key the answer by, and the TCF in force. */
     private static Competitor boat(String id, String name, String sailNumber, double tcf)
@@ -88,9 +81,13 @@ class PursuitHandicapEngineTest
     @Test
     void netAdjustmentsSumToZero()
     {
-        List<Competitor> boats = workedExampleFleet();
+        // One boat at home, so there is somewhere for what the racers cannot take to go:
+        // with nobody at home the leftover is discarded and the sum is not zero.
+        List<Competitor> boats = new ArrayList<>(workedExampleFleet());
+        boats.add(boat("away", "Away", "9", 1.0));
         Race race = race(90);
-        Map<String, Result> results = workedExampleResults();
+        Map<String, Result> results = new HashMap<>(workedExampleResults());
+        results.put("away", new Result("away", FinishStatus.DNC, null, null, null));
 
         List<Adjustment> adjustments = engine.processResults(boats, race, results);
 
@@ -98,66 +95,6 @@ class PursuitHandicapEngineTest
             .mapToDouble(Adjustment::netAdjustmentMinutes)
             .sum();
         assertThat(sum, closeTo(0.0, TOLERANCE));
-    }
-
-    /**
-     * Spec §6.3 at an intermediate γ: half an even split, half shared by the gap behind
-     * the leader.
-     *
-     * <p>γ = 0.5 with fixed penalties, so the pool is a round 15. The worked-example
-     * fleet all start together, so the gaps are just the elapsed times less the winner's
-     * 85 minutes — 0, 5, 10, 15, 20, 25, 30, and 35 for the DNF (last finisher's 30 plus
-     * the 5-minute allowance).
-     *
-     * <pre>
-     *   mean gap = 140 / 8                       = 17.5
-     *   wᵢ       = 0.5 × 17.5 + 0.5 × gapᵢ
-     *   w(p1)    = 8.75 + 0            = 8.75    (gap 0)
-     *   Σw       = 8 × 8.75 + 0.5 × 140          = 140
-     *   p1 reward = 15 × 8.75 / 140              = 0.9375
-     *   p1 net    = 5 − 0.9375                   = 4.0625
-     * </pre>
-     *
-     * <p>The leader keeps half an even share at γ = 0.5 and loses it smoothly as γ rises
-     * — the property the blend exists for. Under the exponent form it would have been
-     * zero here, and zero at γ = 0.01 too.
-     */
-    /**
-     * An intermediate γ is genuinely intermediate, read off the boats that may receive.
-     *
-     * <p>It used to be read off the winner, whose share fell from an even split to
-     * nothing as the dial turned. The winner is on the ladder and draws nothing at every
-     * γ now, so that reading has become constant — the dial is visible between 6th and
-     * 7th instead, where at γ = 0 they draw the same and at γ = 1 they draw in the ratio
-     * of {@code 1 + gap/maxGap}.
-     */
-    @Test
-    void anIntermediateGammaIsHalfEvenAndHalfGapWeighted()
-    {
-        List<Competitor> boats = workedExampleFleet();
-        Race race = race(90);
-        Map<String, Result> results = workedExampleResults();
-
-        for (double gamma : new double[] {0.0, 0.5, 1.0})
-        {
-            Map<String, Adjustment> byId = engine(JinxConfig.PenaltyScaling.FIXED, gamma)
-                .processResults(boats, race, results).stream()
-                .collect(Collectors.toMap(Adjustment::boatId, a -> a));
-
-            // The five on the ladder draw nothing, whatever γ says.
-            for (String id : List.of("p1", "p2", "p3", "p4", "p5"))
-                assertThat("γ=" + gamma + " " + id, byId.get(id).rewardMinutes(),
-                    closeTo(0.0, 1e-12));
-
-            // The fleet finishes five minutes apart, so 6th and 7th are 25 and 30
-            // minutes behind the leader and 30 is the widest gap among the eligible.
-            // Their raw weights are 1 + γ·25/30 and 1 + γ·30/30, and the ratio between
-            // them is the whole of what γ decides.
-            double sixth = byId.get("p6").rewardMinutes();
-            double seventh = byId.get("p7").rewardMinutes();
-            assertThat("γ=" + gamma, seventh / sixth,
-                closeTo((1.0 + gamma) / (1.0 + gamma * 25.0 / 30.0), 1e-9));
-        }
     }
 
     /**
@@ -182,9 +119,9 @@ class PursuitHandicapEngineTest
     }
 
     /**
-     * Spec §5: DNF boats share an effective elapsed time of the slowest finisher +
-     * dnfAllowance, so they receive identical rewards. RET does not — see
-     * {@code HandicapVariantTest.aRetirementIsFrozenBecauseItSaysNothingAboutTheBoatsSpeed}.
+     * Spec §5: two boats that both ran out of time are treated alike — a minute each,
+     * never more, even with nine charged and nobody else to take them. RET is frozen and
+     * gets nothing at all.
      */
     @Test
     void dnfBoatsShareEqualReward()
@@ -205,11 +142,8 @@ class PursuitHandicapEngineTest
         Map<String, Adjustment> byId = engine.processResults(boats, race, results).stream()
             .collect(Collectors.toMap(Adjustment::boatId, a -> a));
 
-        // Both boats ran out of time, so both get the same effective treatment.
-        // Deliberately two DNFs and not one of each: a RET is frozen and gets nothing —
-        // see aRetirementIsFrozenBecauseItSaysNothingAboutTheBoatsSpeed.
-        assertThat(byId.get("dnfA").rewardMinutes(),
-            closeTo(byId.get("dnfB").rewardMinutes(), TOLERANCE));
+        assertThat(byId.get("dnfA").rewardMinutes(), closeTo(1.0, 1e-9));
+        assertThat(byId.get("dnfB").rewardMinutes(), closeTo(1.0, 1e-9));
         // Both should have no fixed penalty.
         assertThat(byId.get("dnfA").penaltyMinutes(), closeTo(0.0, TOLERANCE));
         assertThat(byId.get("dnfB").penaltyMinutes(), closeTo(0.0, TOLERANCE));
@@ -236,35 +170,26 @@ class PursuitHandicapEngineTest
     }
 
     /**
-     * newTcf is anchored to the race the fleet was <em>set</em> to sail, under the
-     * default variant B: fixed penalties, given back by the gap behind the leader.
+     * newTcf is anchored to the race the fleet was <em>set</em> to sail.
      *
-     * <p>Worked example fleet: 7 finishers @ 85,90,…,115 min + 1 DNF, all TCF = 1.0.
-     * The race carries a 90-minute target and the fleet took a median of 100.
+     * <p>The race carries a 90-minute target, there is no next race to measure against,
+     * and the fleet took longer than 90.
      * <pre>
-     *   pool         = 5+4+3+2+1                             = 15.0 min   (fixed)
-     *   dnf scores   = last finisher + dnfAllowance = 115+1  = 116 min
-     *   gaps         = 0,5,10,15,20,25,30 and 31 for the DNF
-     *   Σ gaps                                               = 136
-     *   p1 reward    = 15.0 × 0 / 136                        = 0.0        (γ = 1)
      *   p1 penalty   = 5                                     = 5.0
-     *   p1 net       = 5.0 − 0.0                             = 5.0
+     *   p1 reward    = 0 (a penalty place)
      *   scale        = expectedDuration × medianTcf = 90×1.0 = 90
      *   newTcf       = 1.0 / (1 − 5.0 / 90) = 90/85          = 1.058823…
      * </pre>
      *
-     * <p><b>The 100 the fleet actually took reaches none of this.</b> That is the
-     * reversal the committee asked for: the number being computed is the handicap for
-     * the <em>next</em> race, and the next race is far more likely to run close to its
-     * expected duration than to the duration of the one just sailed. A night that
-     * overran because the breeze died should not shrink every correction the season
-     * makes. The engine used to run on the median of what was sailed, and this same
-     * fleet came out at 1/0.95 rather than 90/85.
+     * <p><b>What the fleet actually took reaches none of this.</b> The number being
+     * computed is the handicap for the <em>next</em> race, and the next race is far more
+     * likely to run close to its expected duration than to the duration of the one just
+     * sailed. A night that overran because the breeze died should not shrink every
+     * correction the season makes. When there IS a next race its target is used instead —
+     * see {@code MinuteGivebackTest.theTcfChangeIsMeasuredAgainstTheNextRace}.
      *
-     * <p>Two things it also pins. <b>The winner pays its penalty in full</b> — at γ = 1
-     * its gap is zero by definition, so it draws nothing back. And <b>fixed penalties do
-     * not move with the night</b>: 5.0 is the penaltyList entry itself, where a per-hour
-     * scaling would charge it against this boat's own 85 minutes.
+     * <p>It also pins that <b>the winner pays its penalty in full</b>: a penalty place
+     * draws nothing back.
      */
     @Test
     void newTcfIsAnchoredToTheExpectedDurationNotTheMeasuredOne()
@@ -352,7 +277,7 @@ class PursuitHandicapEngineTest
         // "away" is on the entry list and never came. It is here because the pool has to
         // have somewhere to go: with a five-rung ladder and two finishers, every boat
         // that raced is penalised, nobody may receive, and the engine charges nothing at
-        // all. See HandicapVariantTest.aFleetNoBiggerThanThePenaltyListIsChargedNothing.
+        // all. See HandicapRulesTest.aFleetNoBiggerThanThePenaltyListIsChargedNothing.
         Map<String, Result> results = Map.of(
             "a", fin("a", start, start.plusMinutes(55)),
             "b", fin("b", start, start.plusMinutes(65)),
@@ -363,8 +288,7 @@ class PursuitHandicapEngineTest
         // is a boat that may receive and the direction of its correction is visible.
         // With the club's five-rung list both finishers would be on the ladder.
         PursuitHandicapEngine oneRung = new PursuitHandicapEngine(new JinxConfig.Algorithm(
-            List.of(5.0), 90, "18:00", -33.8000, 151.2833, false,
-            null, JinxConfig.PenaltyScaling.FIXED, 0.0, null, null));
+            List.of(5.0), 90, "18:00", -33.8000, 151.2833, false));
         Map<String, Adjustment> byId = oneRung.processResults(boats, race, results).stream()
             .collect(Collectors.toMap(Adjustment::boatId, a -> a));
 
@@ -401,9 +325,7 @@ class PursuitHandicapEngineTest
             "third", new Result("third", FinishStatus.FIN, start, start.plusMinutes(60), null, 2),
             "away",  new Result("away",  FinishStatus.DNC, null, null, null));
 
-        // Fixed scaling, so the ladder reads as the plain figures from penaltyList and
-        // the test stays about which boat gets which rung.
-        Map<String, Adjustment> byId = engine(JinxConfig.PenaltyScaling.FIXED, 0.0)
+        Map<String, Adjustment> byId = engine
             .processResults(boats, race, results).stream()
             .collect(Collectors.toMap(Adjustment::boatId, a -> a));
 

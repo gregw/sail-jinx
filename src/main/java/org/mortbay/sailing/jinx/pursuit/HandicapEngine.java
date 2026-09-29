@@ -24,7 +24,7 @@ public interface HandicapEngine
      *
      * @param boats   participating boats with the TCF in force for this race
      * @param race    race with {@code targetElapsedMinutes} and {@code earliestStart} set
-     * @return one entry per boat, ordered slowest start first
+     * @return one entry per boat, in the order given — the caller sorts
      */
     List<StartTime> computeStartTimes(List<Competitor> boats, Race race);
 
@@ -33,8 +33,19 @@ public interface HandicapEngine
      *
      * @param boats   participating boats with the TCF in force for this race
      * @param race    race that has just finished
-     * @param results boatId → Result; missing boats are treated as DNC
-     * @return one {@link Adjustment} per boat in {@code boats}, sum of deltas = 0
+     * @param results boatId → Result; a boat with no result is frozen
+     * @param nextRaceMinutes the expected duration of the race the new TCFs will be
+     *                sailed in, which a time adjustment is measured against; null for
+     *                the last race of a series, which falls back to its own
+     * @return one {@link Adjustment} per boat in {@code boats}
      */
-    List<Adjustment> processResults(List<Competitor> boats, Race race, Map<String, Result> results);
+    List<Adjustment> processResults(List<Competitor> boats, Race race,
+                                    Map<String, Result> results, Integer nextRaceMinutes);
+
+    /** {@link #processResults(List, Race, Map, Integer)} with no next race. */
+    default List<Adjustment> processResults(List<Competitor> boats, Race race,
+                                            Map<String, Result> results)
+    {
+        return processResults(boats, race, results, null);
+    }
 }

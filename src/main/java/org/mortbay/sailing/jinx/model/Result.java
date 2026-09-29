@@ -11,8 +11,7 @@ import java.time.LocalTime;
  * wall-clock finish time. Elapsed time is derived from {@code finish - actualStart}
  * by the algorithm — never persisted, never editable.
  *
- * <p>{@code penaltyMinutes} is the optional protest/umpire scoring penalty applied
- * before the algorithm runs. It is additive to the boat's elapsed time.
+ * <p>{@code penaltyMinutes} is not read by the engine, and the server passes null.
  *
  * <p>{@code correctedFinishSeconds} is the boat's corrected finish as seconds since
  * midnight — the finish with any early-start head start given back, and deliberately
@@ -51,11 +50,7 @@ public record Result(
     {
         this(boatId, status, actualStart, finish, penaltyMinutes, finishPosition, null);
     }
-    /**
-     * Derived elapsed time, or null when either timestamp is missing. The algorithm
-     * does its own status-aware time assignment in {@code HandicapEngine}; this is
-     * only for display.
-     */
+    /** Elapsed time — what the engine reads for a finisher — or null without both times. */
     public Duration elapsed()
     {
         if (actualStart == null || finish == null)

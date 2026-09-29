@@ -19,10 +19,11 @@ It has two layers:
   actual-start / finish / flags as boats cross — with NOW buttons for live
   timing, drag-to-reorder, filters, and a duty boat.
 
-- The **Jinx handicap algorithm**. After the race, fixed penalties are applied
-  to the place-getters and the whole pool is redistributed across the fleet,
-  weighted so slower boats get a larger share. The result is converted back
-  into a TCF change and carried forward to the next race.
+- The **Jinx handicap algorithm**. After the race, whole-minute penalties are
+  applied to the place-getters and given back a minute at a time — to boats that
+  ran out of time, then from the last boat home forwards — with any leftover
+  shared by the boats that stayed home. The result is converted into a TCF change
+  measured against the next race and carried forward to it.
 
 The originating use case is the **MYC Twilight Series** at
 [Manly Yacht Club](https://myc.org.au), Sydney. Whilst a PHS-style algorithm
@@ -43,13 +44,16 @@ feel jinxed each week.
 **They are typed in by a human.**
 
 sail-jinx has no connection to SailSys or to any other system. It is not a
-client of anything, it makes no outbound network calls, and it will run with the
-network cable pulled out. Each race produces two printable reports:
+client of anything, and with sign-in off (the default) it makes no outbound
+network calls and runs with the network cable pulled out. Each race produces two
+printable reports:
 
 | Report | Columns | When |
 |---|---|---|
-| **Start sheet** | Sail # · Boat · Offset · Start | Before the race, once start times are computed |
-| **Finish sheet** | Pl · Sail # · Boat · Finish · Corrected · Flags | After the race |
+| **Start sheet** | Sail # · Boat · Offset · Start, then blank Came / Actual Start / Actual Finish / Notes to write in | Once start times are computed |
+| **Finish sheet** | Place · Corrected Finish · Flags · Sail # · Boat, then Adjustment · Late · Start Place · Scored Elapsed · Elapsed Place | Once the results are processed |
+
+The first five finish-sheet columns are the ones transcribed.
 
 Someone reads those and types them into SailSys. That transcription is the only
 link between the two systems and it happens outside this software.
@@ -74,16 +78,16 @@ pinned by tests so neither gets "fixed" to match the other.
 ## Running it
 
 ```bash
-mvn exec:java                       # serves http://localhost:8080/ from ./data
+mvn exec:java                       # serves ./data on the port in config.yaml (8082)
 mvn exec:java -Djinx-data=/path/to/data
-mvn test                            # 169 tests, no network required
+mvn test                            # no network required
 ```
 
 Configuration lives in `data/config/config.yaml` — the club domain and name, the
 timezone, the handicap algorithm defaults, and the port. Everything else is
 entered through the UI.
 
-Open <http://localhost:8080/> and work through: **Boats** → **Series** →
+Open <http://localhost:8082/> and work through: **Boats** → **Series** →
 **Races** → open the first race and enter its fleet.
 
 The fleet can be entered a boat at a time or loaded from a
@@ -94,7 +98,7 @@ kinds of fact:
 - **Boats page → Import fleet.** Reads identity only — sail number, name, and the
   design carried in the export's boat id. Handicap and variant are ignored, since
   a boat has neither.
-- **Race page → Add entrants from JSON.** Reads the same file and uses each boat's
+- **Race page → Import entrants (JSON).** Reads the same file and uses each boat's
   handicap as its TCF for that race and its variant as its spinnaker. This is the
   import that carries the numbers.
 
@@ -109,11 +113,15 @@ administrator, and the machine it runs on is the security boundary. That is fine
 on a club office PC and **not** fine anywhere with a network around it.
 
 For anything reachable over a network, copy `data/config/auth.yaml.example` to
-`data/config/auth.yaml` and fill in a Google OAuth client. Sign-in is then
-restricted to the club's Workspace domain — checked on the server, against the
-domain Google itself asserts, so a personal Gmail account cannot get in. Named
-addresses in `admins:` may edit handicaps and unlock races; everyone else who
-signs in can run a race night but not rewrite the season.
+`data/config/auth.yaml` and fill in a Google OAuth client. Then:
+
+- **Anyone** can read the results without signing in (except the audit log).
+- **A club account** — checked on the server against the Workspace domain Google
+  asserts, so a personal Gmail account cannot get in — can run a race night:
+  times, start sheet, processing and unlocking results, and TCF edits.
+- **Addresses listed in `admins:`** can also manage series, races, handicap
+  settings, the fleet register, and which boats are in a race. An empty list makes
+  every club account an admin.
 
 `auth.yaml` holds a client secret and is gitignored. The example file beside it
 is committed and must never carry a real one.
@@ -166,7 +174,7 @@ TLS. Put nginx or Caddy in front of it with a Let's Encrypt certificate, then se
 
 That flag is not cosmetic. The OAuth `redirect_uri` is built from the incoming
 request, so without it a proxied login sends Google to
-`http://localhost:8080/auth/callback` — which is not what is registered in the
+`http://localhost:8082/auth/callback` — which is not what is registered in the
 console, and the failure reads as a Google configuration error rather than a local
 one. Leave it `false` whenever the server is exposed directly: those headers are
 whatever the client chose to send.
@@ -177,10 +185,10 @@ whatever the client chose to send.
 
 A boat's record holds only what is true of the hull: what it is called, what is
 on its sail, and what it was built as. **Handicap, division and spinnaker are
-not there** — a boat does not have a TCF, it has one for a given series and a
-different one by the end of it, and the same hull can sail one season in
-Division 1 with a kite and the next in Division 2 without. Those are set on the
-race entry, which is also where a fleet list's TCF column lands.
+not there** — a boat does not have a TCF, it has one for each race it sails, and
+the same hull can sail one season in Division 1 with a kite and the next in
+Division 2 without. Those are set on the race entry, which is also where an
+imported handicap lands.
 
 Boats are identified the same way as in
 [sailing-pf](https://github.com/gregw/sailing-pf), which analyses this fleet's
@@ -233,7 +241,7 @@ folder all work. Nothing automates this for you.
   pursuit series and hands you paper.
 - Not a time-on-time scoring engine. There is no elapsed-time correction in the
   pursuit model.
-- Not multi-user. One person, one browser, one race night. Two people editing
+- Not built for concurrent editing. Anyone may watch, but two people editing
   the same race will overwrite each other.
 - Not a general entry system. It expects roughly forty regulars and the
   occasional casual.

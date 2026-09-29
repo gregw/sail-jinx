@@ -5,7 +5,7 @@ package org.mortbay.sailing.jinx.pursuit;
  * in force for the race being computed.
  *
  * <p>Deliberately not {@link org.mortbay.sailing.jinx.model.Boat}. A boat has no TCF —
- * it has one per series entry, and a different one by the end of the season. Handing the
+ * it has one per race entry, and a different one by the end of the season. Handing the
  * engine a Boat would mean inventing a handicap field on the register just to have
  * somewhere to put the value while it is passed along.
  *
@@ -15,11 +15,9 @@ package org.mortbay.sailing.jinx.pursuit;
 public record Competitor(String boatId, double tcf, boolean seeded)
 {
     /**
-     * A boat that was on the start sheet before the night began, and so takes part in the
-     * handicap. A boat that turned up and raced without being seeded is scored for the
-     * night but left out of the handicap arithmetic entirely — it is not in the placings,
-     * it neither pays into the pool nor draws from it, and its elapsed time does not
-     * reach the penalties the rest of the fleet pays.
+     * {@code seeded} is true for a boat in for the season. An unseeded boat — a casual —
+     * is handicapped in a second pass that cannot move the seeded boats; see
+     * {@link PursuitHandicapEngine#processResults}.
      */
     public Competitor
     {

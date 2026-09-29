@@ -137,6 +137,21 @@ function normaliseFlags(set) {
 // Flags that take a boat out of the placings entirely.
 const UNPLACED_FLAGS = ['AVG', 'DNC', 'DNS', 'DNF', 'DSQ', 'RET', 'ABN'];
 
+/**
+ * One line per flag, for tooltips: what it means and what it does to the handicap.
+ * The handicap half follows jinxStatus below and FinishStatus on the server.
+ */
+const FLAG_HELP = {
+  AVG: 'Duty boat — average points. Handicap: counted as a boat that stayed home.',
+  DNF: 'Still racing when the race ended. Handicap eases — draws the largest share of the giveback.',
+  RET: 'Retired for a reason of its own. Handicap frozen.',
+  DNS: 'Came but did not start. Handicap frozen.',
+  DSQ: 'Disqualified. Handicap frozen.',
+  DNC: 'Did not come. Draws a small share of the giveback.',
+  ABN: 'Race abandoned. Handicap frozen.',
+  OCS: 'Over the line early: head start given back and 5 minutes added to the scored finish.'
+};
+
 // --- time helpers ----------------------------------------------------------
 
 // Accepts HH:MM and HH:MM:SS, and tolerates a legacy sub-second suffix.
@@ -481,16 +496,10 @@ function createScorer(state) {
    * Places by the given mode, as a Map of boatId -> place.
    *   'pursuit' (default) -> scored finish time; in a pursuit race the finish
    *                          order IS the result
-   *   'scratch'           -> scored elapsed
-   *   'tcf'               -> corrected time (TCF x scored elapsed)
+   *   'scratch'           -> scored elapsed — the finish sheet's Elapsed Place
+   *   'tcf'               -> corrected time (TCF x scored elapsed); no page uses it
    *
-   * 'scratch' is also what the finish sheet's Elapsed Place column ranks by: the
-   * scored elapsed, with the OCS penalty in it.
-   *
-   * Boats carrying any UNPLACED_FLAGS are left out. Ties share the better
-   * place and the next distinct key jumps past them, so three boats tied at
-   * 5th are followed by 8th — the sailing convention. Keys are whole seconds,
-   * so equality is exact.
+   * Boats carrying any UNPLACED_FLAGS are left out. Ties as in rankBy.
    */
   function places(mode) {
     const excluded = new Set(UNPLACED_FLAGS);
@@ -564,10 +573,8 @@ function createScorer(state) {
       .map(e => ({
         boatId: e.boatId,
         currentTcf: tcf(e),
-        // Seeded means "was on the start sheet before tonight". A casual raced and is
-        // scored, but takes no part in the handicap: it is not on the penalty ladder,
-        // neither pays into the pool nor draws from it, and its elapsed time stays out
-        // of the measured duration the rest of the fleet is judged against.
+        // Seeded means in for the season. A casual is handicapped in a second pass that
+        // cannot move the series boats — see PursuitHandicapEngine.processResults.
         seeded: e.entryType === 'ROSTER',
         status: jinxStatus(e),
         elapsedMinutes: handicapElapsedMinutes(e),

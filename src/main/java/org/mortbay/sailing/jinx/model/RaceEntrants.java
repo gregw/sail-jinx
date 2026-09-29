@@ -39,7 +39,7 @@ public record RaceEntrants(
         ROSTER,
         /** Produced by processing the handicaps of {@code sourceRaceId}. */
         CARRIED_FORWARD,
-        /** An admin typed at least one of them on the race page. */
+        /** Typed or imported on the race page. */
         MANUAL_EDIT
     }
 

@@ -5,10 +5,9 @@ import java.time.LocalTime;
 /**
  * One boat's published start time for a race.
  *
- * <p>{@code expectedElapsed} is the computed τ (tau) value — what we believe this
- * boat will take to finish at the configured target elapsed time. The published
- * {@code startTime} is rounded to the minute; rounding error is absorbed into the
- * TCF on the next adjustment.
+ * <p>{@code expectedElapsedMinutes} is τ — how long this boat is expected to take
+ * when the median boat takes the race's expected duration. {@code startTime} is
+ * rounded to the nearest minute.
  */
 public record StartTime(
     String boatId,

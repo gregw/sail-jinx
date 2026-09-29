@@ -15,9 +15,10 @@
   <div id="boats-state" class="banner banner-info">Loading…</div>
 
   <div class="toolbar">
-    <label><input type="checkbox" id="show-retired"> Show retired</label>
-    <button id="add-btn" class="primary" type="button" data-requires="officer">Add boat</button>
-    <button id="import-btn" type="button" data-requires="admin">Import fleet (JSON)</button>
+    <label title="Include boats no longer active. Retired boats are kept because past races name them."><input type="checkbox" id="show-retired"> Show retired</label>
+    <button id="add-btn" class="primary" type="button" data-requires="admin">Add boat</button>
+    <button id="import-btn" type="button" data-requires="admin"
+      title="Register boats from a sailing-pf handicaps export. Identity only, no TCFs.">Import fleet (JSON)</button>
   </div>
 
   <section id="import-panel" style="display:none;">
@@ -28,9 +29,9 @@
     </p>
     <p class="lead">
       Only the identity is read here: sail number, name, and the design carried in the
-      export's boat id. <strong>Handicap and variant are ignored</strong> — a boat has
-      neither; they belong to a series entry. Use
-      <em>Add entrants from JSON</em> on a race to bring those in.
+      export's boat id. <strong>Handicap and variant are ignored</strong> — they belong to
+      a race entry, not a boat. Use <em>Import entrants (JSON)</em> on a race to bring
+      those in.
     </p>
     <p class="hint" style="max-width:60rem;">
       Boats already registered are matched, not duplicated — by id first, then through the
@@ -108,13 +109,13 @@
     return '<tr class="' + (b.active ? '' : 'retired') + '">'
       + '<td class="mono">' + esc(b.sailNumber) + '</td>'
       + '<td>' + esc(b.name)
-        + (b.casual ? ' <span class="tag" title="Added on a race night">casual</span>' : '') + '</td>'
+        + (b.casual ? ' <span class="tag" title="Registered as a casual on a race night">casual</span>' : '') + '</td>'
       + '<td>' + (b.designId
           ? esc(designName(b.designId))
-          : '<span class="hint" title="Not known yet — a later import can fill it in">—</span>') + '</td>'
-      + '<td class="mono id-cell" title="Built from sail number, name and design, so it changes if the design is later filled in">' + esc(b.id) + '</td>'
+          : '<span class="hint" title="Not known yet. A later entry or import can fill it in.">—</span>') + '</td>'
+      + '<td class="mono id-cell" title="Built from sail number, name and design, so it changes if a design is filled in later">' + esc(b.id) + '</td>'
       + '<td class="notes-cell">' + esc(b.notes) + '</td>'
-      + '<td><button type="button" class="link-btn edit-btn" data-requires="officer" data-id="' + esc(b.id) + '">Edit</button></td>'
+      + '<td><button type="button" class="link-btn edit-btn" data-requires="admin" data-id="' + esc(b.id) + '">Edit</button></td>'
       + '</tr>';
   }
 
@@ -262,7 +263,7 @@
             + '<td class="num-cell">' + esc(row.index) + '</td>'
             + '<td class="mono">' + esc(row.sailNumber) + '</td>'
             + '<td>' + esc(row.name) + '</td>'
-            + '<td>' + esc(outcomeLabel(row.outcome, dryRun))
+            + '<td>' + esc(outcomeLabel(row, dryRun))
               + (row.note ? ' <span class="hint">' + esc(row.note) + '</span>' : '') + '</td>'
             + '<td class="mono id-cell">' + esc(row.boatId || '') + '</td>'
             + '</tr>').join('')
@@ -271,15 +272,18 @@
     el.innerHTML = parts.join('');
   }
 
-  function outcomeLabel(outcome, dryRun) {
-    if (dryRun || outcome === 'PREVIEW') return 'will be imported';
-    switch (outcome) {
+  function outcomeLabel(row, dryRun) {
+    // A preview only recognises a boat by its exact id; name and alias matching happen
+    // on the real import.
+    if (dryRun || row.outcome === 'PREVIEW')
+      return row.boatId ? 'already registered' : 'new, or matched by name on import';
+    switch (row.outcome) {
       case 'CREATED':  return 'added';
       case 'MATCHED':  return 'already registered';
       case 'UPGRADED': return 'design added';
       case 'ALIASED':  return 'matched under another name';
       case 'CONFLICT': return 'needs a decision';
-      default:         return outcome;
+      default:         return row.outcome;
     }
   }
 

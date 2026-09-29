@@ -86,13 +86,11 @@ function getWhoami() {
 }
 
 /**
- * Whether this caller may edit handicaps and unlock races.
+ * Whether this caller is an admin: series, races, the fleet register, and who is in a race.
  *
- * <p>With no login configured this is everybody, which is what sail-jinx did before it
- * had one. It answers from the cached whoami, so a page that has not called
- * {@link getWhoami} yet gets the permissive default — which is a UI hint only. The
- * server checks the same thing for real and returns 403; this exists so the buttons
- * match what the button will actually do, not to enforce anything.
+ * <p>With no login configured this is everybody. It answers from the cached whoami, so a
+ * page that has not called {@link getWhoami} yet gets the permissive default. A UI hint
+ * only — the server checks the same thing and refuses.
  */
 function isAdmin() {
   return _who.admin !== false;

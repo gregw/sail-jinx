@@ -12,8 +12,8 @@
 <main>
   <h1>Audit log</h1>
   <p class="lead">
-    Every handicap processing step, in order, and who did it. This store is the only
-    record there is, so it is worth being able to see what changed and when.
+    Every time handicaps were saved, a race was unlocked or a series deleted — newest
+    first, and who did it.
   </p>
 
   <div id="store-errors" class="banner banner-err" style="display:none;"></div>
@@ -21,8 +21,8 @@
 
   <table id="audit-table" style="display:none;">
     <thead>
-      <tr><th>When</th><th>Race</th><th>Action</th><th>Who</th><th class="num-cell">Pool</th>
-        <th class="num-cell">Boats</th><th>Notes</th></tr>
+      <tr><th>When</th><th>Race</th><th>Action</th><th>Who</th><th class="num-cell" title="Penalty minutes charged">Pool</th>
+        <th class="num-cell" title="Boats adjusted">Boats</th><th>Notes</th></tr>
     </thead>
     <tbody id="audit-tbody"></tbody>
   </table>
@@ -67,7 +67,7 @@
     const entries = auditR.body || [];
     if (!entries.length) {
       state.className = 'banner banner-info';
-      state.textContent = 'Nothing logged yet — the first handicap processing will appear here.';
+      state.textContent = 'Nothing logged yet — processing a race will appear here.';
       return;
     }
     const raceNames = new Map((racesR.ok ? racesR.body || [] : [])

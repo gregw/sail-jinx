@@ -236,6 +236,11 @@ ul.next-races li:only-child { list-style: none; margin-left: -1.1rem; }
   margin: 0.75rem 0; max-width: 46rem;
 }
 .form-grid label { color: var(--muted); font-size: 0.9rem; }
+/* A label or heading with a tooltip says so, since hover is the only way to find it. */
+.form-grid label[title], .toolbar label[title], .filters label[title] {
+  text-decoration: underline dotted var(--line-strong); text-underline-offset: 3px;
+}
+label[title], th[title]:not(.sortable) { cursor: help; }
 
 /* Nav first, then the title: the arrows read as "step through the season" sitting
    beside the race they step from, rather than stranded on the far margin. */

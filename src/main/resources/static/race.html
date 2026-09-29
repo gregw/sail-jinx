@@ -20,17 +20,20 @@
 
   <section id="race-setup" style="display:none;">
     <div class="toolbar">
-      <label for="f-earliest">Earliest start</label>
+      <label for="f-earliest" title="The slowest boat's gun, HH:MM.">Earliest start</label>
       <input id="f-earliest" class="hhmm-input" placeholder="HH:MM" inputmode="numeric"
              autocomplete="off" maxlength="5">
-      <label for="f-target">Expected race duration</label>
+      <label for="f-target" title="How long the median boat should take, H:MM or plain minutes. It sets the stagger, and the handicap change is measured against it.">Expected
+        race duration</label>
       <input id="f-target" class="hhmm-input" placeholder="HH:MM" inputmode="numeric"
              autocomplete="off" maxlength="5">
       <span id="target-note" class="hint"></span>
     </div>
     <div class="toolbar">
-      <button id="start-times-btn" class="primary" type="button" data-requires="officer">Compute start times</button>
-      <button id="unlock-starts-btn" type="button" data-requires="officer" style="display:none;">Unlock starts</button>
+      <button id="start-times-btn" class="primary" type="button" data-requires="officer"
+              title="Save, then give every boat its gun from its TCF. This locks the TCFs and the entry list.">Compute start times</button>
+      <button id="unlock-starts-btn" type="button" data-requires="officer" style="display:none;"
+              title="Reopen the TCFs, the entry list and the two boxes above. The published sheet stands until you compute again.">Unlock starts</button>
       <!-- Same tab. Both sheets are printed and carried away from the screen, so a
            tab left behind is litter, and both pages carry a back link. -->
       <a id="report-starts-link" class="button-link disabled">Start sheet ▸</a>
@@ -39,12 +42,14 @@
 
   <section id="handicap-panel" style="display:none;">
     <div class="toolbar">
-      <button id="process-btn" class="primary" type="button" data-requires="officer">Process Results</button>
+      <button id="process-btn" class="primary" type="button" data-requires="officer"
+              title="Save, compute every boat's handicap change, carry the new TCFs to the next race, and lock this one.">Process Results</button>
       <!-- Offered only while it would mean something: a race whose results are locked
            has already been scored, and unlocking is the way back to this. -->
-      <button id="abandon-btn" type="button" data-requires="officer"
-              style="display:none;">Abandon Race</button>
-      <button id="unlock-results-btn" type="button" data-requires="officer" style="display:none;">Unlock results</button>
+      <button id="abandon-btn" type="button" data-requires="officer" style="display:none;"
+              title="Call the race off: every boat is flagged ABN and the results are processed, so no handicap changes. Unlock results undoes it.">Abandon Race</button>
+      <button id="unlock-results-btn" type="button" data-requires="officer" style="display:none;"
+              title="Discard the saved handicap changes so the race can be edited and processed again. The next race keeps its TCFs until then.">Unlock results</button>
       <a id="report-finish-link" class="button-link disabled">Finish sheet ▸</a>
     </div>
   </section>
@@ -74,16 +79,15 @@
          laptop this runs on a line of chrome is a line of boats. The count keeps its
          place in the filters row, which was going to be there anyway. -->
     <div class="filters">
-      <label><input type="checkbox" id="hide-dnc"> Hide DNC</label>
-      <label><input type="checkbox" id="hide-finished"> Hide finished</label>
-      <label title="Hides design, corrected finish and scored elapsed — the columns that
-are reference rather than capture. Once the start sheet is out, TCF joins them; while it
-is still editable it always shows. Once the race is processed, so does the actual
-finish."><input type="checkbox" id="hide-details" checked>
-        Hide details</label>
+      <label title="Hides boats whose Came box is unticked."><input type="checkbox"
+        id="hide-dnc"> Hide DNC</label>
+      <label title="Hides boats with a finish time."><input type="checkbox"
+        id="hide-finished"> Hide finished</label>
+      <label title="Hides reference columns: design, corrected finish and scored elapsed; TCF once the start sheet is out; actual finish once the race is processed."><input
+        type="checkbox" id="hide-details" checked> Hide details</label>
       <label title="Hides the NOW buttons and the log of times they capture."><input
         type="checkbox" id="hide-now" checked> Hide NOW</label>
-      <label>Duty boat
+      <label title="The boat running the race: scored AVG, its times ignored, and for the handicap counted as a boat that stayed home.">Duty boat
         <select id="duty-boat"><option value="">— none —</option></select>
       </label>
       <span id="entrants-count" class="hint"></span>
@@ -99,7 +103,7 @@ finish."><input type="checkbox" id="hide-details" checked>
     <div id="now-log" style="display:none;">
       <div class="toolbar">
         <strong>NOW log</strong>
-        <span class="hint">this browser tab only — drag an entry onto any time box to
+        <span class="hint">this browser tab only — drag an entry onto a time box to
           set it</span>
         <button id="now-clear-btn" type="button" disabled>Clear</button>
       </div>
@@ -115,12 +119,16 @@ finish."><input type="checkbox" id="hide-details" checked>
       <datalist id="name-matches"></datalist>
       <input id="add-design" list="design-matches" placeholder="design" autocomplete="off">
       <datalist id="design-matches"></datalist>
-      <label title="A casual races and is handicapped like anybody else, but is not carried into the next race."><input type="checkbox" id="add-casual"> casual</label>
-      <button id="add-existing-btn" type="button" data-requires="admin" disabled>Add from register</button>
-      <button id="add-new-btn" type="button" data-requires="admin" disabled>Add &amp; register</button>
-      <button id="add-oneoff-btn" type="button" data-requires="admin" disabled>One-off only</button>
+      <label title="A casual is handicapped, but cannot move the series boats' handicaps and is not carried into the next race."><input type="checkbox" id="add-casual"> casual</label>
+      <button id="add-existing-btn" type="button" data-requires="admin" disabled
+              title="Enter the register boat these fields name, on TCF 1.0000.">Add from register</button>
+      <button id="add-new-btn" type="button" data-requires="admin" disabled
+              title="Add a new boat to the register and enter it, on TCF 1.0000.">Add &amp; register</button>
+      <button id="add-oneoff-btn" type="button" data-requires="admin" disabled
+              title="Enter a visitor for this race only: not registered, no handicap carried forward.">One-off only</button>
       <button id="add-clear-btn" type="button" data-requires="admin">Clear</button>
-      <button id="import-btn" type="button" data-requires="admin">Add entrants from JSON</button>
+      <button id="import-btn" type="button" data-requires="admin"
+              title="Enter boats from a sailing-pf handicaps export, with their TCFs.">Import entrants (JSON)</button>
       <span id="add-msg" class="hint"></span>
     </div>
 
@@ -133,15 +141,12 @@ finish."><input type="checkbox" id="hide-details" checked>
          data-requires sits on the label rather than the input, or hiding it from a
          visitor would leave the words "Allow remove" beside nothing. -->
     <div class="toolbar" id="allow-remove-bar">
-      <label class="danger-toggle" data-requires="admin" title="Unlocks the Casual tick
-boxes and reveals a column for taking a boat out of this race altogether. For a boat
-entered by mistake — not for one that did not come, which is what Came is
-for."><input type="checkbox" id="allow-remove">
+      <label class="danger-toggle" data-requires="admin" title="Makes the Casual column editable and adds a ✕ to take a boat out of this race. For a boat entered by mistake; one that did not come stays in with Came unticked."><input type="checkbox" id="allow-remove">
         Allow remove &amp; casuals</label>
     </div>
 
     <div id="import-panel" style="display:none;">
-      <h3>Add entrants from a sailing-pf export</h3>
+      <h3>Import entrants from a sailing-pf export</h3>
       <p class="lead">
         Takes a <code>handicaps-YYYY-MM-DD.json</code> file. Each boat's
         <strong>handicap becomes its TCF for this race</strong> and its variant sets
@@ -174,9 +179,9 @@ for."><input type="checkbox" id="allow-remove">
 <script src="/scoring.js"></script>
 <script>
   // ---------------------------------------------------------------------------
-  // State. `bundle` is the server's answer to GET /api/races/{id}; everything
-  // the user has typed but not saved lives in the dirty* maps beside it, so a
-  // reload from the server never silently discards an edit in progress.
+  // State. `bundle` is the server's answer to GET /api/races/{id}. `entrants`,
+  // `timesMap` and the dirty* maps are the working copy, compared against it to
+  // decide whether there is anything to save — see load() for why it is a deep copy.
   // ---------------------------------------------------------------------------
   let raceId = null;
   let bundle = null;
@@ -401,22 +406,23 @@ for."><input type="checkbox" id="allow-remove">
         ? esc(designNameOf(e.designId))
         : '<span class="hint" title="Not known yet">—</span>' },
     { key: 'casual', label: 'Casual', sortable: false,
+      tip: 'Handicapped, but not carried into the next race.',
       // A casual sailed tonight and has its handicap adjusted like anyone else, but it
       // is not seeded into the next race — a boat nobody expects appearing on a printed
       // start sheet is worse than two clicks to add it again.
       get: e => e.entryType === 'ROSTER' ? 0 : 1,
       render: e => {
         if (e.entryType === 'ONE_OFF')
-          return '<span class="tag" title="Not in the register — never seeded">one-off</span>';
+          return '<span class="tag" title="Not in the register; no handicap carried forward">one-off</span>';
         // Behind the same guard as Remove. Both change who this race is scored over
         // rather than what the boats did, and both are a repair rather than a view —
         // an unticked box next to forty rows is one stray click from a silent change.
         if (readOnly() || !allowRemove()) return e.entryType === 'CASUAL' ? '✓' : '';
         return '<input type="checkbox" class="casual-input" data-id="' + esc(e.boatId) + '"'
           + (e.entryType === 'CASUAL' ? ' checked' : '')
-          + ' title="Casual — will not be seeded into the next race">';
+          + ' title="Casual: not carried into the next race">';
       } },
-    { key: 'spin', label: 'Spin',
+    { key: 'spin', label: 'Spin', tip: 'Spinnaker (S) or not (NS). Display only.',
       // Display only: the Jinx handicap does not separate spinnaker from non-spinnaker
       // boats, the TCF absorbs it. Set here, or by the JSON import.
       get: e => e.spinnaker || '',
@@ -424,6 +430,7 @@ for."><input type="checkbox" id="allow-remove">
         ? esc(e.spinnaker)
         : '<span class="hint" title="Not recorded">—</span>' },
     { key: 'tcf', label: 'TCF', cls: 'num-cell',
+      tip: 'Time Correction Factor for this race. Higher is faster, so a later gun.',
       get: e => tcfOf(e),
       render: e => {
         // A TCF is what the stagger was computed from, so it closes with the starts.
@@ -433,11 +440,13 @@ for."><input type="checkbox" id="allow-remove">
           + '" data-id="' + esc(e.boatId) + '" value="' + esc(fmtTcf(tcfOf(e))) + '">';
       } },
     { key: 'allocated', label: 'Allocated<br>Start', cls: 'num-cell',
+      tip: 'The gun on the published start sheet.',
       // Guns are set to the minute (wiki §4 rounds the stagger), so the seconds are
       // always :00 and only make the column harder to scan.
       get: e => scorer.allocatedStartSeconds(e) ?? NaN,
       render: e => esc(fmtTimeOfDay(scorer.allocatedStartSeconds(e)).slice(0, 5)) },
     { key: 'came', label: 'Came', sortable: false,
+      tip: 'Tick when the boat comes out. Unticked is DNC.',
       get: e => timesFor(e.boatId).came ? 1 : 0,
       render: e => {
         const t = timesFor(e.boatId);
@@ -448,10 +457,11 @@ for."><input type="checkbox" id="allow-remove">
       } },
     { key: 'actualStartNow', label: '', sortable: false, cls: 'now-col', nowField: 'actualStart',
       render: e => nowButton(e, 'actualStart') },
-    { key: 'actualStart', label: 'Actual<br>Start',
+    { key: 'actualStart', label: 'Actual<br>Start', tip: 'When the boat crossed the start line.',
       get: e => timesFor(e.boatId).actualStart || '',
       render: e => timeInput(e, 'actualStart') },
     { key: 'late', label: 'Late', cls: 'num-cell',
+      tip: 'Actual start minus the gun. Negative is early, which is OCS.',
       // NaN wherever the cell renders blank, so sorting agrees with what is on screen.
       get: e => (timesFor(e.boatId).actualStart ? scorer.lateSeconds(e) : null) ?? NaN,
       render: e => {
@@ -463,22 +473,26 @@ for."><input type="checkbox" id="allow-remove">
       } },
     { key: 'finishNow', label: '', sortable: false, cls: 'now-col', nowField: 'finish',
       render: e => nowButton(e, 'finish') },
-    { key: 'finish', label: 'Actual<br>Finish',
+    { key: 'finish', label: 'Actual<br>Finish', tip: 'When the boat crossed the finish line.',
       get: e => timesFor(e.boatId).finish || '',
       render: e => timeInput(e, 'finish') },
     { key: 'corrected', label: 'Corrected<br>Finish', cls: 'num-cell',
+      tip: 'Finish with any early head start given back; no OCS penalty. The time to transcribe.',
       get: e => scorer.correctedFinishSeconds(e) ?? NaN,
       render: e => derived(e, fmtTimeOfDay(scorer.correctedFinishSeconds(e))) },
     { key: 'scoredFinish', label: 'Scored<br>Finish', cls: 'num-cell',
+      tip: 'Corrected finish plus 5 minutes if OCS. Decides Place.',
       get: e => scorer.scoredFinishSeconds(e) ?? NaN,
       render: e => derived(e, fmtTimeOfDay(scorer.scoredFinishSeconds(e))) },
     { key: 'elapsed', label: 'Scored<br>Elapsed', cls: 'num-cell',
+      tip: 'Scored finish minus the gun.',
       get: e => scorer.scoredElapsedSeconds(e) ?? NaN,
       render: e => derived(e, fmtElapsed(scorer.scoredElapsedSeconds(e))) },
     { key: 'flags', label: 'Flags', sortable: false, cls: 'flag-cell',
+      tip: 'Most flags follow from the times. Click a cell to override one.',
       get: e => scorer.flags(e).join(', '),
       render: e => esc(scorer.flags(e).join(', ')) || '<span class="hint">—</span>' },
-    { key: 'place', label: 'Place', cls: 'num-cell',
+    { key: 'place', label: 'Place', cls: 'num-cell', tip: 'Finishing place, by scored finish.',
       get: e => placeMap.get(String(e.boatId)) ?? NaN,
       // Below the finishers every boat ranks the same — none — and they are not the
       // same boat to somebody reading down the table. Ordered by why they are there.
@@ -491,6 +505,7 @@ for."><input type="checkbox" id="allow-remove">
         + entrants.indexOf(e) + '" title="Remove '
         + esc((e.sailNumber || '') + ' ' + (e.name || '')) + ' from this race">✕</button>' },
     { key: 'adjustment', label: 'Adjustment', cls: 'num-cell adjustment-cell',
+      tip: 'Handicap change in minutes: penalty minus giveback. Positive starts later next race.',
       get: e => {
         const a = adjustments.get(String(e.boatId));
         return a ? a.netAdjustmentMinutes : NaN;
@@ -499,9 +514,9 @@ for."><input type="checkbox" id="allow-remove">
         const a = adjustments.get(String(e.boatId));
         if (!a) return '';
         const tip = [
-          'Penalty:        ' + fmtSignedMinSec(a.penaltyMinutes),
-          'Redistribution: ' + fmtSignedMinSec(-a.rewardMinutes),
-          'New TCF:        ' + fmtTcf(a.newTcf)
+          'Penalty:  ' + fmtSignedMinSec(a.penaltyMinutes),
+          'Giveback: ' + fmtSignedMinSec(-a.rewardMinutes),
+          'TCF:      ' + fmtTcf(a.oldTcf) + ' → ' + fmtTcf(a.newTcf)
         ].join('\n');
         return '<span class="adjustment" title="' + esc(tip) + '">'
           + esc(fmtSignedMinSec(a.netAdjustmentMinutes)) + '</span>';
@@ -703,13 +718,15 @@ for."><input type="checkbox" id="allow-remove">
     document.getElementById('entrants-head').innerHTML = cols.map(c => {
       if (c.nowField) {
         return '<th class="now-col"><button type="button" class="now-btn now-head-btn" '
-          + 'data-field="' + c.nowField + '" title="Stamp every empty cell in this column">'
+          + 'data-field="' + c.nowField + '" title="Log the time now, to drag onto the boats it belongs to">'
           + 'NOW</button></th>';
       }
-      if (c.sortable === false) return '<th>' + c.label + '</th>';
+      const tip = c.tip ? ' title="' + esc(c.tip) + '"' : '';
+      if (c.sortable === false) return '<th' + tip + '>' + c.label + '</th>';
       const s = sortStack.find(x => x.key === c.key);
       const arrow = s ? (s.dir > 0 ? ' ▲' : ' ▼') : '';
-      return '<th class="sortable" data-key="' + esc(c.key) + '">' + c.label + arrow + '</th>';
+      return '<th class="sortable" data-key="' + esc(c.key) + '"' + tip + '>'
+        + c.label + arrow + '</th>';
     }).join('');
 
     document.querySelectorAll('#entrants-head .sortable').forEach(th => {
@@ -1283,11 +1300,12 @@ for."><input type="checkbox" id="allow-remove">
     pop.innerHTML = KNOWN_FLAGS.map(f => {
       const on = effective.includes(f);
       const manual = ov.added.includes(f) || ov.removed.includes(f);
-      return '<label' + (manual ? ' class="manual"' : '') + '>'
+      return '<label' + (manual ? ' class="manual"' : '')
+        + (FLAG_HELP[f] ? ' title="' + esc(FLAG_HELP[f]) + '"' : '') + '>'
         + '<input type="checkbox" value="' + f + '"' + (on ? ' checked' : '') + '> ' + f
         + '</label>';
-    }).join('') + '<div class="popover-foot hint">Derived flags can be cleared by '
-      + 'fixing the times.</div>';
+    }).join('') + '<div class="popover-foot hint">Most flags follow from the times; '
+      + 'fix a time rather than overriding its flag.</div>';
 
     anchor.appendChild(pop);
     pop.querySelectorAll('input').forEach(cb => {
@@ -1842,7 +1860,7 @@ for."><input type="checkbox" id="allow-remove">
           ? carried + ' boats carried forward to the next race.'
           : 'This is the last race in the series, so nothing was carried forward.')
       + ' The results are now locked — unlock them to redo. '
-      + handicapSummary(r.body));
+      + handicapSummary());
   }
 
   /**
@@ -1887,12 +1905,11 @@ for."><input type="checkbox" id="allow-remove">
    * action that has finished, so it belongs with the other notices and is allowed to go
    * away on reload, when the derived status takes over.
    */
-  function handicapSummary(body) {
+  function handicapSummary() {
     const pool = [...adjustments.values()].reduce((s, a) => s + (a.penaltyMinutes || 0), 0);
-    const net = [...adjustments.values()].reduce((s, a) => s + (a.netAdjustmentMinutes || 0), 0);
-    return 'Penalty pool ' + pool.toFixed(1) + ' min, redistributed in full (net across '
-      + 'the fleet ' + net.toFixed(3) + ' min) over ' + fmtInterval(body.targetElapsedMinutes)
-      + '.';
+    return pool > 0
+      ? 'Penalties of ' + pool.toFixed(1) + ' min charged and given back across the entry list.'
+      : 'No penalties were charged, so no handicap moved.';
   }
 
 
@@ -2091,13 +2108,10 @@ for."><input type="checkbox" id="allow-remove">
     applyNowVisibility();
     document.getElementById('unlock-results-btn').style.display =
       (locked && canEdit()) ? '' : 'none';
-    // Abandoning is for a race that has not been scored. Once it is abandoned the same
-    // button puts it back, because the decision is made in a squall and squalls pass —
-    // the alternative would be creating a second race for a night that only had one.
-    const abandon = document.getElementById('abandon-btn');
-    abandon.style.display = (!locked && canEdit()) ? '' : 'none';
-    abandon.title = 'Call this race off: every boat is flagged ABN and the results are '
-      + 'processed, which changes nobody\u2019s handicap. Unlock results undoes it.';
+    // Abandoning is a way of processing a race, so it goes when the race is locked;
+    // Unlock results is the way back from both.
+    document.getElementById('abandon-btn').style.display =
+      (!locked && canEdit()) ? '' : 'none';
     document.getElementById('process-btn').disabled = locked;
 
     // Where the race has got to, drawn on every load — not the result of anything
@@ -2105,11 +2119,12 @@ for."><input type="checkbox" id="allow-remove">
     // yellow, which reads as something needing attention when it is the opposite: a
     // finished race. Green is reserved for reporting an action, below.
     if (locked) {
-      setCtrlMsg('banner-info', 'This race is processed and locked. Its handicaps have '
-        + 'been carried forward. Unlock it below to make changes.');
+      setCtrlMsg('banner-info', 'This race is processed and locked'
+        + (bundle.nextRaceId ? ', and its handicaps carried to the next race' : '')
+        + '. Unlock results to make changes.');
     } else if (!bundle.startSheet) {
-      setCtrlMsg('banner-info', 'No start times yet — set the target elapsed time and '
-        + 'compute them.');
+      setCtrlMsg('banner-info', 'No start times yet — check the earliest start and '
+        + 'expected duration, then compute them.');
     } else {
       const src = bundle.entrants && bundle.entrants.tcfSource;
       const from = bundle.entrants && bundle.entrants.sourceRaceNumber;
@@ -2213,7 +2228,7 @@ for."><input type="checkbox" id="allow-remove">
     const n = r.body.added;
     await load();
     setCtrlMsg('banner-ok', 'Added ' + n + ' boat' + (n === 1 ? '' : 's')
-      + ' carried over from the previous race. Remove any that are not sailing.');
+      + ' carried over from the previous race.');
   }
 
   // --- boot ------------------------------------------------------------------
