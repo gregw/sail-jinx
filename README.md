@@ -19,11 +19,14 @@ It has two layers:
   actual-start / finish / flags as boats cross — with NOW buttons for live
   timing, drag-to-reorder, filters, and a duty boat.
 
-- The **Jinx handicap algorithm**. After the race, whole-minute penalties are
-  applied to the place-getters and given back a minute at a time — to boats that
-  ran out of time, then from the last boat home forwards — with any leftover
-  shared by the boats that stayed home. The result is converted into a TCF change
-  measured against the next race and carried forward to it.
+- The **[Jinx handicap algorithm](wiki/Jinx-Handicaps.md)**. After each race:
+  - Top five finishes have 5, 4, 3, 2, 1 minutes added to the next race's start time.
+  - The total penalty time is given back to the fleet: DNFs, then tail enders, then
+    others.
+  - The fleet is adjusted for the earliest starter and sunset.
+
+  Each change becomes a TCF change, measured against the next race's expected
+  duration and carried forward to it.
 
 The originating use case is the **MYC Twilight Series** at
 [Manly Yacht Club](https://myc.org.au), Sydney. Whilst a PHS-style algorithm

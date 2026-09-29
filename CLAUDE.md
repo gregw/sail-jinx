@@ -36,10 +36,6 @@ concurrency control.
 Deliberately preserved pluggability:
 
 - `HandicapEngine` is an interface; `PursuitHandicapEngine` is the one implementation.
-- **One giveback, no variants.** A boat gets back a whole minute, or an even share
-  among the DNFs or the DNCs — nothing else. The previous iteration's knobs (variants
-  A–D, γ, per-hour penalties, DNF/DNC weights) are gone; their YAML keys still load
-  and are ignored.
 - Club identity and algorithm parameters are configuration (`config.yaml`), not code.
 - **Pursuit only.** `division` survives on `Entrant` so fleet starts can be added
   without a data migration; nothing reads it except the display.
@@ -83,9 +79,8 @@ src/main/resources/static/     the whole front end
   race page and the finish sheet both build a scorer from it, so screen and paper
   cannot disagree. `static/scoring-test.html` is its executable spec; run it with
   `node tools/run-scoring-test.mjs`, which reads the same page.
-- `pursuit/PursuitHandicapEngine` — start times, penalties, giveback weights, and the
-  conversion back to TCF. Its javadoc is the reference for the algorithm; the wiki's
-  `Jinx-Handicaps.md` is the committee-facing version of the same thing.
+- `pursuit/PursuitHandicapEngine` — start times, penalties, the giveback, and the
+  conversion back to TCF. See "The handicap: how to change it" below.
 
 `/process-handicaps` takes a client-supplied snapshot, not the store, because the
 client holds unsaved edits and flag overrides.
@@ -112,36 +107,28 @@ Things that look wrong and are not:
 - **The NOW log is deliberately not in the store** — a per-tab scratchpad for moving a
   time stamped against the wrong boat.
 
-## The handicap: what to know before changing it
+## The handicap: how to change it
 
-Read `PursuitHandicapEngine.processResults` and `minuteGiveback`. The tests that pin
-the model are `MinuteGivebackTest`, `HandicapRulesTest` and `PursuitHandicapEngineTest`.
+The algorithm lives in two places, and this file describes neither:
 
-- **Whole minutes, both ways.** `penaltyList` is whole minutes (fractions are rounded
-  on load). The pool comes back a minute at a time: each DNF, then the last boat home,
-  the second last, … stopping short of the penalty places. A big night reads
-  `+5 +4 +3 +2 +1 0 … 0 −1 … −1`.
-- **Nobody who raced gets more than a minute back.** More DNFs than minutes share
-  evenly; minutes the racers cannot take go evenly to the DNCs (which may exceed a
-  minute, but only in a series too small for its ladder).
-- **Nobody at home and minutes left ⇒ they are discarded**, and that race does not
-  conserve (`withNobodyAtHomeTheLeftoverIsDiscarded`). It needs the whole entry list
-  out and most of it retired.
-- **DNF and RET differ**: DNF is served first, RET is frozen with DSQ/DNS/ABN. Do not
-  re-merge.
-- **Nobody may receive ⇒ nothing is charged.** The fix for a small series is a
-  shorter `penaltyList` (about one rung per six boats), not the arithmetic.
-- **§7 divides by the NEXT race's expected duration** (`nextRaceMinutes`), so a
-  5-minute penalty moves the next start by 5 minutes while the median TCF holds. The
-  last race of a series falls back to its own target. Editing the next race's target
-  after saving does not reapply — unlock and process again. No median elapsed anywhere.
-- **Casuals get a second pass** (`Competitor.seeded == false`). The top penalty can be
-  awarded twice and the merged answer does not conserve — see
-  `conservationHoldsPerPassNotAcrossTheMergedAnswer`.
-- **`ABN` is a real `FinishStatus`**, which is what freezes an abandoned race.
-- **Retired config keys still load** — `Algorithm` has its own
-  `@JsonIgnoreProperties` because series overrides come back through the servlet's
-  mapper. See the `Algorithm` javadoc for the list.
+- **[wiki/Jinx-Handicaps.md](wiki/Jinx-Handicaps.md)** — the rules, their reasons and
+  worked examples. It is what the committee reads and signs off. The README carries
+  the three-line overview.
+- **`PursuitHandicapEngine`** — the implementation; its javadoc explains why each rule
+  is shaped as it is.
+
+To change a rule:
+
+1. Agree it with the committee and update the wiki page first.
+2. Write the failing test. `MinuteGivebackTest` pins the giveback; `HandicapRulesTest`
+   pins who is in the arithmetic (casuals, retirements, DNCs, ladder size);
+   `PursuitHandicapEngineTest` pins start times and the TCF conversion.
+3. Change the engine.
+4. Retiring a setting: keep its key loading. `Algorithm` has its own
+   `@JsonIgnoreProperties` because series overrides come back through the servlet's
+   strict mapper; its javadoc lists the retired keys.
+5. Update the series settings form (`series.html`), `config.yaml`, and the README
+   overview if the summary changed.
 
 ---
 
