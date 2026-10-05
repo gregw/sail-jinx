@@ -335,7 +335,9 @@ class JinxApiIntegrationTest
         JsonNode entrants = get("/api/races/" + raceId).path("entrants").path("entrants");
         assertThat(entrants.size(), equalTo(2));
         assertThat(entrants.get(1).path("entryType").asText(), equalTo("ONE_OFF"));
-        assertThat(entrants.get(1).path("boatId").isMissingNode(), is(true));
+        // Its own key in this race, not a register boat.
+        assertThat(entrants.get(1).path("boatId").asText(), equalTo("one-off-0"));
+        assertThat(get("/api/boats").toString().contains("one-off-0"), is(false));
         assertThat(entrants.get(1).path("name").asText(), equalTo("Visitor"));
     }
 
@@ -684,6 +686,50 @@ class JinxApiIntegrationTest
         JsonNode seeded = post("/api/races/" + race2 + "/entrants/seed", "{}").path("entrants");
         assertThat(seeded.path("entrants").size(), equalTo(1));
         assertThat(seeded.path("entrants").get(0).path("boatId").asText(), equalTo(seasonBoat));
+    }
+
+    @Test
+    void aOneOffIsGivenAnIdItKeepsAndItsStartIsKeyedByIt() throws Exception
+    {
+        // Every per-boat thing on the race page — came, times, flags, the start sheet — is
+        // keyed by boatId. A one-off without one was every other one-off, and the duty
+        // boat whenever there was none, so its Came box would not tick.
+        String seriesId = createSeries("Twilight");
+        String seasonBoat = createBoat("AUS9", "Quick Silver");
+        String raceId = createRace(seriesId, "2026-06-05");
+
+        JsonNode saved = post("/api/races/" + raceId + "/entrants", """
+            {"entrants":[{"boatId":"%s","tcf":1.0,"entryType":"ROSTER"},
+                         {"sailNumber":"??? 1","name":"Visitor","tcf":1.0,"entryType":"ONE_OFF"},
+                         {"sailNumber":"??? 2","name":"Another","tcf":0.9,"entryType":"ONE_OFF"}]}"""
+            .formatted(seasonBoat)).path("entrants").path("entrants");
+        String first = saved.get(1).path("boatId").asText();
+        String second = saved.get(2).path("boatId").asText();
+        assertThat(first, equalTo("one-off-0"));
+        assertThat(second, equalTo("one-off-1"));
+        assertThat(saved.get(1).path("entryType").asText(), equalTo("ONE_OFF"));
+
+        // Sent back with its id, it keeps it — and is not mistaken for an unknown boat.
+        // The page mints the id itself when it adds one, so a new one arrives with one too.
+        saved = post("/api/races/" + raceId + "/entrants", """
+            {"entrants":[{"boatId":"%s","tcf":1.0,"entryType":"ROSTER"},
+                         {"boatId":"one-off-1","sailNumber":"??? 2","name":"Another","tcf":0.9,"entryType":"ONE_OFF"},
+                         {"boatId":"one-off-5","sailNumber":"??? 3","name":"Third","tcf":1.0,"entryType":"ONE_OFF"}]}"""
+            .formatted(seasonBoat)).path("entrants").path("entrants");
+        assertThat(saved.get(1).path("boatId").asText(), equalTo("one-off-1"));
+        assertThat(saved.get(2).path("boatId").asText(), equalTo("one-off-5"));
+        assertThat(saved.get(2).path("entryType").asText(), equalTo("ONE_OFF"));
+
+        JsonNode starts = post("/api/races/" + raceId + "/start-times",
+            "{\"targetElapsedMinutes\":60,\"earliestStart\":\"18:00\"}")
+            .path("startSheet").path("starts");
+        java.util.Set<String> keyed = new java.util.HashSet<>();
+        starts.forEach(s -> keyed.add(s.path("boatId").asText()));
+        assertThat(keyed, equalTo(java.util.Set.of(seasonBoat, "one-off-1", "one-off-5")));
+
+        // A one-off is not a boat with a handicap history.
+        String race2 = createRace(seriesId, "2026-06-12");
+        assertThat(get("/api/races/" + race2).path("priorTcfs").has("one-off-1"), is(false));
     }
 
     @Test

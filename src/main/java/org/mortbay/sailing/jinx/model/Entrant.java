@@ -16,8 +16,12 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  *       history of races it already sailed.</li>
  * </ul>
  *
- * <p>{@code boatId} is null for {@link EntryType#ONE_OFF}. Every other entry
- * type references a register boat.
+ * <p>Every other entry type references a register boat. A {@link EntryType#ONE_OFF} has
+ * none, but it still has a {@code boatId}: {@code one-off-N}, minted when it is entered
+ * and kept from then on (see {@link #ONE_OFF_PREFIX}). Everything per boat — times,
+ * flags, the start sheet — is keyed by boatId, and a one-off without one was every other
+ * one-off. Files written before the rule hold null, which reads as {@code one-off-}
+ * and the entrant's index — the key the start sheet always gave it.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record Entrant(
@@ -71,14 +75,25 @@ public record Entrant(
             division, boat.designId(), spinnaker, tcf, entryType);
     }
 
+    /** What every one-off's {@code boatId} starts with. */
+    public static final String ONE_OFF_PREFIX = "one-off-";
+
     /**
      * Entrant for a visitor who is not in the register and is not being added
      * to it. Gets a TCF so it can be given a start time and be placed, but its
      * TCF goes nowhere afterwards.
+     *
+     * @param id its {@code one-off-N} key in this race
      */
-    public static Entrant oneOff(String name, String sailNumber, double tcf)
+    public static Entrant oneOff(String id, String name, String sailNumber, double tcf)
     {
-        return new Entrant(null, sailNumber, name, null, null, null, tcf, EntryType.ONE_OFF);
+        return new Entrant(id, sailNumber, name, null, null, null, tcf, EntryType.ONE_OFF);
+    }
+
+    /** Whether this id is a one-off's key rather than a register boat's. */
+    public static boolean isOneOffId(String id)
+    {
+        return id != null && id.startsWith(ONE_OFF_PREFIX);
     }
 
     /**

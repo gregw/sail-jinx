@@ -351,17 +351,19 @@ class JsonStoreTest
     void oneOffEntrantHasNoRegisterBoat(@TempDir Path tmp) throws IOException
     {
         // Outcome 3 of the casual flow: sailed once, never to be seen again.
-        // No register entry, no boatId, and excluded from handicap processing.
+        // No register entry — its id is only its key in this race — and excluded from
+        // handicap processing.
         JsonStore first = new JsonStore(tmp);
         first.start();
         first.putEntrants(new RaceEntrants("r-1", Instant.now(),
             RaceEntrants.TcfSource.MANUAL_EDIT, null, null,
-            List.of(Entrant.oneOff("Visitor", "??? 42", 1.0))));
+            List.of(Entrant.oneOff("one-off-0", "Visitor", "??? 42", 1.0))));
 
         JsonStore reopened = new JsonStore(tmp);
         reopened.start();
         Entrant read = reopened.entrants("r-1").entrants().get(0);
-        assertThat(read.boatId(), nullValue());
+        assertThat(read.boatId(), equalTo("one-off-0"));
+        assertThat(Entrant.isOneOffId(read.boatId()), is(true));
         assertThat(read.name(), equalTo("Visitor"));
         assertThat(read.entryType(), equalTo(Entrant.EntryType.ONE_OFF));
         assertThat(read.scoresHandicap(), is(false));

@@ -451,7 +451,7 @@
       render: e => {
         const t = timesFor(e.boatId);
         if (readOnly()) return t.came ? '✓' : '';
-        const duty = String(dutyBoatId) === String(e.boatId);
+        const duty = dutyBoatId != null && String(dutyBoatId) === String(e.boatId);
         return '<input type="checkbox" class="came-input" data-id="' + esc(e.boatId) + '"'
           + ((t.came && !duty) ? ' checked' : '') + (duty ? ' disabled' : '') + '>';
       } },
@@ -1513,8 +1513,6 @@
       return;
 
     entrants.splice(idx, 1);
-    // A one-off has no id, so every one of them keys the same times entry. Dropping it
-    // would take the other one-offs' times with it.
     if (e.boatId != null && !entrants.some(x => String(x.boatId) === String(e.boatId)))
       delete timesMap[String(e.boatId)];
     // Out of the manual order too, and remembered — the order is a view setting now, so
@@ -1607,13 +1605,24 @@
     return t != null ? t : DEFAULT_ENTRY_TCF;
   }
 
+  // A one-off's boatId: its key in this race, never a register boat's. The server mints
+  // the same shape for one sent without one — see Entrant.ONE_OFF_PREFIX.
+  const ONE_OFF_PREFIX = 'one-off-';
+
+  function nextOneOffId() {
+    const used = new Set(entrants.map(e => String(e.boatId)));
+    let n = 0;
+    while (used.has(ONE_OFF_PREFIX + n)) n++;
+    return ONE_OFF_PREFIX + n;
+  }
+
   function onAddOneOff() {
     const f = addFields();
     const sail = f.sail.value.trim();
     const name = f.name.value.trim();
     if (!sail && !name) { setMsg('add-msg', 'Type a sail number or a name first.'); return; }
     const tcf = DEFAULT_ENTRY_TCF;
-    addEntrant({ boatId: null, sailNumber: sail, name: name || sail,
+    addEntrant({ boatId: nextOneOffId(), sailNumber: sail, name: name || sail,
       designId: null, division: null, spinnaker: null, tcf, entryType: 'ONE_OFF' });
     setMsg('add-msg', 'Added as a one-off on TCF ' + fmtTcf(tcf)
       + ' — it carries no handicap forward.');
@@ -2168,6 +2177,13 @@
     }
     bundle = r.body;
     locked = !!bundle.locked;
+    // A one-off saved before one-offs had ids has none, and every per-boat thing here is
+    // keyed by boatId — so it was every other one-off, and the duty boat whenever there
+    // was none. It gets the key the server's start sheet always gave it, on the baseline
+    // as well, so this alone does not count as an unsaved change.
+    ((bundle.entrants && bundle.entrants.entrants) || []).forEach((e, i) => {
+      if (e.boatId == null || e.boatId === '') e.boatId = ONE_OFF_PREFIX + i;
+    });
     // Deep copies. These are the working copy, and `bundle` is the baseline that
     // entrantsChanged() compares against — sharing the objects meant editing one edited
     // both, so a change could never be detected and was silently never saved.

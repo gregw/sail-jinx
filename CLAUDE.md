@@ -180,6 +180,10 @@ The club domain scopes the last two; changing it orphans every id.
   the way back from both.
 - **Deleting a series deletes its races and their files**, not the boats. Audited with
   a null `raceId`; `audit.html` renders a dash for it.
+- **A one-off's `boatId` is `one-off-N`, not a register boat.** Everything per boat is
+  keyed by boatId; without one, one-offs collided with each other and with "no duty
+  boat". Minted on entry (page or server), kept after; old null ids read as
+  `one-off-<index>`, the key the start sheet always used (`entrantKey`).
 - **Entry types**: `scoresHandicap()` is true for ROSTER and CASUAL; `seedsNextRace()`
   only for ROSTER. `EntryType.ROSTER` and `TcfSource.ROSTER` are legacy names kept
   because stored files say them — **there is no series roster**, deliberately.

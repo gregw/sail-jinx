@@ -987,7 +987,8 @@ public class ApiServlet extends HttpServlet
                 continue;
             for (Entrant e : entered.entrants())
             {
-                if (e.boatId() != null && !e.boatId().isBlank())
+                // A one-off's id is only its key in that race, not a boat.
+                if (!isBlank(e.boatId()) && e.entryType() != Entrant.EntryType.ONE_OFF)
                     out.putIfAbsent(e.boatId(), e.tcf());
             }
         }
@@ -1034,9 +1035,10 @@ public class ApiServlet extends HttpServlet
      * forty rows — which keeps add, remove, and TCF edit as one operation and
      * makes it impossible to drop the TCFs of boats that weren't being edited.
      *
-     * <p>A row with no {@code boatId} is a one-off visitor. A row whose
-     * {@code boatId} is not in the register is rejected rather than silently
-     * turned into a one-off.
+     * <p>A row with no {@code boatId} is a new one-off visitor, and is given the first
+     * free {@code one-off-N}; a row whose id is a one-off's ({@link Entrant#isOneOffId})
+     * keeps it. Any other {@code boatId} not in the register is rejected rather than
+     * silently turned into a one-off.
      *
      * <p><b>Two operations share this endpoint, and they need different permissions.</b>
      * Which boats the race is scored over is the admin's; what those boats sailed on —
@@ -1064,17 +1066,36 @@ public class ApiServlet extends HttpServlet
             return;
         }
 
+        // The one-off ids already spoken for in this list, so a new one cannot take one.
+        Set<String> usedIds = new java.util.HashSet<>();
+        for (JsonNode row : rows)
+        {
+            if (!isBlank(text(row, "boatId")))
+                usedIds.add(text(row, "boatId"));
+        }
+
         List<Entrant> entrants = new ArrayList<>();
         for (JsonNode row : rows)
         {
             String boatId = text(row, "boatId");
             double tcf = row.path("tcf").asDouble(1.0);
-            if (isBlank(boatId))
+            // The register first: an id that names a boat is that boat, whatever it
+            // happens to look like.
+            Boat boat = isBlank(boatId) ? null : store.boats().get(boatId);
+            if (boat == null && (isBlank(boatId) || Entrant.isOneOffId(boatId)))
             {
-                entrants.add(Entrant.oneOff(text(row, "name"), text(row, "sailNumber"), tcf));
+                String id = boatId;
+                if (isBlank(id))
+                {
+                    int n = 0;
+                    while (usedIds.contains(Entrant.ONE_OFF_PREFIX + n))
+                        n++;
+                    id = Entrant.ONE_OFF_PREFIX + n;
+                    usedIds.add(id);
+                }
+                entrants.add(Entrant.oneOff(id, text(row, "name"), text(row, "sailNumber"), tcf));
                 continue;
             }
-            Boat boat = store.boats().get(boatId);
             if (boat == null)
             {
                 badRequest(resp, "unknown boat: " + boatId);
@@ -1112,17 +1133,24 @@ public class ApiServlet extends HttpServlet
      * — the race page's manual ordering saves through here — and so is editing any of
      * them. Only membership is the admin's.
      *
-     * <p>One-offs have no boat id, so they are counted rather than named. Adding or
-     * removing one still changes the count, and no two one-offs can be told apart by
-     * anything this endpoint receives.
+     * <p>A one-off is named by its {@code one-off-N}. One stored before one-offs had ids
+     * is named by the key the start sheet gave it, which is what the race page now sends
+     * back for it — so a race officer saving a TCF edit on an old race is not mistaken
+     * for an admin adding a boat.
      */
     private boolean changesTheFleet(String raceId, List<Entrant> proposed)
     {
         RaceEntrants existing = store.entrants(raceId);
         List<Entrant> before = existing == null ? List.of() : existing.entrants();
-        if (idsOf(before).equals(idsOf(proposed)))
-            return countWithoutId(before) != countWithoutId(proposed);
-        return true;
+        return !keysOf(before).equals(keysOf(proposed));
+    }
+
+    private static Set<String> keysOf(List<Entrant> entrants)
+    {
+        Set<String> out = new java.util.HashSet<>();
+        for (int i = 0; i < entrants.size(); i++)
+            out.add(entrantKey(entrants.get(i), i));
+        return out;
     }
 
     private static Set<String> idsOf(List<Entrant> entrants)
@@ -1131,10 +1159,6 @@ public class ApiServlet extends HttpServlet
             .collect(java.util.stream.Collectors.toSet());
     }
 
-    private static long countWithoutId(List<Entrant> entrants)
-    {
-        return entrants.stream().filter(e -> e.boatId() == null || e.boatId().isBlank()).count();
-    }
 
     /**
      * Call a race off, or put it back on.
@@ -1369,13 +1393,13 @@ public class ApiServlet extends HttpServlet
     }
 
     /**
-     * The key a start time is reported against. Register boats use their boat
-     * id; one-offs have none, so they get a positional key that is stable for
-     * as long as the entrant list is.
+     * The key a start time is reported against: the boat id, which a one-off has too.
+     * A one-off stored before it had one gets the positional key it always got here,
+     * which the race page uses for it as well.
      */
     private static String entrantKey(Entrant e, int index)
     {
-        return e.boatId() != null ? e.boatId() : ("one-off-" + index);
+        return !isBlank(e.boatId()) ? e.boatId() : (Entrant.ONE_OFF_PREFIX + index);
     }
 
     // --- Captured times ------------------------------------------------------
