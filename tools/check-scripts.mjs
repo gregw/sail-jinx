@@ -35,7 +35,7 @@ const KEYWORDS = new Set(['if','for','while','switch','catch','return','typeof',
 const BROWSER = new Set(['document','window','location','history','localStorage','sessionStorage',
   'fetch','alert','confirm','prompt','console','setTimeout','clearTimeout','setInterval',
   'JSON','Math','Number','String','Boolean','Array','Object','Map','Set','Date','RegExp',
-  'Promise','URLSearchParams','CSS','structuredClone','isNaN','isFinite','parseInt',
+  'Promise','URLSearchParams','CSS','structuredClone','ResizeObserver','isNaN','isFinite','parseInt',
   'parseFloat','encodeURIComponent','decodeURIComponent','Error','TypeError','FileReader']);
 
 const scriptsOf = (html) =>

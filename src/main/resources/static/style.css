@@ -324,6 +324,11 @@ input.time-input.now-drop-target {
    the box, which put a stretch of empty cell between the last column and the scrollbar
    — the bar is easier to reach where the table actually ends. */
 .entrants-scroll { overflow: auto; width: fit-content; max-width: 100%; }
+/* So the last toolbar's bottom margin stays inside #race-page rather than collapsing
+   out of it: fitEntrantsHeight measures what is below the table up to the bottom of
+   #race-page, and a margin poking out past it was enough to bring the page scrollbar
+   back. */
+#race-page { display: flow-root; }
 .entrants-scroll table { width: auto; border-radius: 0; border-top: none; }
 .entrants-scroll thead th {
   position: sticky; top: 0; z-index: 2;

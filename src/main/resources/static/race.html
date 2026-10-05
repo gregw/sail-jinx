@@ -772,9 +772,16 @@
     const rowH = row.getBoundingClientRect().height;
     const head = document.querySelector('#entrants-table thead');
     const headH = head ? head.getBoundingClientRect().height : 0;
-    // Room between the top of the table and the bottom of the window, less enough to
-    // leave the page's own bottom margin visible rather than flush against the edge.
-    const available = window.innerHeight - box.getBoundingClientRect().top - 24;
+    // Room between the top of the table and the bottom of the window, less whatever the
+    // page has below the table: the NOW log, the add-a-boat and allow-remove bars and the
+    // import panel — which a visitor does not get — and the page's bottom padding. Left
+    // out, the table reached the bottom of the window and the page scrolled anyway.
+    // Measured in page coordinates, so the answer is the same however far it is scrolled.
+    const page = document.getElementById('race-page');
+    const boxRect = box.getBoundingClientRect();
+    const below = page.getBoundingClientRect().bottom - boxRect.bottom
+      + parseFloat(getComputedStyle(document.body).paddingBottom || '0');
+    const available = window.innerHeight - (boxRect.top + window.scrollY) - below;
     if (rowH > 0 && available >= headH + rowH * MIN_SCROLL_ROWS)
       box.style.maxHeight = Math.floor(available) + 'px';
     restore();
@@ -2333,6 +2340,16 @@
     document.getElementById('import-apply').onclick = () => runEntrantImport(false);
 
     window.addEventListener('resize', fitEntrantsHeight);
+    // What sits around the table changes height without the table re-rendering: the
+    // role gates hide the admin bars, the NOW log grows and is toggled, the import
+    // panel opens, notices come and go. Each of those moves the room the table has.
+    if (window.ResizeObserver) {
+      const refit = new ResizeObserver(() => fitEntrantsHeight());
+      ['race-setup', 'handicap-panel', 'now-log', 'add-entrant-bar', 'allow-remove-bar',
+       'import-panel'].forEach(id => refit.observe(document.getElementById(id)));
+      document.querySelectorAll('.notice-slot, #race-entrants .filters')
+        .forEach(el => refit.observe(el));
+    }
 
     window.addEventListener('beforeunload', (ev) => {
       // canEdit() as well as isDirty(): a visitor has no way to have changed anything,
