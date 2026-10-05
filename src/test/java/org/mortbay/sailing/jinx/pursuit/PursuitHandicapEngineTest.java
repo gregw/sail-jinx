@@ -120,8 +120,7 @@ class PursuitHandicapEngineTest
 
     /**
      * Spec §5: two boats that both ran out of time are treated alike — a minute each,
-     * never more, even with nine charged and nobody else to take them. RET is frozen and
-     * gets nothing at all.
+     * never more, even with nine charged and nobody else to take them.
      */
     @Test
     void dnfBoatsShareEqualReward()

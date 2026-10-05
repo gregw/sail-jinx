@@ -293,55 +293,48 @@ class HandicapRulesTest
     }
 
     /**
-     * A retirement is frozen: no penalty, no share of the pool, TCF untouched.
+     * A retirement is scored exactly as a boat that did not start.
      *
      * <p>DNF and RET are not the same thing and must not be scored the same way. A boat
      * that is <b>DNF</b> was still racing when the race ended — it ran out of time, which
-     * is a statement about its speed, so its handicap should ease. A boat that
-     * <b>retired</b> stopped for a reason that has nothing to do with its rating: gear
-     * broke, someone was hurt, they had to be somewhere. Easing its handicap for that
-     * would hand it a better start next week for having had a bad night, and repeated
-     * retirements would ratchet a boat's rating down without it ever sailing a race.
-     *
-     * <p>So RET sits with DSQ, DNC and DNS: out of the placings, out of the giveback, out
-     * of the measured duration, and out of the arithmetic entirely.
+     * is a statement about its speed, so it is served first. A boat that <b>retired</b>
+     * stopped for a reason that has nothing to do with its rating: gear broke, someone was
+     * hurt, they had to be somewhere. It was there, so like a DNS it may take up to a
+     * minute of what the racers and the duty boat leave — but no more, and no sooner.
      */
     @Test
-    void aRetirementIsFrozenBecauseItSaysNothingAboutTheBoatsSpeed()
+    void aRetirementIsScoredAsANonStarter()
     {
         List<Sailing> raced = pursuitFleet();
-        Map<String, Result> results = new LinkedHashMap<>(pursuit(raced));
-        results.put("gear", new Result("gear", FinishStatus.RET, null, null, null));
-
         List<Competitor> boats = new ArrayList<>(raced.stream()
             .map(s -> new Competitor(s.id(), s.tcf())).toList());
         boats.add(new Competitor("gear", 1.0));
 
-        Map<String, Adjustment> out = byId(new PursuitHandicapEngine(alg())
-            .processResults(boats, race(), results));
-
-        Adjustment ret = out.get("gear");
-        assertThat("a retirement keeps its handicap", ret.newTcf(), equalTo(ret.oldTcf()));
-        assertThat(ret.rewardMinutes(), closeTo(0.0, 1e-12));
-        assertThat(ret.penaltyMinutes(), closeTo(0.0, 1e-12));
-        assertThat(ret.finishPosition(), is((Integer)null));
-
-        // …and it takes nothing from the boats that did race: they are scored exactly as
-        // if it had stayed on the mooring.
-        Map<String, Adjustment> without = byId(new PursuitHandicapEngine(alg())
-            .processResults(raced.stream().map(s -> new Competitor(s.id(), s.tcf())).toList(),
-                race(), pursuit(raced)));
-        for (Sailing sail : raced)
+        Map<String, Map<String, Adjustment>> by = new LinkedHashMap<>();
+        for (FinishStatus status : List.of(FinishStatus.RET, FinishStatus.DNS))
         {
-            assertThat("retirement must not move " + sail.id(),
-                out.get(sail.id()).newTcf(), closeTo(without.get(sail.id()).newTcf(), 1e-12));
+            Map<String, Result> results = new LinkedHashMap<>(pursuit(raced));
+            results.put("gear", new Result("gear", status, null, null, null));
+            by.put(status.name(), byId(new PursuitHandicapEngine(alg())
+                .processResults(boats, race(), results)));
+        }
+
+        Adjustment ret = by.get("RET").get("gear");
+        assertThat(ret.penaltyMinutes(), closeTo(0.0, 1e-12));
+        assertThat(ret.rewardMinutes(), closeTo(1.0, 1e-12));
+        assertThat(ret.finishPosition(), is((Integer)null));
+        for (Competitor b : boats)
+        {
+            assertThat("RET and DNS must agree on " + b.boatId(),
+                by.get("RET").get(b.boatId()).newTcf(),
+                closeTo(by.get("DNS").get(b.boatId()).newTcf(), 1e-12));
         }
     }
 
     /**
      * A DNF is not frozen — it ran out of time, and that is about its speed.
      *
-     * <p>The pair with {@link #aRetirementIsFrozenBecauseItSaysNothingAboutTheBoatsSpeed}:
+     * <p>The pair with {@link #aRetirementIsScoredAsANonStarter}:
      * these two statuses used to be handled identically and now differ, so both halves
      * are pinned.
      */
@@ -411,7 +404,7 @@ class HandicapRulesTest
         boats.add(new Competitor("quit2", 1.0));
         boats.add(new Competitor("quit3", 1.0));
         Map<String, Result> results = new LinkedHashMap<>(resultsOf(fleet(), 1.0));
-        // DNF, not RET: a retirement is frozen and takes no part in the giveback.
+        // DNF, not RET: a retirement waits behind the racers and the duty boat.
         for (String id : List.of("quit1", "quit2", "quit3"))
             results.put(id, new Result(id, FinishStatus.DNF, null, null, null));
 

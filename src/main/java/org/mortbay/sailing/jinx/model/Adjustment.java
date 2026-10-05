@@ -5,7 +5,7 @@ package org.mortbay.sailing.jinx.model;
  * the finish sheet, and the audit log.
  *
  * <p>Across one pass of the engine, {@code netAdjustmentMinutes} sums to zero. Frozen
- * boats — RET, DSQ, DNS, ABN — get a row with zero deltas and {@code oldTcf == newTcf}.
+ * boats — DSQ, ABN — get a row with zero deltas and {@code oldTcf == newTcf}.
  * There is no fleet-wide anchor: the next race's start times re-anchor the slowest boat.
  */
 public record Adjustment(

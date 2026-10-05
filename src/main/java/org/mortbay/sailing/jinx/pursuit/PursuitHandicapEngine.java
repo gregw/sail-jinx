@@ -138,11 +138,13 @@ public class PursuitHandicapEngine implements HandicapEngine
         // race, not the handicap maths afterwards — by this point the boats have sailed
         // whatever course they were given, and their elapsed times say so.
 
-        // §5 — classify. Four buckets now rather than three: DNC has its own, because a
-        // boat that stayed home draws a share of the pool and so is no longer frozen.
+        // §5 — classify. DNC, AVG and DNS each have a bucket of their own, because each
+        // may draw on the pool, and in that order of preference — see minuteGiveback.
         record Entry(Competitor boat, double elapsedMinutes, Integer position) {}
         List<Entry> finishers = new ArrayList<>();
         List<Competitor> dnf = new ArrayList<>();
+        List<Competitor> avg = new ArrayList<>();
+        List<Competitor> dns = new ArrayList<>();
         List<Competitor> dnc = new ArrayList<>();
         List<Competitor> frozen = new ArrayList<>();
         for (Competitor b : boats)
@@ -170,15 +172,16 @@ public class PursuitHandicapEngine implements HandicapEngine
                 // series, and takes what the boats that raced could not — see
                 // minuteGiveback.
                 case DNC -> dnc.add(b);
-                // DSQ, DNS, RET and ABN: frozen, and out of the placings and the
-                // giveback alike.
-                //
-                // RET belongs here and not with DNF, though the two look alike on the
-                // results sheet. A boat that RETIRED stopped for a reason that says
+                // The duty boat was there, running the race, and a boat that did not
+                // start was there too: both are served before the boats that stayed home.
+                case AVG -> avg.add(b);
+                // RET goes with DNS and not with DNF, though DNF and RET look alike on
+                // the results sheet. A boat that RETIRED stopped for a reason that says
                 // nothing about its rating — gear broke, someone was hurt, they had to be
-                // somewhere. Easing its handicap for that would reward a bad night with a
-                // better start, and a boat that retired often would ratchet its way down
-                // the fleet without ever sailing a race.
+                // somewhere — so it is not served with the boats that ran out of time.
+                // It was there, though, so it waits with the non-starters.
+                case DNS, RET -> dns.add(b);
+                // DSQ and ABN: frozen, and out of the placings and the giveback alike.
                 default -> frozen.add(b);
             }
         }
@@ -217,7 +220,8 @@ public class PursuitHandicapEngine implements HandicapEngine
             expectedDuration = config.defaultRaceDuration();
 
         // Everybody the pool is counted over: finishers in finish order, then the boats
-        // that ran out of time, then the boats that never came.
+        // that ran out of time, the duty boats, the non-starters, and the boats that
+        // never came.
         record Participant(Competitor boat, Integer position, double penalty, Kind kind) {}
         List<Participant> participants = new ArrayList<>();
         for (int i = 0; i < finishers.size(); i++)
@@ -235,6 +239,10 @@ public class PursuitHandicapEngine implements HandicapEngine
         }
         for (Competitor b : dnf)
             participants.add(new Participant(b, null, 0.0, Kind.DNF));
+        for (Competitor b : avg)
+            participants.add(new Participant(b, null, 0.0, Kind.AVG));
+        for (Competitor b : dns)
+            participants.add(new Participant(b, null, 0.0, Kind.DNS));
         for (Competitor b : dnc)
             participants.add(new Participant(b, null, 0.0, Kind.DNC));
 
@@ -245,7 +253,7 @@ public class PursuitHandicapEngine implements HandicapEngine
             participants.stream().map(Participant::kind).toArray(Kind[]::new), pool);
 
         // Nobody may receive: every boat that raced is on the penalty ladder, and there is
-        // no DNF and nobody at home either. That is a fleet no bigger than penaltyList —
+        // no DNF, duty boat, non-starter or anybody at home either. That is a fleet no bigger than penaltyList —
         // one boat sailing alone, or a five-boat series scored on [5,4,3,2,1].
         //
         // Nothing is charged. Keeping the pool would move the whole fleet's handicaps
@@ -291,7 +299,7 @@ public class PursuitHandicapEngine implements HandicapEngine
             adjustments.add(new Adjustment(p.boat().boatId(), p.position(),
                 penalty, reward, net, oldTcf, oldTcf / denom));
         }
-        // Frozen boats — RET, DSQ, DNS, ABN — still get a row, with zero deltas and their
+        // Frozen boats — DSQ, ABN — still get a row, with zero deltas and their
         // TCF untouched, so the audit and the table show them.
         for (Competitor b : frozen)
             adjustments.add(new Adjustment(b.boatId(), null, 0.0, 0.0, 0.0, b.tcf(), b.tcf()));
@@ -300,7 +308,7 @@ public class PursuitHandicapEngine implements HandicapEngine
     }
 
     /** What a boat did, as far as the giveback is concerned. */
-    private enum Kind { PENALISED, FINISHER, DNF, DNC }
+    private enum Kind { PENALISED, FINISHER, DNF, AVG, DNS, DNC }
 
     /** The penalty for finishing in this position, in whole minutes. */
     private double penaltyForRank(int rank)
@@ -337,12 +345,18 @@ public class PursuitHandicapEngine implements HandicapEngine
      *   <li><b>More DNFs than minutes.</b> There is no fair way to choose which of them
      *       gets one, so they share the pool evenly and nobody else gets anything.</li>
      *   <li><b>Minutes left when every boat out there has one.</b> A thin night. What the
-     *       racers could not take goes evenly to the boats that stayed home, which is the
-     *       2026 rule by another route: on a night most of the fleet missed, most of the
-     *       pool goes to the fleet that did not have to be beaten. A DNC can get more
-     *       than a minute, but only in a series too small for the ladder it is on.</li>
+     *       racers could not take goes first to the boats that were there but could not
+     *       race it: the duty boat (AVG), then the boats that did not start or retired
+     *       (DNS, RET). Each
+     *       is capped at a minute, like the racers, and shares evenly with its own kind
+     *       when there is less than a minute each.</li>
+     *   <li><b>Minutes left after those.</b> They go evenly to the boats that stayed
+     *       home, which is the 2026 rule by another route: on a night most of the fleet
+     *       missed, most of the pool goes to the fleet that did not have to be beaten. A
+     *       DNC can get more than a minute, but only in a series too small for the ladder
+     *       it is on.</li>
      *   <li><b>Minutes left and nobody at home.</b> They are discarded, and that race
-     *       does not conserve. It needs the whole entry list out and too few of them
+     *       does not conserve. It needs the whole entry list there and too few of them
      *       behind the ladder — a night most of the fleet retired.</li>
      * </ul>
      *
@@ -356,6 +370,8 @@ public class PursuitHandicapEngine implements HandicapEngine
 
         List<Integer> dnfs = new ArrayList<>();
         List<Integer> finishersFromTheBack = new ArrayList<>();
+        List<Integer> avgs = new ArrayList<>();
+        List<Integer> dnss = new ArrayList<>();
         List<Integer> dncs = new ArrayList<>();
         for (int i = n - 1; i >= 0; i--)
         {
@@ -363,6 +379,8 @@ public class PursuitHandicapEngine implements HandicapEngine
             {
                 case DNF -> dnfs.add(0, i);
                 case FINISHER -> finishersFromTheBack.add(i);
+                case AVG -> avgs.add(0, i);
+                case DNS -> dnss.add(0, i);
                 case DNC -> dncs.add(0, i);
                 case PENALISED -> { }
             }
@@ -375,27 +393,40 @@ public class PursuitHandicapEngine implements HandicapEngine
         if (minutes <= 0)
             return out;
 
-        if (receivers.size() < minutes && !dncs.isEmpty())
-        {
-            for (int i : receivers)
-                out[i] = 1.0;
-            double left = pool - receivers.size();
-            for (int i : dncs)
-                out[i] = left / dncs.size();
-            return out;
-        }
-
-        // Nobody at home, or the pool fits: a minute each until it is gone, and what the
-        // racers cannot take is discarded.
         if (dnfs.size() > minutes)
         {
             for (int i : dnfs)
                 out[i] = pool / dnfs.size();
             return out;
         }
-        for (int k = 0; k < Math.min(minutes, receivers.size()); k++)
+
+        int served = (int)Math.min(minutes, receivers.size());
+        for (int k = 0; k < served; k++)
             out[receivers.get(k)] = 1.0;
+        double left = pool - served;
+
+        left = upToAMinuteEach(avgs, left, out);
+        left = upToAMinuteEach(dnss, left, out);
+
+        // What is still left goes evenly to the boats at home; with nobody at home it is
+        // discarded.
+        if (left > 1e-9 && !dncs.isEmpty())
+        {
+            for (int i : dncs)
+                out[i] = left / dncs.size();
+        }
         return out;
+    }
+
+    /** Shares {@code left} evenly over {@code boats}, a minute each at most; returns the rest. */
+    private static double upToAMinuteEach(List<Integer> boats, double left, double[] out)
+    {
+        if (boats.isEmpty() || !(left > 1e-9))
+            return left;
+        double each = Math.min(1.0, left / boats.size());
+        for (int i : boats)
+            out[i] = each;
+        return left - each * boats.size();
     }
 
     /** The whole minute this time is closest to, rounding a half-minute up. */

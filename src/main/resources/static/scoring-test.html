@@ -167,7 +167,7 @@
     }, { dutyBoatId: 'mid' });
     check('duty boat is AVG', ['AVG'], s.flags(E('mid')));
     check('duty boat takes no place', false, s.places('pursuit').has('mid'));
-    check('duty boat is excluded from the handicap run', 'DNC', s.jinxStatus(E('mid')));
+    check('duty boat goes to the engine as AVG', 'AVG', s.jinxStatus(E('mid')));
   }
 
   // --- ties -----------------------------------------------------------------

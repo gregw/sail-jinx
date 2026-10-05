@@ -142,12 +142,12 @@ const UNPLACED_FLAGS = ['AVG', 'DNC', 'DNS', 'DNF', 'DSQ', 'RET', 'ABN'];
  * The handicap half follows jinxStatus below and FinishStatus on the server.
  */
 const FLAG_HELP = {
-  AVG: 'Duty boat — average points. Handicap: counted as a boat that stayed home.',
+  AVG: 'Duty boat — average points. Handicap: first of the non-racers to get time back, up to a minute.',
   DNF: 'Still racing when the race ended. Handicap eases — draws the largest share of the giveback.',
-  RET: 'Retired for a reason of its own. Handicap frozen.',
-  DNS: 'Came but did not start. Handicap frozen.',
+  RET: 'Retired for a reason of its own. Handicap: as DNS.',
+  DNS: 'Came but did not start. Handicap: after the duty boat, may get up to a minute back.',
   DSQ: 'Disqualified. Handicap frozen.',
-  DNC: 'Did not come. Draws a small share of the giveback.',
+  DNC: 'Did not come. Shares whatever giveback is left after everyone else.',
   ABN: 'Race abandoned. Handicap frozen.',
   OCS: 'Over the line early: head start given back and 5 minutes added to the scored finish.'
 };
@@ -483,7 +483,7 @@ function createScorer(state) {
   function jinxStatus(e) {
     const f = flags(e);
     if (f.includes('ABN')) return 'ABN';
-    if (f.includes('AVG')) return 'DNC';
+    if (f.includes('AVG')) return 'AVG';
     if (f.includes('DSQ')) return 'DSQ';
     if (f.includes('DNC')) return 'DNC';
     if (f.includes('RET')) return 'RET';

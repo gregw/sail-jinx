@@ -93,7 +93,8 @@ Things that look wrong and are not:
   reconcile them.
 - **`latePlaces` leaves out OCS boats and boats with no timed start** — otherwise an
   untimed boat reports a confident `0:00` late. Ranks share ties via `rankBy`.
-- **AVG (duty boat) goes to the engine as DNC** (`jinxStatus`).
+- **AVG (duty boat) goes to the engine as AVG** (`jinxStatus`); after the racers it is
+  served first, then DNS and RET alike, then DNC (`minuteGiveback`).
 - **Flags the RO set by hand are stored; flags the times imply are not.** Overrides
   are `{added, removed}` on `RaceTimes.BoatTimes.flags`; `toggleFlag` decides what may
   go into `removed`. The case it exists for is RET against a boat that never finished.

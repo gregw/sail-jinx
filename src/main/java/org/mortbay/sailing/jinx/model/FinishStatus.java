@@ -15,20 +15,24 @@ public enum FinishStatus
      */
     DNF,
     /**
-     * Retired — stopped for a reason of its own. <b>Not</b> the same as DNF: the TCF is
-     * frozen and the boat takes no part in the handicap.
+     * Retired — stopped for a reason of its own. <b>Not</b> the same as DNF, and scored
+     * exactly as {@link #DNS}: after the duty boat, up to a minute back.
      *
      * <p>Gear failure, an injury, somewhere else to be — none of that says anything about
-     * how fast the boat is, so easing its handicap would reward a bad night with a better
-     * start, and a boat that retired often would ratchet its way down the fleet without
-     * ever sailing a race.
+     * how fast the boat is, so it is not served with the boats that ran out of time.
      */
     RET,
     /** Disqualified — excluded from adjustments, TCF unchanged. */
     DSQ,
-    /** Did not come. Pays nothing, and draws a share that grows as the fleet empties. */
+    /**
+     * Did not come. Pays nothing, and takes an even share of whatever is still left once
+     * the racers, the duty boat and the non-starters have had theirs.
+     */
     DNC,
-    /** Did not start — on the water, did not start. TCF unchanged. */
+    /**
+     * Did not start — on the water, did not start. Pays nothing; after the duty boat, may
+     * take back up to a minute of what the racers could not.
+     */
     DNS,
     /**
      * The race was abandoned. TCF unchanged, for every boat in it.
@@ -42,5 +46,11 @@ public enum FinishStatus
      * out of time, so ABN lands in the frozen bucket by construction; a flag the browser
      * knew about and the engine did not would have scored an abandoned race normally.
      */
-    ABN
+    ABN,
+    /**
+     * The duty boat — running the race, so it could not sail it. Pays nothing, and is the
+     * first served of the boats that did not race: up to a minute of what the racers could
+     * not take, ahead of the DNSs and the DNCs.
+     */
+    AVG
 }
