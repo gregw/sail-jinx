@@ -65,7 +65,6 @@
     }
 
     renderClub(cfg);
-    renderPenaltyExample(cfg);
 
     const [racesR, seriesR] = await Promise.all([
       fetchJson('/api/races'),
@@ -125,16 +124,6 @@
       + (pending ? '' : ' <span class="tag">every race processed</span>')
       + '</li>').join('') + '</ul>';
   })();
-
-  /** The club's default ladder, so the example is the one actually in use. */
-  function renderPenaltyExample(cfg) {
-    const list = (cfg && cfg.algorithm && cfg.algorithm.penaltyList) || [];
-    if (!list.length) return;
-    const ords = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth'];
-    const parts = list.slice(0, ords.length).map((m, i) => m + ' for ' + ords[i]);
-    document.getElementById('penalty-example').textContent =
-      ' — by default ' + parts.join(', ') + ' (minutes)';
-  }
 
   /**
    * What this site is, and where the rest of the club's racing lives.
