@@ -17,6 +17,10 @@ import org.slf4j.LoggerFactory;
 /**
  * Keeps everyone who is not in the club's Workspace domain out.
  *
+ * <p>Only when {@code allowedDomain} is set. Without it every account the issuer
+ * authenticates is let through, and who that is is decided in the Google project —
+ * an Internal project or an External one in testing restricts it there.
+ *
  * <p>This is the check that actually restricts access, and it has to exist. Jetty's
  * OpenID authenticator establishes that Google knows who you are — <em>any</em> Google
  * account, including a personal Gmail one. Without this filter, "sign in with Google"

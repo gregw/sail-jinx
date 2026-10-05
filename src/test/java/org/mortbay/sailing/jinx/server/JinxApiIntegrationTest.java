@@ -687,6 +687,50 @@ class JinxApiIntegrationTest
     }
 
     @Test
+    void aReturningCasualIsOfferedTheTcfItLastLeftWith() throws Exception
+    {
+        // Not carried, but not forgotten: when it turns up again, a race or three later,
+        // it should come back on the handicap its last race gave it, not on scratch.
+        String seriesId = createSeries("Twilight");
+        String seasonBoat = createBoat("AUS9", "Quick Silver");
+        String visitor = createBoat("MYC99", "Passing Through");
+        String occasional = createBoat("MYC77", "Now And Then");
+        String race1 = createRace(seriesId, "2026-06-05");
+        String race2 = createRace(seriesId, "2026-06-12");
+        String race3 = createRace(seriesId, "2026-06-19");
+        String race4 = createRace(seriesId, "2026-06-26");
+        post("/api/races/" + race1 + "/entrants", """
+            {"entrants":[{"boatId":"%s","tcf":1.0,"entryType":"ROSTER"},
+                         {"boatId":"%s","tcf":0.95,"entryType":"CASUAL"},
+                         {"boatId":"%s","tcf":1.10,"entryType":"CASUAL"}]}"""
+            .formatted(seasonBoat, visitor, occasional));
+        post("/api/races/" + race1 + "/save-handicaps", """
+            {"adjustments":[
+              {"boatId":"%s","finishPosition":1,"penaltyMinutes":5.0,"rewardMinutes":0.0,
+               "netAdjustmentMinutes":5.0,"oldTcf":1.0,"newTcf":1.03},
+              {"boatId":"%s","finishPosition":2,"penaltyMinutes":0.0,"rewardMinutes":1.0,
+               "netAdjustmentMinutes":-1.0,"oldTcf":0.95,"newTcf":0.94}]}"""
+            .formatted(seasonBoat, visitor));
+
+        // Race 2: the occasional boat is entered but not yet processed — its entry TCF
+        // is the latest thing known about it.
+        post("/api/races/" + race2 + "/entrants", """
+            {"entrants":[{"boatId":"%s","tcf":1.03,"entryType":"ROSTER"},
+                         {"boatId":"%s","tcf":1.12,"entryType":"CASUAL"}]}"""
+            .formatted(seasonBoat, occasional));
+
+        JsonNode prior = get("/api/races/" + race4).path("priorTcfs");
+        assertThat(prior.path(visitor).asDouble(), closeTo(0.94, 1e-9));
+        assertThat(prior.path(occasional).asDouble(), closeTo(1.12, 1e-9));
+        assertThat(prior.path(seasonBoat).asDouble(), closeTo(1.03, 1e-9));
+
+        // Only earlier races: race 1 knows nothing about what came after it.
+        assertThat(get("/api/races/" + race1).path("priorTcfs").size(), equalTo(0));
+        assertThat(get("/api/races/" + race3).path("priorTcfs").path(visitor).asDouble(),
+            closeTo(0.94, 1e-9));
+    }
+
+    @Test
     void startTimesReportWhetherSunsetCappedTheTarget() throws Exception
     {
         String seriesId = createSeries("Twilight");

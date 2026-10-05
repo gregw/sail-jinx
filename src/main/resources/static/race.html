@@ -121,9 +121,9 @@
       <datalist id="design-matches"></datalist>
       <label title="A casual is handicapped, but cannot move the series boats' handicaps and is not carried into the next race."><input type="checkbox" id="add-casual"> casual</label>
       <button id="add-existing-btn" type="button" data-requires="admin" disabled
-              title="Enter the register boat these fields name, on TCF 1.0000.">Add from register</button>
+              title="Enter the register boat these fields name, on the TCF its last race in this series left it, or 1.0000.">Add from register</button>
       <button id="add-new-btn" type="button" data-requires="admin" disabled
-              title="Add a new boat to the register and enter it, on TCF 1.0000.">Add &amp; register</button>
+              title="Add a new boat to the register and enter it, on TCF 1.0000 (or its last TCF in this series, if it turns out to be known).">Add &amp; register</button>
       <button id="add-oneoff-btn" type="button" data-requires="admin" disabled
               title="Enter a visitor for this race only: not registered, no handicap carried forward.">One-off only</button>
       <button id="add-clear-btn" type="button" data-requires="admin">Clear</button>
@@ -1542,11 +1542,12 @@
     if (!addResolved) return;
     const b = addResolved;
     // A boat has no handicap of its own — it has one per entry — so one is set here.
-    const tcf = DEFAULT_ENTRY_TCF;
+    const tcf = entryTcf(b.id);
     addEntrant({ boatId: b.id, sailNumber: b.sailNumber, name: b.name,
       designId: b.designId, division: null, spinnaker: null, tcf,
       entryType: addEntryType() });
     setMsg('add-msg', 'Added ' + b.sailNumber + ' on TCF ' + fmtTcf(tcf)
+      + (priorTcf(b.id) != null ? ' (from its last race in this series)' : '')
       + ' — edit it in the table, then Save.');
   }
 
@@ -1556,7 +1557,6 @@
     const name = f.name.value.trim();
     const design = f.design.value.trim();
     if (!sail && !name) { setMsg('add-msg', 'Type a sail number or a name first.'); return; }
-    const tcf = DEFAULT_ENTRY_TCF;
 
     // The register takes the boat's identity — including the design, if one was given;
     // the handicap belongs to this entry.
@@ -1570,6 +1570,7 @@
     // spelling — in which case it is not new and must not be entered twice.
     const known = register.find(x => x.id === b.id);
     if (!known) register.push(b);
+    const tcf = entryTcf(b.id);
     if (alreadyEntered(b.id)) {
       setMsg('add-msg', b.sailNumber + ' is already in this race (matched ' + b.id + ').');
       clearAddFields();
@@ -1579,13 +1580,25 @@
       designId: b.designId, division: null, spinnaker: null, tcf,
       entryType: addEntryType() });
     setMsg('add-msg', (known ? 'Matched existing ' : 'Registered and added ')
-      + b.sailNumber + ' (' + b.id + ').');
+      + b.sailNumber + ' (' + b.id + ') on TCF ' + fmtTcf(tcf) + '.');
   }
 
-  // A boat joining on the night enters on scratch. Asking for a handicap in a popup
+  // A boat new to the series enters on scratch. Asking for a handicap in a popup
   // interrupted the one moment the RO has no attention to spare, and 1.0000 was the
   // answer nearly every time anyway — it is editable in the TCF column afterwards.
   const DEFAULT_ENTRY_TCF = 1.0;
+
+  // What an earlier race in this series last said about the boat's TCF — the only memory
+  // a casual has, since it is never carried forward. Null when it has not been here.
+  function priorTcf(boatId) {
+    const t = bundle.priorTcfs ? bundle.priorTcfs[boatId] : null;
+    return Number.isFinite(t) ? t : null;
+  }
+
+  function entryTcf(boatId) {
+    const t = priorTcf(boatId);
+    return t != null ? t : DEFAULT_ENTRY_TCF;
+  }
 
   function onAddOneOff() {
     const f = addFields();

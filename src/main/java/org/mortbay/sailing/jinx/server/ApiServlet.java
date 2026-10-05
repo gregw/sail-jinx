@@ -912,7 +912,9 @@ public class ApiServlet extends HttpServlet
     /**
      * Everything the race page needs, in one response: the race, its series,
      * the entrants (with their TCFs), the captured times, the published start
-     * sheet, any saved adjustments, and the derived lock state.
+     * sheet, any saved adjustments, the derived lock state, and each boat's latest TCF
+     * from an earlier race in the series ({@code priorTcfs}, for entering a returning
+     * casual).
      *
      * <p>One call rather than the eight the SailSys-era page made. There is no
      * longer a slow remote to parallelise around — it is all one local read.
@@ -954,7 +956,42 @@ public class ApiServlet extends HttpServlet
         Optional<Race> next = store.nextRaceInSeries(raceId);
         out.put("nextRaceId", next.map(Race::id).orElse(null));
         out.put("previousRaceId", previousRaceId(race));
+        out.put("priorTcfs", priorTcfs(race));
         writeJson(resp, out);
+    }
+
+    /**
+     * The latest TCF known for each boat from the earlier races of this series: the new
+     * TCF its last processed race gave it, or else the TCF it was last entered on.
+     *
+     * <p>For a boat that is not carried forward — a casual — this is the only memory of
+     * its handicap. Without it a casual that came back three races later was entered on
+     * scratch and its earlier adjustments were lost.
+     */
+    private Map<String, Double> priorTcfs(Race race)
+    {
+        Map<String, Double> out = new LinkedHashMap<>();
+        List<Race> earlier = store.racesInSeries(race.seriesId()).stream()
+            .filter(r -> r.number() < race.number())
+            .toList();
+        // Most recent first, so the first answer found for a boat is its latest.
+        for (Race r : earlier.reversed())
+        {
+            for (Adjustment a : store.adjustments(r.id()))
+            {
+                if (a.boatId() != null)
+                    out.putIfAbsent(a.boatId(), a.newTcf());
+            }
+            RaceEntrants entered = store.entrants(r.id());
+            if (entered == null)
+                continue;
+            for (Entrant e : entered.entrants())
+            {
+                if (e.boatId() != null && !e.boatId().isBlank())
+                    out.putIfAbsent(e.boatId(), e.tcf());
+            }
+        }
+        return out;
     }
 
     private String previousRaceId(Race race)

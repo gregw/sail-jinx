@@ -168,7 +168,8 @@ The club domain scopes the last two; changing it orphans every id.
 
 - **TCF, division and spinnaker belong to `Entrant`, never `Boat`.** Each race's
   entrant file carries the TCF it was sailed on, which is the handicap history. A boat
-  joining gets 1.0. `Design.noSpinnaker` supplies a default NS; its absence means
+  added to a race gets the TCF its latest earlier race in the series left it
+  (`priorTcfs` in the race bundle) — the only way a casual's handicap survives — else 1.0. `Design.noSpinnaker` supplies a default NS; its absence means
   *unknown*, not S.
 - **Two imports of the same sailing-pf file.** `POST /api/boats/import` takes identity
   only; `POST /api/races/{id}/entrants/import` also takes handicap → TCF and variant →
@@ -209,7 +210,7 @@ an admin and there is no session handler, security handler or outbound call.
 | Tier | Who | May |
 |---|---|---|
 | `VIEWER` | anybody | read every page and every GET **except `/api/audit`** |
-| `RACE_OFFICER` | a club-domain account | run a race night: times, start sheet, process, unlock, abandon, and edit an entrant's TCF, division or casual flag |
+| `RACE_OFFICER` | any signed-in account the domain check admits | run a race night: times, start sheet, process, unlock, abandon, and edit an entrant's TCF, division or casual flag |
 | `ADMIN` | listed in `admins:` — **or everyone, if the list is empty** | series, races, series config, the fleet register, and which boats are in a race |
 
 - **Composing versus running.** `POST /api/races/{id}/entrants` takes the whole list,
@@ -220,7 +221,9 @@ an admin and there is no session handler, security handler or outbound call.
   `if (denyUnless(...)) return;`.
 - **`JinxSecurityHandler` constrains only `/auth/login`** (`ANY_USER`); everything else
   is `ALLOWED`, and the tiers are enforced per operation in `ApiServlet`.
-- **`AuthFilter` is the club-domain check.** Jetty's authenticator accepts any Google
+- **`AuthFilter` is the club-domain check**, when `allowedDomain` is set; unset, it
+  admits any account Google authenticates, and the Google project (Internal, or
+  External in testing) is the only restriction. Jetty's authenticator accepts any Google
   account. It checks the `hd` claim, not the request parameter, and 403s a non-club
   account (with a sign-out link) rather than demoting it.
 - **The loopback exemption lives in `SignedIn` and must test `allowLoopback()`** —

@@ -16,7 +16,7 @@
 # With it ON there are three tiers, and signing in is an invitation rather than a gate:
 #
 #   nobody signed in   reads every page (except the audit log) and changes nothing
-#   a club account     runs a race night — times, start sheet, handicaps, TCF edits
+#   a signed-in account runs a race night — times, start sheet, handicaps, TCF edits
 #   an admin below     owns the season — series, races, the fleet register, and
 #                      which boats are in a race
 #
@@ -74,9 +74,14 @@ clientSecret: "REPLACE-ME"
 redirectPath: "/auth/callback"
 
 # Only Workspace accounts in this domain may sign in. Checked server-side against
-# the `hd` claim Google returns, and against the address. Leave it out to admit any
-# account the issuer will authenticate — which for Google means any Gmail account,
-# so do not leave it out.
+# the `hd` claim Google returns, and against the address.
+#
+# Leave it out to admit any account the issuer will authenticate, and let Google
+# decide who that is. That is safe only when the Google project restricts it: an
+# "Internal" project admits the club Workspace, and an "External" project in
+# "Testing" admits only its listed test users. An External project in production
+# admits any Google account — and every signed-in account can run a race night, and
+# with no admins listed below, own the season too.
 #
 # Note this is the club's EMAIL domain, which need not be the address the server is
 # reached at: people sign in as someone@myc.org.au to use https://myc.mortbay.org.

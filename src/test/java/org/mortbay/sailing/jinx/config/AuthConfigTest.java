@@ -97,6 +97,26 @@ class AuthConfigTest
         assertThat(a.permits(null, null), is(false));
     }
 
+    /**
+     * No allowedDomain: whoever the issuer will authenticate gets in. Which accounts that
+     * is, is then decided at Google — a project in testing admits only its listed test
+     * users.
+     */
+    @Test
+    void noAllowedDomainAdmitsAnyAuthenticatedAccount()
+    {
+        for (String none : new String[] { null, "", "  " })
+        {
+            AuthConfig a = new AuthConfig(true, null, "id", "secret", null,
+                none, java.util.List.of(), false);
+            assertThat(a.permits("someone@gmail.com", null), is(true));
+            assertThat(a.permits("skipper@myc.org.au", "myc.org.au"), is(true));
+            // Still nobody without an address: that is not a signed-in account.
+            assertThat(a.permits(null, null), is(false));
+            assertThat(a.permits(" ", null), is(false));
+        }
+    }
+
     @Test
     void namingNoAdminsMakesEveryoneOne()
     {
