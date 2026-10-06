@@ -206,13 +206,12 @@ public class JinxServer
         context.setSessionHandler(new SessionHandler());
         context.setSecurityHandler(security);
         // After the security handler, so the login has happened and there are claims to
-        // check. This is what keeps non-club Google accounts out.
+        // check. It no longer keeps anybody out — any account may sign in, and what it
+        // may do is ApiServlet.Role's — but it serves the sign-in error and sign-out.
         context.addFilter(new FilterHolder(new AuthFilter(auth)), "/*",
             EnumSet.of(DispatcherType.REQUEST));
 
-        LOG.info("Authentication: {} via {}, redirect {}",
-            auth.allowedDomain() == null ? "any account" : auth.allowedDomain() + " accounts",
-            auth.issuer(), auth.redirectPath());
+        LOG.info("Authentication via {}, redirect {}", auth.issuer(), auth.redirectPath());
     }
 
     /**

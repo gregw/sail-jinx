@@ -14,18 +14,20 @@ import org.mortbay.sailing.jinx.config.AuthConfig;
  * after a successful login. Reading them there rather than re-parsing the id token keeps
  * this to a map lookup and means the token is verified exactly once, by Jetty.
  *
- * @param email  the club address, lower-cased, or null when nobody is signed in
- * @param name   the display name Google supplies, or null
- * @param admin  whether this account is an admin (see {@code AuthConfig.isAdmin})
- * @param domain the {@code hd} claim — the Workspace domain Google asserts
+ * @param email       the address, lower-cased, or null when nobody is signed in
+ * @param name        the display name Google supplies, or null
+ * @param admin       whether this account is an admin (see {@code AuthConfig.isAdmin})
+ * @param raceOfficer whether it runs race nights (see {@code AuthConfig.isRaceOfficer})
+ * @param domain      the {@code hd} claim — the Workspace domain Google asserts
  */
-public record SignedIn(String email, String name, boolean admin, String domain)
+public record SignedIn(String email, String name, boolean admin, boolean raceOfficer,
+                       String domain)
 {
     /** Nobody is signed in, and authentication is off, so everybody is an admin. */
-    public static final SignedIn ANONYMOUS_ADMIN = new SignedIn(null, null, true, null);
+    public static final SignedIn ANONYMOUS_ADMIN = new SignedIn(null, null, true, true, null);
 
     /** Nobody is signed in and authentication is on. */
-    public static final SignedIn NOBODY = new SignedIn(null, null, false, null);
+    public static final SignedIn NOBODY = new SignedIn(null, null, false, false, null);
 
     public boolean isSignedIn()
     {
@@ -58,8 +60,9 @@ public record SignedIn(String email, String name, boolean admin, String domain)
         }
         String email = str(claims.get("email"));
         String lower = email == null ? null : email.toLowerCase(java.util.Locale.ENGLISH);
+        String hd = str(claims.get("hd"));
         return new SignedIn(lower, str(claims.get("name")),
-            auth.isAdmin(lower), str(claims.get("hd")));
+            auth.isAdmin(lower), auth.isRaceOfficer(lower, hd), hd);
     }
 
     @SuppressWarnings("unchecked")

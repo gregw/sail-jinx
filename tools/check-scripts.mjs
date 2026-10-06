@@ -94,7 +94,7 @@ for (const page of fs.readdirSync(dir).filter(f => f.endsWith('.html') && !f.sta
   // data-requires gates a control on the caller's role. A value applyRoleGates does not
   // know falls through to the weakest tier, so a typo does not break anything visibly —
   // it just quietly offers an admin's button to a race officer.
-  const ROLES = new Set(['officer', 'admin']);
+  const ROLES = new Set(['signedin', 'officer', 'admin']);
   const badRoles = new Map();
   (html + navHtml + raw).split('\n').forEach((line, idx) => {
     for (const m of line.matchAll(/data-requires="([^"]*)"/g))

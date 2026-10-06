@@ -181,12 +181,14 @@ public class ApiServlet extends HttpServlet
      * what sail-jinx did before it had a login: one machine on one desk is the security
      * boundary.
      *
-     * <p>With authentication on there are three answers, and the first of them is the one
+     * <p>With authentication on there are four answers, and the first of them is the one
      * that shapes the app: <b>nobody signed in is a {@link Role#VIEWER}, not a refusal</b>.
-     * A club's results are published to be read, so every page and every GET answers a
-     * stranger. A club account is a {@link Role#RACE_OFFICER} and can run a race night
-     * end to end. An account named in {@code admins} is an {@link Role#ADMIN} and owns
-     * what a race night runs on — the series and the races.
+     * A club's results are published to be read, so the series, the races and every race
+     * answer a stranger. Any account the issuer signs in is {@link Role#SIGNED_IN} and may
+     * read the boat register too. One in an allowed domain or named in
+     * {@code raceOfficers} is a {@link Role#RACE_OFFICER} and can run a race night end to
+     * end. An account named in {@code admins} is an {@link Role#ADMIN} and owns what a
+     * race night runs on — the series, the races and the register.
      */
     Role currentRole(HttpServletRequest req)
     {
@@ -195,7 +197,9 @@ public class ApiServlet extends HttpServlet
         SignedIn who = SignedIn.of(req, auth);
         if (who.admin())
             return Role.ADMIN;
-        return who.isSignedIn() ? Role.RACE_OFFICER : Role.VIEWER;
+        if (who.raceOfficer())
+            return Role.RACE_OFFICER;
+        return who.isSignedIn() ? Role.SIGNED_IN : Role.VIEWER;
     }
 
     /**
@@ -204,11 +208,16 @@ public class ApiServlet extends HttpServlet
      */
     public enum Role
     {
-        /** Anyone at all. Can read every page and change nothing. */
+        /** Anyone at all. Reads the series, the races and every race; changes nothing. */
         VIEWER,
-        /** A club account. Runs race night: entrants, times, start sheet, handicaps. */
+        /** Any account the issuer signed in. Also reads the boat register. */
+        SIGNED_IN,
+        /**
+         * An account in an allowed domain or named in {@code raceOfficers}. Runs race
+         * night: times, flags, TCFs, start sheet, handicaps.
+         */
         RACE_OFFICER,
-        /** A club account named in {@code admins}. Owns the shape of the season. */
+        /** An account named in {@code admins}. Owns the shape of the season. */
         ADMIN;
 
         public boolean atLeast(Role required)
@@ -228,7 +237,12 @@ public class ApiServlet extends HttpServlet
             {
                 case "/config" -> writeJson(resp, publicConfig());
                 case "/whoami" -> writeJson(resp, whoami(req));
-                case "/boats" -> writeJson(resp, sortedBoats());
+                // Who sails in the club, with sail numbers, is for members rather than the
+                // world: it takes a sign-in. The races still name their boats.
+                case "/boats" -> {
+                    if (!denyUnless(req, resp, Role.SIGNED_IN))
+                        writeJson(resp, sortedBoats());
+                }
                 case "/designs" -> writeJson(resp, sortedDesigns());
                 case "/series" -> writeJson(resp, sortedSeries());
                 case "/races" -> writeJson(resp, allRaces());
@@ -1747,13 +1761,14 @@ public class ApiServlet extends HttpServlet
         {
             resp.setStatus(401);
             writeJson(resp, mapOf(
-                "error", "sign in with a " + clubDomainForMessage() + " account to do that",
+                "error", "sign in to do that",
                 "loginPath", JinxSecurityHandler.LOGIN_PATH));
         }
         else
         {
             resp.setStatus(403);
-            writeJson(resp, mapOf("error", "this needs an administrator"));
+            writeJson(resp, mapOf("error", required == Role.ADMIN
+                ? "this needs an administrator" : "this needs a race officer"));
         }
         return true;
     }
@@ -1770,12 +1785,6 @@ public class ApiServlet extends HttpServlet
     private String auditUser(HttpServletRequest req)
     {
         return auth == null || !auth.enabled() ? null : SignedIn.of(req, auth).email();
-    }
-
-    private String clubDomainForMessage()
-    {
-        String domain = auth == null ? null : auth.allowedDomain();
-        return domain == null ? "club" : domain;
     }
 
     /**

@@ -54,12 +54,15 @@ class AuthIntegrationTest
 
     private String idToken(String email)
     {
+        // Google asserts hd for a Workspace account and leaves it out for a personal one.
+        String domain = email.substring(email.indexOf('@') + 1);
+        String hd = domain.equals("gmail.com") ? "" : ",\"hd\":\"" + domain + "\"";
         String claims = """
             {"iss":"%s","aud":"test-client","exp":%d,"iat":%d,
-             "email":"%s","name":"A Sailor","hd":"myc.org.au"}"""
+             "email":"%s","name":"A Sailor"%s}"""
             .formatted("http://localhost:" + port(issuer),
                 java.time.Instant.now().plusSeconds(600).getEpochSecond(),
-                java.time.Instant.now().getEpochSecond(), email);
+                java.time.Instant.now().getEpochSecond(), email, hd);
         java.util.Base64.Encoder b64 = java.util.Base64.getUrlEncoder().withoutPadding();
         return b64.encodeToString("{\"alg\":\"none\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8))
             + "." + b64.encodeToString(claims.getBytes(java.nio.charset.StandardCharsets.UTF_8))
@@ -186,6 +189,17 @@ class AuthIntegrationTest
     private Server startJinx(Path dataRoot, String issuerUrl, boolean allowLoopback)
         throws Exception
     {
+        return startJinx(dataRoot, issuerUrl, allowLoopback, """
+            allowedDomain: "myc.org.au"
+            admins:
+              - "commodore@myc.org.au"
+            """);
+    }
+
+    /** As above, with {@code access} in place of the domain and admin lines. */
+    private Server startJinx(Path dataRoot, String issuerUrl, boolean allowLoopback,
+                             String access) throws Exception
+    {
         Files.createDirectories(dataRoot.resolve("config"));
         Files.writeString(dataRoot.resolve("config/config.yaml"), """
             club:
@@ -198,11 +212,8 @@ class AuthIntegrationTest
             issuer: "%s"
             clientId: "test-client"
             clientSecret: "test-secret"
-            allowedDomain: "myc.org.au"
             allowLoopback: %s
-            admins:
-              - "commodore@myc.org.au"
-            """.formatted(issuerUrl, allowLoopback));
+            """.formatted(issuerUrl, allowLoopback) + access);
         jinx = JinxServer.start(dataRoot, 0);
         return jinx;
     }
@@ -226,10 +237,13 @@ class AuthIntegrationTest
         startJinx(tmp, issuerUrl, false);
 
         // The club's results are the point of publishing them. A visitor with no account
-        // reads the fleet, the seasons and the races without being asked who they are.
-        HttpResponse<String> api = get("/api/boats");
-        assertThat(api.statusCode(), is(200));
+        // reads the seasons and the races without being asked who they are…
+        assertThat(get("/api/series").statusCode(), is(200));
+        assertThat(get("/api/races").statusCode(), is(200));
         assertThat(get("/races.html").statusCode(), is(200));
+        // …but not the boat register, which takes a sign-in, nor the audit log.
+        assertThat(get("/api/boats").statusCode(), is(401));
+        assertThat(get("/api/audit").statusCode(), is(401));
 
         // …and cannot change any of it. 401 rather than 403: there is a sign-in that
         // would fix this, and the page needs to be able to tell the difference between
@@ -609,5 +623,98 @@ class AuthIntegrationTest
         return browser.send(HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:" + port(jinx) + path)).GET().build(),
             HttpResponse.BodyHandlers.ofString()).statusCode();
+    }
+
+    private HttpResponse<String> getAs(HttpClient browser, String path) throws Exception
+    {
+        return browser.send(HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port(jinx) + path)).GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * Any Google account may sign in. Outside the allowed domains and not named as a race
+     * officer, that buys the boat register and nothing more — it is not refused, and it
+     * is not a race officer.
+     */
+    @Test
+    void anAccountFromAnywhereReadsTheRegisterAndChangesNothing(@TempDir Path tmp)
+        throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false);
+        HttpClient commodore = browser();
+        signIn(commodore, "commodore@myc.org.au");
+        postAs(commodore, "/api/series", "{\"name\":\"2026 Winter\"}");
+        String seriesId = M.readTree(get("/api/series").body()).get(0).path("id").asText();
+        postAs(commodore, "/api/races",
+            "{\"seriesId\":\"" + seriesId + "\",\"date\":\"2026-06-05\"}");
+        String raceId = M.readTree(get("/api/races").body()).get(0).path("id").asText();
+
+        HttpClient outsider = browser();
+        signIn(outsider, "someone@gmail.com");
+        JsonNode who = whoami(outsider);
+        assertThat(who.path("signedIn").asBoolean(), is(true));
+        assertThat(who.path("role").asText(), equalTo("SIGNED_IN"));
+        assertThat(who.path("canEdit").asBoolean(), is(false));
+
+        assertThat(getAs(outsider, "/api/boats").statusCode(), is(200));
+        assertThat(getAs(outsider, "/race.html").statusCode(), is(200));
+        assertThat(getAs(outsider, "/api/audit").statusCode(), is(403));
+        // Signed in, so 403 rather than 401: signing in again would not help.
+        assertThat(postAs(outsider, "/api/races/" + raceId + "/times",
+            "{\"times\":{}}"), is(403));
+        assertThat(postAs(outsider, "/api/series", "{\"name\":\"Mine\"}"), is(403));
+    }
+
+    @Test
+    void raceOfficersComeFromSeveralDomainsOrByName(@TempDir Path tmp) throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false, """
+            allowedDomains:
+              - "myc.org.au"
+              - "friends.example.org"
+            raceOfficers:
+              - "helper@gmail.com"
+            admins:
+              - "commodore@myc.org.au"
+            """);
+        HttpClient commodore = browser();
+        signIn(commodore, "commodore@myc.org.au");
+        postAs(commodore, "/api/series", "{\"name\":\"2026 Winter\"}");
+        String seriesId = M.readTree(get("/api/series").body()).get(0).path("id").asText();
+        postAs(commodore, "/api/races",
+            "{\"seriesId\":\"" + seriesId + "\",\"date\":\"2026-06-05\"}");
+        String raceId = M.readTree(get("/api/races").body()).get(0).path("id").asText();
+
+        for (String email : java.util.List.of("ro@myc.org.au", "ro@friends.example.org",
+            "helper@gmail.com"))
+        {
+            HttpClient ro = browser();
+            signIn(ro, email);
+            assertThat(email, whoami(ro).path("role").asText(), equalTo("RACE_OFFICER"));
+            assertThat(email, postAs(ro, "/api/races/" + raceId + "/times",
+                "{\"times\":{}}"), is(200));
+            // Still not the season's owner.
+            assertThat(email, postAs(ro, "/api/series", "{\"name\":\"Mine\"}"), is(403));
+        }
+
+        HttpClient stranger = browser();
+        signIn(stranger, "other@gmail.com");
+        assertThat(whoami(stranger).path("role").asText(), equalTo("SIGNED_IN"));
+    }
+
+    @Test
+    void anEmptyAdminsListMakesNobodyAnAdmin(@TempDir Path tmp) throws Exception
+    {
+        String issuerUrl = startStubIssuer();
+        startJinx(tmp, issuerUrl, false, """
+            allowedDomain: "myc.org.au"
+            """);
+        HttpClient ro = browser();
+        signIn(ro, "anyone@myc.org.au");
+        assertThat(whoami(ro).path("role").asText(), equalTo("RACE_OFFICER"));
+        assertThat(postAs(ro, "/api/series", "{\"name\":\"Mine\"}"), is(403));
     }
 }

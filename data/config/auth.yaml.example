@@ -13,12 +13,14 @@
 # it always has: no login, every request an admin. That is fine for the club PC on
 # one desk. It is not fine for anything reachable over a network.
 #
-# With it ON there are three tiers, and signing in is an invitation rather than a gate:
+# With it ON there are four tiers, and signing in is an invitation rather than a gate:
 #
-#   nobody signed in   reads every page (except the audit log) and changes nothing
-#   a signed-in account runs a race night — times, start sheet, handicaps, TCF edits
-#   an admin below     owns the season — series, races, the fleet register, and
-#                      which boats are in a race
+#   nobody signed in    reads the series, the races and every race; changes nothing
+#   any signed-in account  also reads the boat register
+#   a race officer      runs a race night - times, start sheet, handicaps, TCF edits
+#                       (an account in allowedDomains, or named in raceOfficers)
+#   an admin            owns the season - series, races, the fleet register, and
+#                       which boats are in a race (named in admins)
 #
 # So turning this on does not hide the club's results from members without accounts.
 # It decides who can change them.
@@ -73,23 +75,24 @@ clientSecret: "REPLACE-ME"
 # Where Google sends the browser back. Must match the registered redirect URI.
 redirectPath: "/auth/callback"
 
-# Only Workspace accounts in this domain may sign in. Checked server-side against
-# the `hd` claim Google returns, and against the address.
+# Any account the issuer authenticates may sign in; who that is, is decided by the
+# Google project ("Internal" admits the club Workspace, "External" in "Testing" only
+# its listed test users, "External" in production any Google account). Signing in
+# alone only shows the boat register.
 #
-# Leave it out to admit any account the issuer will authenticate, and let Google
-# decide who that is. That is safe only when the Google project restricts it: an
-# "Internal" project admits the club Workspace, and an "External" project in
-# "Testing" admits only its listed test users. An External project in production
-# admits any Google account — and every signed-in account can run a race night, and
-# with no admins listed below, own the season too.
-#
-# Note this is the club's EMAIL domain, which need not be the address the server is
-# reached at: people sign in as someone@myc.org.au to use https://myc.mortbay.org.
-allowedDomain: "myc.org.au"
+# Every account in one of these domains is a race officer. Checked server-side
+# against the `hd` claim Google returns, and against the address. These are EMAIL
+# domains, which need not be the address the server is reached at: people sign in as
+# someone@myc.org.au to use https://myc.mortbay.org. (The older single
+# `allowedDomain: "myc.org.au"` still works.)
+allowedDomains:
+  - "myc.org.au"
 
-# Who may edit handicaps and unlock races. Everyone else who signs in can still run
-# a race night — enter times, results, flags — but not rewrite the season.
-# An empty list means everyone who can sign in is an admin.
+# Race officers named one by one, from any domain - a volunteer on a personal Gmail.
+raceOfficers: []
+
+# Who owns the season: series, races, series settings, the fleet register, and which
+# boats are in a race. An empty list means NOBODY signed in is an admin.
 admins:
   - "commodore@myc.org.au"
 

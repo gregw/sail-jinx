@@ -213,30 +213,30 @@ an admin and there is no session handler, security handler or outbound call.
 
 | Tier | Who | May |
 |---|---|---|
-| `VIEWER` | anybody | read every page and every GET **except `/api/audit`** |
-| `RACE_OFFICER` | any signed-in account the domain check admits | run a race night: times, start sheet, process, unlock, abandon, and edit an entrant's TCF, division or casual flag |
-| `ADMIN` | listed in `admins:` — **or everyone, if the list is empty** | series, races, series config, the fleet register, and which boats are in a race |
+| `VIEWER` | anybody | read every page and every GET **except `/api/boats` and `/api/audit`** |
+| `SIGNED_IN` | any account the issuer signs in | also `GET /api/boats` (the register) |
+| `RACE_OFFICER` | in `allowedDomains:` or named in `raceOfficers:` | run a race night: times, start sheet, process, unlock, abandon, and edit an entrant's TCF, division or casual flag |
+| `ADMIN` | listed in `admins:` — **empty means nobody** | series, races, series config, the fleet register, which boats are in a race, the audit log |
 
 - **Composing versus running.** `POST /api/races/{id}/entrants` takes the whole list,
   and the role is decided from the diff (`changesTheFleet`): same set of boat ids is a
   race officer's edit; a boat more or fewer needs an admin.
-- **`denyUnless` answers 401 to a visitor and 403 to a signed-in non-admin**, and the
+- **`denyUnless` answers 401 to a visitor and 403 to anyone signed in but short**, and the
   page offers sign-in for exactly the 401. Every guard is
   `if (denyUnless(...)) return;`.
 - **`JinxSecurityHandler` constrains only `/auth/login`** (`ANY_USER`); everything else
   is `ALLOWED`, and the tiers are enforced per operation in `ApiServlet`.
-- **`AuthFilter` is the club-domain check**, when `allowedDomain` is set; unset, it
-  admits any account Google authenticates, and the Google project (Internal, or
-  External in testing) is the only restriction. Jetty's authenticator accepts any Google
-  account. It checks the `hd` claim, not the request parameter, and 403s a non-club
-  account (with a sign-out link) rather than demoting it.
+- **Any Google account may sign in**; nothing refuses it. The domain is a promotion to
+  race officer (`AuthConfig.isRaceOfficer`), checked on the `hd` claim, not the request
+  parameter. `AuthFilter` only serves the sign-in error and sign-out pages. The old
+  single `allowedDomain:` key still loads (`AuthConfig.fromYaml`).
 - **The loopback exemption lives in `SignedIn` and must test `allowLoopback()`** —
   behind a reverse proxy every request is from 127.0.0.1.
 - `OpenIdAuthenticator`'s third argument is the error page (`AuthFilter.ERROR_PATH`);
   `JinxServer.tokenExchangeClient` removes `WWWAuthenticationProtocolHandler` *after*
   `super.doStart()`. Both javadocs say why; each is pinned by an `AuthIntegrationTest`.
 - Audit entries record the signed-in address; **null is a real answer** (no login).
-- In the browser, `isAdmin()`/`canEdit()` and `data-requires="officer|admin"` with
+- In the browser, `isSignedIn()`/`canEdit()`/`isAdmin()` and `data-requires="signedin|officer|admin"` with
   `applyRoleGates()` are UI hints only; the server refuses regardless. Controls are
   hidden, not disabled. `race.html` uses one read-only path: `readOnly()` is
   `locked || !canEdit()`.

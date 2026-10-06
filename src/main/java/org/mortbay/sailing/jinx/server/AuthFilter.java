@@ -15,25 +15,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Keeps everyone who is not in the club's Workspace domain out.
+ * Serves the auth pages that must work for someone who is not signed in.
  *
- * <p>Only when {@code allowedDomain} is set. Without it every account the issuer
- * authenticates is let through, and who that is is decided in the Google project —
- * an Internal project or an External one in testing restricts it there.
+ * <p>It used to be the club-domain gate, and 403 any Google account outside it. It is not
+ * any more: any account the issuer authenticates may sign in, and what it may then do —
+ * read the register, run a race, own the season — is decided per operation in
+ * {@code ApiServlet} from {@code ApiServlet.Role}. Jetty's OpenID authenticator
+ * establishes only that Google knows who you are, and that is now all signing in means.
  *
- * <p>This is the check that actually restricts access, and it has to exist. Jetty's
- * OpenID authenticator establishes that Google knows who you are — <em>any</em> Google
- * account, including a personal Gmail one. Without this filter, "sign in with Google"
- * would mean "sign in with anything".
- *
- * <p>It runs after the security handler, so by the time it sees a request the login has
- * already happened and the claims are on the session. A rejected account gets a plain 403
- * and a way to sign out, because the usual cause is an RO with two Google accounts whose
- * browser picked the wrong one — an error page that leaves no way back is a support call.
- *
- * <p>It also serves the two pages that must render for someone who is <em>not</em> signed
- * in — {@link #ERROR_PATH} and sign-out — for the same reason: both exist to get a person
- * out of a state the login put them in, so neither can require a login.
+ * <p>What is left is the two pages that must render for someone who is <em>not</em>
+ * signed in — {@link #ERROR_PATH} and sign-out — because both exist to get a person out
+ * of a state the login put them in, so neither can require a login; and the bounce back
+ * to the app after {@code /auth/login}.
  */
 public class AuthFilter implements Filter
 {
@@ -97,13 +90,6 @@ public class AuthFilter implements Filter
             return;
         }
 
-        SignedIn who = SignedIn.of(req, auth);
-        if (who.isSignedIn() && !auth.permits(who.email(), who.domain()))
-        {
-            LOG.warn("Refused {} — not a {} account", who.email(), auth.allowedDomain());
-            deny(req, resp, who.email());
-            return;
-        }
         chain.doFilter(request, response);
     }
 
@@ -150,26 +136,6 @@ public class AuthFilter implements Filter
                 return v;
         }
         return null;
-    }
-
-    private void deny(HttpServletRequest req, HttpServletResponse resp, String email)
-        throws IOException
-    {
-        resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
-        resp.setContentType("text/html; charset=utf-8");
-        String logout = req.getContextPath() + "/auth/logout";
-        resp.getWriter().write("""
-            <!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-            <title>sail-jinx — wrong account</title>
-            <style>body{font:16px/1.5 system-ui,sans-serif;margin:4rem auto;max-width:34rem;
-            padding:0 1rem;color:#243}a{color:#2f6fb3}</style></head><body>
-            <h1>Not a club account</h1>
-            <p>You are signed in as <strong>%s</strong>, which is not a
-            <strong>%s</strong> account. sail-jinx only admits club addresses.</p>
-            <p>If you have more than one Google account, the browser may have picked the
-            wrong one. <a href="%s">Sign out and try again.</a></p>
-            </body></html>
-            """.formatted(esc(email), esc(auth.allowedDomain()), esc(logout)));
     }
 
     private static String esc(String s)

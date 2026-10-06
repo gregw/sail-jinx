@@ -295,6 +295,15 @@
       fetchJson('/api/boats'),
       fetchJson('/api/designs')
     ]);
+    // The register takes a sign-in; a visitor is told so rather than shown an error.
+    if (boatsR.status === 401) {
+      const state = document.getElementById('boats-state');
+      state.style.display = '';
+      state.className = 'banner banner-info';
+      state.innerHTML = 'The boat register is for signed-in members. <a href="'
+        + esc((boatsR.body && boatsR.body.loginPath) || '/auth/login') + '">Sign in</a> to see it.';
+      return;
+    }
     if (!boatsR.ok) { showError('Could not load boats: ' + errorOf(boatsR)); return; }
     boats = boatsR.body || [];
     designs = new Map((designsR.ok ? designsR.body || [] : [])

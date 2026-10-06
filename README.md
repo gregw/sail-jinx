@@ -118,13 +118,14 @@ on a club office PC and **not** fine anywhere with a network around it.
 For anything reachable over a network, copy `data/config/auth.yaml.example` to
 `data/config/auth.yaml` and fill in a Google OAuth client. Then:
 
-- **Anyone** can read the results without signing in (except the audit log).
-- **A club account** — checked on the server against the Workspace domain Google
-  asserts, so a personal Gmail account cannot get in — can run a race night:
-  times, start sheet, processing and unlocking results, and TCF edits.
+- **Anyone** can read the series, the races and every race without signing in.
+- **Any signed-in account** can also read the boat register.
+- **A race officer** — an account in one of `allowedDomains:` (checked on the server
+  against the Workspace domain Google asserts), or named in `raceOfficers:` — can run
+  a race night: times, start sheet, processing and unlocking results, and TCF edits.
 - **Addresses listed in `admins:`** can also manage series, races, handicap
-  settings, the fleet register, and which boats are in a race. An empty list makes
-  every club account an admin.
+  settings, the fleet register, which boats are in a race, and read the audit log.
+  An empty list means nobody is an admin.
 
 `auth.yaml` holds a client secret and is gitignored. The example file beside it
 is committed and must never carry a real one.

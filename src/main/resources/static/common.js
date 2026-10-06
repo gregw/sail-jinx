@@ -108,11 +108,19 @@ function canEdit() {
 }
 
 /**
+ * Whether this caller is signed in, or better — enough to read the boat register.
+ * With no login configured, or over an exempt loopback, everybody is.
+ */
+function isSignedIn() {
+  return _who.role !== 'VIEWER';
+}
+
+/**
  * Hide the controls this caller may not use.
  *
  * <p>One attribute rather than a condition at every call site: mark a control
- * {@code data-requires="officer"} or {@code data-requires="admin"} and it disappears for
- * anyone below that. Pages call this again after rendering anything that contains such a
+ * {@code data-requires="signedin"}, {@code "officer"} or {@code "admin"} and it disappears
+ * for anyone below that. Pages call this again after rendering anything that contains such a
  * control, because table rows are built long after the page loads.
  *
  * <p>Hidden, not disabled. A greyed-out "Delete" invites a visitor to wonder what they
@@ -123,7 +131,8 @@ async function applyRoleGates(root) {
   const scope = root || document;
   for (const el of scope.querySelectorAll('[data-requires]')) {
     const needed = el.getAttribute('data-requires');
-    const allowed = needed === 'admin' ? isAdmin() : canEdit();
+    const allowed = needed === 'admin' ? isAdmin()
+      : needed === 'signedin' ? isSignedIn() : canEdit();
     el.hidden = !allowed;
     // hidden alone loses to a display rule from the stylesheet, and most of these are
     // buttons in a flex row.
@@ -155,7 +164,9 @@ async function refreshBuildWidget() {
     // nothing a visitor could act on.
     authWidget.innerHTML = !who.authEnabled ? ''
       : who.signedIn
-        ? esc(who.email) + (who.admin ? '' : ' <span class="tag">race officer</span>')
+        ? esc(who.email) + (who.role === 'ADMIN' ? ''
+            : who.role === 'RACE_OFFICER' ? ' <span class="tag">race officer</span>'
+            : ' <span class="tag">read only</span>')
           + ' <a href="' + esc(who.logoutPath || '/auth/logout') + '">sign out</a>'
         : '<span class="tag">read only</span> <a href="'
           + esc(who.loginPath || '/auth/login') + '">sign in</a>';

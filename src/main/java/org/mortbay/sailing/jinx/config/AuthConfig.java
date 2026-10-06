@@ -8,6 +8,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
@@ -26,16 +27,26 @@ import org.slf4j.LoggerFactory;
  * exactly as it did before authentication existed — every request is an admin. That is
  * the right default for the machine on the office desk, and the wrong one for anything
  * with a network around it, which is what {@link #enabled} is for.
+ *
+ * <p>With it on, who is what — see {@code ApiServlet.Role}:
+ * <ul>
+ *   <li>an address in {@link #admins} is an admin;</li>
+ *   <li>an address in {@link #raceOfficers}, or any account in one of the
+ *       {@link #allowedDomains}, is a race officer;</li>
+ *   <li>any other account the issuer signs in is merely signed in;</li>
+ *   <li>and nobody signed in is a visitor.</li>
+ * </ul>
  */
 public record AuthConfig(
-    @JsonProperty("enabled") boolean enabled,
-    @JsonProperty("issuer") String issuer,
-    @JsonProperty("clientId") String clientId,
-    @JsonProperty("clientSecret") String clientSecret,
-    @JsonProperty("redirectPath") String redirectPath,
-    @JsonProperty("allowedDomain") String allowedDomain,
-    @JsonProperty("admins") List<String> admins,
-    @JsonProperty("allowLoopback") boolean allowLoopback)
+    boolean enabled,
+    String issuer,
+    String clientId,
+    String clientSecret,
+    String redirectPath,
+    List<String> allowedDomains,
+    List<String> admins,
+    List<String> raceOfficers,
+    boolean allowLoopback)
 {
     private static final Logger LOG = LoggerFactory.getLogger(AuthConfig.class);
 
@@ -54,17 +65,52 @@ public record AuthConfig(
             redirectPath = "/auth/callback";
         if (!redirectPath.startsWith("/"))
             redirectPath = "/" + redirectPath;
-        admins = admins == null ? List.of()
-            : admins.stream()
-                .filter(a -> a != null && !a.isBlank())
-                .map(a -> a.trim().toLowerCase(Locale.ENGLISH))
+        allowedDomains = lowerCased(allowedDomains);
+        admins = lowerCased(admins);
+        raceOfficers = lowerCased(raceOfficers);
+    }
+
+    /**
+     * What {@code auth.yaml} is read through. {@code allowedDomain}, singular, is the key
+     * every file written before there could be several has; it still counts.
+     */
+    @JsonCreator
+    static AuthConfig fromYaml(
+        @JsonProperty("enabled") boolean enabled,
+        @JsonProperty("issuer") String issuer,
+        @JsonProperty("clientId") String clientId,
+        @JsonProperty("clientSecret") String clientSecret,
+        @JsonProperty("redirectPath") String redirectPath,
+        @JsonProperty("allowedDomain") String allowedDomain,
+        @JsonProperty("allowedDomains") List<String> allowedDomains,
+        @JsonProperty("admins") List<String> admins,
+        @JsonProperty("raceOfficers") List<String> raceOfficers,
+        @JsonProperty("allowLoopback") boolean allowLoopback)
+    {
+        List<String> domains = new java.util.ArrayList<>();
+        if (allowedDomain != null)
+            domains.add(allowedDomain);
+        if (allowedDomains != null)
+            domains.addAll(allowedDomains);
+        return new AuthConfig(enabled, issuer, clientId, clientSecret, redirectPath,
+            domains, admins, raceOfficers, allowLoopback);
+    }
+
+    private static List<String> lowerCased(List<String> values)
+    {
+        return values == null ? List.of()
+            : values.stream()
+                .filter(v -> v != null && !v.isBlank())
+                .map(v -> v.trim().toLowerCase(Locale.ENGLISH))
+                .distinct()
                 .toList();
     }
 
     /** The off switch, for when there is no file at all. */
     public static AuthConfig disabled()
     {
-        return new AuthConfig(false, null, null, null, null, null, List.of(), false);
+        return new AuthConfig(false, null, null, null, null, List.of(), List.of(), List.of(),
+            false);
     }
 
     /**
@@ -90,9 +136,18 @@ public record AuthConfig(
             return auth;
         }
         auth.requireUsable(file);
-        LOG.info("Authentication on: {} accounts in {}{}", auth.issuer(),
-            auth.allowedDomain() == null ? "any domain" : auth.allowedDomain(),
-            auth.allowLoopback() ? ", loopback exempt" : "");
+        LOG.info("Authentication on: {} accounts may sign in; race officers are {}{}{}",
+            auth.issuer(),
+            auth.allowedDomains().isEmpty() ? "" : "accounts in " + auth.allowedDomains()
+                + (auth.raceOfficers().isEmpty() ? "" : " and "),
+            auth.raceOfficers().isEmpty() ? "" : auth.raceOfficers().size() + " named",
+            auth.allowLoopback() ? "; loopback exempt" : "");
+        if (auth.admins().isEmpty())
+            LOG.warn("{} names no admins — nobody signed in can change series, races or "
+                + "the register", file);
+        if (auth.allowedDomains().isEmpty() && auth.raceOfficers().isEmpty())
+            LOG.warn("{} has no allowedDomains and no raceOfficers — only admins can run a "
+                + "race", file);
         return auth;
     }
 
@@ -106,35 +161,42 @@ public record AuthConfig(
     }
 
     /**
-     * Whether this signed-in account may use the server at all.
+     * Whether this account runs race nights: named in {@code raceOfficers}, or in one of
+     * the {@code allowedDomains}. Admins are checked separately and outrank this.
      *
-     * <p>Checked against the {@code hd} claim — the Workspace domain Google itself
-     * asserts — and falling back to the address. Note that the {@code hd} parameter on the
-     * <em>request</em> is only a hint to Google's account chooser and is not a control;
+     * <p>The domain is checked against the {@code hd} claim — the Workspace domain Google
+     * itself asserts — falling back to the address. Note that the {@code hd} parameter on
+     * the <em>request</em> is only a hint to Google's account chooser and is not a control;
      * the check has to happen here, on the claim that comes back.
      */
-    public boolean permits(String email, String hostedDomain)
+    public boolean isRaceOfficer(String email, String hostedDomain)
     {
-        if (allowedDomain == null || allowedDomain.isBlank())
-            return email != null && !email.isBlank();
-        String want = allowedDomain.trim().toLowerCase(Locale.ENGLISH);
-        if (hostedDomain != null && want.equalsIgnoreCase(hostedDomain.trim()))
+        if (email == null || email.isBlank())
+            return false;
+        String address = email.trim().toLowerCase(Locale.ENGLISH);
+        if (raceOfficers.contains(address))
             return true;
-        return email != null
-            && email.trim().toLowerCase(Locale.ENGLISH).endsWith("@" + want);
+        for (String domain : allowedDomains)
+        {
+            if (hostedDomain != null && domain.equalsIgnoreCase(hostedDomain.trim()))
+                return true;
+            if (address.endsWith("@" + domain))
+                return true;
+        }
+        return false;
     }
 
     /**
-     * Whether this account is an admin rather than a race officer — see
-     * {@code ApiServlet.Role}.
+     * Whether this account is an admin — see {@code ApiServlet.Role}.
      *
-     * <p>An empty {@code admins} list means everyone who can sign in is an admin, which is
-     * the honest default for a club where the same two people do everything. Naming
-     * anybody makes everybody else a race officer.
+     * <p>Only the addresses named in {@code admins}. An empty list once meant everyone
+     * who could sign in was an admin; now that any Google account can sign in, that would
+     * be an admin account for the world, so empty means nobody. With authentication off
+     * everybody is an admin, as before.
      */
     public boolean isAdmin(String email)
     {
-        if (admins.isEmpty())
+        if (!enabled)
             return true;
         return email != null
             && admins.contains(email.trim().toLowerCase(Locale.ENGLISH));

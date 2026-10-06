@@ -76,59 +76,95 @@ class AuthConfigTest
         assertThat(a.redirectPath(), equalTo("/oidc/back"));
     }
 
-    @Test
-    void onlyTheClubDomainGetsIn()
+    private static AuthConfig config(java.util.List<String> domains,
+                                     java.util.List<String> admins,
+                                     java.util.List<String> raceOfficers)
     {
-        AuthConfig a = new AuthConfig(true, null, "id", "secret", null,
-            "myc.org.au", java.util.List.of(), false);
+        return new AuthConfig(true, null, "id", "secret", null, domains, admins,
+            raceOfficers, false);
+    }
+
+    @Test
+    void anAccountInAnAllowedDomainIsARaceOfficer()
+    {
+        AuthConfig a = config(java.util.List.of("myc.org.au"), java.util.List.of(),
+            java.util.List.of());
 
         // The hd claim is what Google asserts about a Workspace account.
-        assertThat(a.permits("skipper@myc.org.au", "myc.org.au"), is(true));
+        assertThat(a.isRaceOfficer("skipper@myc.org.au", "myc.org.au"), is(true));
         // …and the address alone will do when hd is absent.
-        assertThat(a.permits("skipper@myc.org.au", null), is(true));
-        assertThat(a.permits("Skipper@MYC.ORG.AU", null), is(true));
+        assertThat(a.isRaceOfficer("skipper@myc.org.au", null), is(true));
+        assertThat(a.isRaceOfficer("Skipper@MYC.ORG.AU", null), is(true));
 
-        // A personal Google account is exactly what this keeps out.
-        assertThat(a.permits("someone@gmail.com", null), is(false));
-        assertThat(a.permits("someone@gmail.com", ""), is(false));
+        // A personal Google account signs in, but does not run races.
+        assertThat(a.isRaceOfficer("someone@gmail.com", null), is(false));
+        assertThat(a.isRaceOfficer("someone@gmail.com", ""), is(false));
         // And a lookalike domain must not squeak through on a suffix match.
-        assertThat(a.permits("someone@notmyc.org.au", null), is(false));
-        assertThat(a.permits("someone@myc.org.au.evil.com", null), is(false));
-        assertThat(a.permits(null, null), is(false));
+        assertThat(a.isRaceOfficer("someone@notmyc.org.au", null), is(false));
+        assertThat(a.isRaceOfficer("someone@myc.org.au.evil.com", null), is(false));
+        assertThat(a.isRaceOfficer(null, null), is(false));
+    }
+
+    @Test
+    void severalDomainsMayBeAllowedAndTheOldSingleKeyStillLoads(@TempDir Path dir)
+        throws IOException
+    {
+        AuthConfig a = write(dir, """
+            enabled: true
+            clientId: "x"
+            clientSecret: "y"
+            allowedDomains:
+              - "myc.org.au"
+              - "Friends.Example.org"
+            """);
+        assertThat(a.allowedDomains(), contains("myc.org.au", "friends.example.org"));
+        assertThat(a.isRaceOfficer("ro@friends.example.org", null), is(true));
+        assertThat(a.isRaceOfficer("ro@myc.org.au", "myc.org.au"), is(true));
+        assertThat(a.isRaceOfficer("ro@elsewhere.org", null), is(false));
+
+        // The key every auth.yaml written before this has.
+        AuthConfig old = write(dir, """
+            enabled: true
+            clientId: "x"
+            clientSecret: "y"
+            allowedDomain: "myc.org.au"
+            """);
+        assertThat(old.allowedDomains(), contains("myc.org.au"));
+        assertThat(old.isRaceOfficer("ro@myc.org.au", null), is(true));
     }
 
     /**
-     * No allowedDomain: whoever the issuer will authenticate gets in. Which accounts that
-     * is, is then decided at Google — a project in testing admits only its listed test
-     * users.
+     * No allowed domain: anyone the issuer authenticates may sign in, but only the
+     * accounts named in raceOfficers (or admins) may change anything.
      */
     @Test
-    void noAllowedDomainAdmitsAnyAuthenticatedAccount()
+    void withNoDomainOnlyTheNamedRaceOfficersAreOnes()
     {
-        for (String none : new String[] { null, "", "  " })
-        {
-            AuthConfig a = new AuthConfig(true, null, "id", "secret", null,
-                none, java.util.List.of(), false);
-            assertThat(a.permits("someone@gmail.com", null), is(true));
-            assertThat(a.permits("skipper@myc.org.au", "myc.org.au"), is(true));
-            // Still nobody without an address: that is not a signed-in account.
-            assertThat(a.permits(null, null), is(false));
-            assertThat(a.permits(" ", null), is(false));
-        }
+        AuthConfig a = config(java.util.List.of(), java.util.List.of(),
+            java.util.List.of("Helper@Gmail.com", " "));
+        assertThat(a.raceOfficers(), contains("helper@gmail.com"));
+        assertThat(a.isRaceOfficer("helper@gmail.com", null), is(true));
+        assertThat(a.isRaceOfficer("HELPER@gmail.com", null), is(true));
+        assertThat(a.isRaceOfficer("skipper@myc.org.au", "myc.org.au"), is(false));
+        assertThat(a.isRaceOfficer(null, null), is(false));
     }
 
+    /**
+     * An empty admins list used to make everyone who signed in an admin. With any Google
+     * account able to sign in, that would be an admin account handed to the world.
+     */
     @Test
-    void namingNoAdminsMakesEveryoneOne()
+    void namingNoAdminsMakesNobodyOne()
     {
-        AuthConfig open = new AuthConfig(true, null, "id", "secret", null,
-            "myc.org.au", java.util.List.of(), false);
-        assertThat(open.isAdmin("anyone@myc.org.au"), is(true));
+        AuthConfig none = config(java.util.List.of("myc.org.au"), java.util.List.of(),
+            java.util.List.of());
+        assertThat(none.isAdmin("anyone@myc.org.au"), is(false));
+        assertThat(none.isAdmin(null), is(false));
 
-        AuthConfig named = new AuthConfig(true, null, "id", "secret", null,
-            "myc.org.au", java.util.List.of("commodore@myc.org.au"), false);
+        AuthConfig named = config(java.util.List.of("myc.org.au"),
+            java.util.List.of("commodore@myc.org.au"), java.util.List.of());
         assertThat(named.isAdmin("commodore@myc.org.au"), is(true));
         assertThat(named.isAdmin("COMMODORE@myc.org.au"), is(true));
-        // Everyone else can still run a race night, just not touch handicaps.
         assertThat(named.isAdmin("crew@myc.org.au"), is(false));
         assertThat(named.isAdmin(null), is(false));
     }
