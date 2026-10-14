@@ -997,6 +997,86 @@ class JinxApiIntegrationTest
         assertThat(r.statusCode(), equalTo(409));
     }
 
+    // --- handicaps import -----------------------------------------------------
+
+    @Test
+    void aHandicapImportSetsTheTcfOfBoatsAlreadyEnteredAndNothingElse() throws Exception
+    {
+        String raceId = createRace(createSeries("Twilight"), "2026-06-05");
+        importEntrants(raceId, export(boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.0809, "spin")));
+
+        JsonNode report = importHandicaps(raceId, export(
+            boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.1000, "nonspin"),
+            boatRow("MYC10-joss-jboatsj122", "MYC10", "Joss", 1.0635, "spin")));
+
+        assertThat(report.path("tally").path("UPDATED").asInt(), equalTo(1));
+        assertThat(report.path("tally").path("NOT_ENTERED").asInt(), equalTo(1));
+        JsonNode entrants = get("/api/races/" + raceId).path("entrants").path("entrants");
+        assertThat(entrants.size(), equalTo(1));
+        assertThat(entrants.get(0).path("tcf").asDouble(), closeTo(1.1000, 1e-9));
+        // The handicap only: the variant is not a handicap, and is left as entered.
+        assertThat(entrants.get(0).path("spinnaker").asText(), equalTo("S"));
+        // And the register is not touched — Joss is not created.
+        assertThat(get("/api/boats").size(), equalTo(1));
+    }
+
+    @Test
+    void aHandicapImportMatchesThroughTheRegisterWithoutChangingIt() throws Exception
+    {
+        String raceId = createRace(createSeries("Twilight"), "2026-06-05");
+        String boatId = createBoat("AUS9", "Quick Silver");
+        enterBoats(raceId, boatId, 1.0);
+
+        // A different id, and a design the register does not know: matched on sail and
+        // name, and the boat does not learn the design — that would change its id.
+        JsonNode report = importHandicaps(raceId,
+            export(boatRow("9-quicksilver-j24", "9", "Quick Silver", 0.9500, "spin")));
+
+        assertThat(report.path("rows").get(0).path("outcome").asText(), equalTo("UPDATED"));
+        assertThat(report.path("rows").get(0).path("boatId").asText(), equalTo(boatId));
+        JsonNode entrants = get("/api/races/" + raceId).path("entrants").path("entrants");
+        assertThat(entrants.get(0).path("boatId").asText(), equalTo(boatId));
+        assertThat(entrants.get(0).path("tcf").asDouble(), closeTo(0.9500, 1e-9));
+        assertThat(get("/api/boats").get(0).path("id").asText(), equalTo(boatId));
+    }
+
+    @Test
+    void aHandicapImportPreviewReportsTheMatchesAndSavesNothing() throws Exception
+    {
+        String raceId = createRace(createSeries("Twilight"), "2026-06-05");
+        importEntrants(raceId, export(boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.0809, "spin")));
+
+        JsonNode report = post("/api/races/" + raceId + "/entrants/handicaps?dryRun=true",
+            export(boatRow("5656-mondo-sydney38", "5656", "MONDO", 1.1000, "spin"),
+                boatRow("MYC10-joss-jboatsj122", "MYC10", "Joss", 1.0635, "spin"),
+                boatRow("MYC11-nohcp", "MYC11", "No Handicap", null, "spin")));
+
+        assertThat(report.path("dryRun").asBoolean(), is(true));
+        assertThat(report.path("rows").get(0).path("outcome").asText(), equalTo("UPDATED"));
+        assertThat(report.path("rows").get(0).path("oldTcf").asDouble(), closeTo(1.0809, 1e-9));
+        assertThat(report.path("rows").get(1).path("outcome").asText(), equalTo("NOT_ENTERED"));
+        assertThat(report.path("rows").get(2).path("outcome").asText(), equalTo("NO_HANDICAP"));
+        assertThat(get("/api/races/" + raceId).path("entrants").path("entrants").get(0)
+            .path("tcf").asDouble(), closeTo(1.0809, 1e-9));
+    }
+
+    @Test
+    void aLockedRaceRefusesAHandicapImport() throws Exception
+    {
+        String seriesId = createSeries("Twilight");
+        String boatId = createBoat("AUS9", "Quick Silver");
+        String raceId = createRace(seriesId, "2026-06-05");
+        enterBoats(raceId, boatId, 1.0);
+        post("/api/races/" + raceId + "/save-handicaps", """
+            {"adjustments":[{"boatId":"%s","finishPosition":1,"penaltyMinutes":6.0,
+              "rewardMinutes":6.0,"netAdjustmentMinutes":0.0,"oldTcf":1.0,"newTcf":1.0}]}"""
+            .formatted(boatId));
+
+        HttpResponse<String> r = postRaw("/api/races/" + raceId + "/entrants/handicaps",
+            export(boatRow("9-quicksilver", "9", "Quick Silver", 0.95, "spin")));
+        assertThat(r.statusCode(), equalTo(409));
+    }
+
     @Test
     void aNewSeriesCannotTakeTheNameOfAnArchivedOne() throws Exception
     {
@@ -1158,6 +1238,11 @@ class JinxApiIntegrationTest
     private JsonNode importEntrants(String raceId, String json) throws Exception
     {
         return post("/api/races/" + raceId + "/entrants/import", json);
+    }
+
+    private JsonNode importHandicaps(String raceId, String json) throws Exception
+    {
+        return post("/api/races/" + raceId + "/entrants/handicaps", json);
     }
 
     private JsonNode get(String path) throws Exception

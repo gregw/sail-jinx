@@ -75,6 +75,7 @@ import org.slf4j.LoggerFactory;
  *   POST   /api/races/{id}/entrants           replace the entrant list
  *   POST   /api/races/{id}/entrants/seed      carry the previous race's entrants forward
  *   POST   /api/races/{id}/entrants/import    add entrants from a sailing-pf export
+ *   POST   /api/races/{id}/entrants/handicaps set entered boats' TCFs from the same export
  *   POST   /api/races/{id}/abandon            call a race off, or put it back on
  *   POST   /api/races/{id}/start-times        compute and publish the pursuit start sheet
  *   GET    /api/races/{id}/times              RO-captured came / start / finish
@@ -134,6 +135,7 @@ public class ApiServlet extends HttpServlet
     private static final Pattern RACE_ENTRANTS = Pattern.compile("/races/([^/]+)/entrants");
     private static final Pattern RACE_ENTRANTS_SEED = Pattern.compile("/races/([^/]+)/entrants/seed");
     private static final Pattern RACE_ENTRANTS_IMPORT = Pattern.compile("/races/([^/]+)/entrants/import");
+    private static final Pattern RACE_ENTRANTS_HANDICAPS = Pattern.compile("/races/([^/]+)/entrants/handicaps");
     private static final Pattern RACE_START_TIMES = Pattern.compile("/races/([^/]+)/start-times");
     private static final Pattern RACE_TIMES = Pattern.compile("/races/([^/]+)/times");
     private static final Pattern RACE_PROCESS_HANDICAPS = Pattern.compile("/races/([^/]+)/process-handicaps");
@@ -306,6 +308,8 @@ public class ApiServlet extends HttpServlet
             handleSeedEntrants(req, resp, m.group(1));
         else if ((m = RACE_ENTRANTS_IMPORT.matcher(path)).matches())
             handleImportEntrants(req, resp, m.group(1));
+        else if ((m = RACE_ENTRANTS_HANDICAPS.matcher(path)).matches())
+            handleImportHandicaps(req, resp, m.group(1));
         else if ((m = RACE_ENTRANTS.matcher(path)).matches())
             handleSaveEntrants(req, resp, m.group(1));
         else if ((m = RACE_ABANDON.matcher(path)).matches())
@@ -604,6 +608,101 @@ public class ApiServlet extends HttpServlet
         report.put("rows", results);
         report.put("tally", tally);
         report.put("entrants", byBoat.size() + oneOffs.size());
+        report.put("problems", parsed.problems());
+        writeJson(resp, report);
+    }
+
+    /**
+     * Set the TCFs of boats already entered in a race from a sailing-pf export, and
+     * nothing else.
+     *
+     * <p>The entrants import without the composing: no boat is entered, none registered,
+     * no design learned and no spinnaker changed. A row for a boat not in this race is
+     * reported and skipped. That makes it a race officer's edit — the same set of boats
+     * with different TCFs, which is what {@link #changesTheFleet} lets them save by hand.
+     *
+     * <p>Because it changes nothing but the entrant file, the preview does the real
+     * matching and reports exactly what the import would do.
+     */
+    private void handleImportHandicaps(HttpServletRequest req, HttpServletResponse resp,
+                                       String raceId) throws Exception
+    {
+        if (denyUnless(req, resp, Role.RACE_OFFICER))
+            return;
+        Race race = store.races().get(raceId);
+        if (race == null)
+        {
+            resp.setStatus(404);
+            writeJson(resp, mapOf("error", "no such race: " + raceId));
+            return;
+        }
+        if (rejectIfLocked(resp, raceId))
+            return;
+
+        FleetJson.Parsed parsed = FleetJson.parse(importBody(req));
+        boolean dryRun = "true".equalsIgnoreCase(req.getParameter("dryRun"));
+
+        RaceEntrants existing = store.entrants(raceId);
+        List<Entrant> entrants = new ArrayList<>(existing == null ? List.of() : existing.entrants());
+        Map<String, Integer> byBoat = new LinkedHashMap<>();
+        for (int i = 0; i < entrants.size(); i++)
+        {
+            if (entrants.get(i).boatId() != null)
+                byBoat.put(entrants.get(i).boatId(), i);
+        }
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        Map<String, Integer> tally = new LinkedHashMap<>();
+        boolean changed = false;
+        for (FleetJson.Row row : parsed.rows())
+        {
+            Map<String, Object> out = rowHeader(row);
+            out.put("tcf", row.handicap());
+            String outcome;
+            Integer at = row.sourceBoatId() == null ? null : byBoat.get(row.sourceBoatId());
+            if (at == null)
+            {
+                Boat boat = registry.find(row.boat(), race.date());
+                at = boat == null ? null : byBoat.get(boat.id());
+            }
+            if (row.handicap() == null)
+                outcome = "NO_HANDICAP";
+            else if (at == null)
+                outcome = "NOT_ENTERED";
+            else
+            {
+                Entrant e = entrants.get(at);
+                out.put("boatId", e.boatId());
+                out.put("oldTcf", e.tcf());
+                Entrant updated = new Entrant(e.boatId(), e.sailNumber(), e.name(), e.division(),
+                    e.designId(), e.spinnaker(), row.handicap(), e.entryType());
+                if (updated.tcf() == e.tcf())
+                    outcome = "UNCHANGED";
+                else
+                {
+                    outcome = "UPDATED";
+                    entrants.set(at, updated);
+                    changed = true;
+                }
+            }
+            out.put("outcome", outcome);
+            tally.merge(outcome, 1, Integer::sum);
+            results.add(out);
+        }
+
+        if (!dryRun && changed)
+        {
+            store.putEntrants(new RaceEntrants(raceId, Instant.now(),
+                RaceEntrants.TcfSource.MANUAL_EDIT,
+                existing.sourceRaceId(), existing.sourceRaceNumber(), entrants));
+        }
+
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("ok", parsed.problems().isEmpty());
+        report.put("dryRun", dryRun);
+        report.put("raceId", raceId);
+        report.put("rows", results);
+        report.put("tally", tally);
         report.put("problems", parsed.problems());
         writeJson(resp, report);
     }

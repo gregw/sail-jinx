@@ -171,9 +171,11 @@ The club domain scopes the last two; changing it orphans every id.
   added to a race gets the TCF its latest earlier race in the series left it
   (`priorTcfs` in the race bundle) — the only way a casual's handicap survives — else 1.0. `Design.noSpinnaker` supplies a default NS; its absence means
   *unknown*, not S.
-- **Two imports of the same sailing-pf file.** `POST /api/boats/import` takes identity
+- **Three imports of the same sailing-pf file.** `POST /api/boats/import` takes identity
   only; `POST /api/races/{id}/entrants/import` also takes handicap → TCF and variant →
-  spinnaker.
+  spinnaker; `POST /api/races/{id}/entrants/handicaps` takes handicap → TCF for boats
+  already entered and nothing else — a race officer's, since the fleet does not change
+  (`BoatRegistry.find` matches without creating or upgrading).
 - **The race lifecycle is derived, never stored.** Locked iff it has saved
   adjustments; unlocking deletes them. `abandoned` is the one flag, set through its own
   endpoint. Abandon Race = flag every boat ABN, save, process; **Unlock results** is

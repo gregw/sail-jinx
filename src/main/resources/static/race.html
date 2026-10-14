@@ -129,6 +129,8 @@
       <button id="add-clear-btn" type="button" data-requires="admin">Clear</button>
       <button id="import-btn" type="button" data-requires="admin"
               title="Enter boats from a sailing-pf handicaps export, with their TCFs.">Import entrants (JSON)</button>
+      <button id="import-hcp-btn" type="button" data-requires="officer"
+              title="Set the TCFs of boats already entered from a sailing-pf handicaps export. Enters no boats.">Import handicaps (JSON)</button>
       <span id="add-msg" class="hint"></span>
     </div>
 
@@ -146,7 +148,8 @@
     </div>
 
     <div id="import-panel" style="display:none;">
-      <h3>Import entrants from a sailing-pf export</h3>
+      <h3 id="import-title">Import entrants from a sailing-pf export</h3>
+      <div id="import-about-entrants">
       <p class="lead">
         Takes a <code>handicaps-YYYY-MM-DD.json</code> file. Each boat's
         <strong>handicap becomes its TCF for this race</strong> and its variant sets
@@ -158,6 +161,20 @@
         place, and boats missing from the file are left alone — a handicap export does not
         say who is racing tonight.
       </p>
+      </div>
+      <!-- The same file, read the other way: the numbers without the fleet. A race
+           officer's import, because it changes TCFs and not who is racing. -->
+      <div id="import-about-handicaps" style="display:none;">
+      <p class="lead">
+        Takes the same <code>handicaps-YYYY-MM-DD.json</code> file. Each boat
+        <strong>already entered in this race</strong> has its TCF set to its handicap.
+      </p>
+      <p class="hint" style="max-width:60rem;">
+        Boats are matched by id first, then through the alias file. Nothing else changes:
+        boats not entered are skipped rather than added, spinnaker is left as entered, and
+        the register is not touched. Preview shows exactly what will change.
+      </p>
+      </div>
       <div class="toolbar">
         <input type="file" id="import-file" accept=".json,application/json">
       </div>
@@ -1634,7 +1651,38 @@
     document.getElementById('import-msg').textContent = text;
   }
 
-  async function runEntrantImport(dryRun) {
+  // One panel, two imports of the same file: 'entrants' enters boats with their TCFs,
+  // 'handicaps' only sets the TCFs of boats already entered.
+  let importMode = 'entrants';
+
+  const IMPORT_MODES = {
+    entrants: { title: 'Import entrants from a sailing-pf export', apply: 'Add entrants',
+                path: '/entrants/import' },
+    handicaps: { title: 'Import handicaps from a sailing-pf export', apply: 'Set handicaps',
+                 path: '/entrants/handicaps' },
+  };
+
+  function toggleImportPanel(mode) {
+    const panel = document.getElementById('import-panel');
+    if (panel.style.display !== 'none' && importMode === mode) {
+      panel.style.display = 'none';
+      return;
+    }
+    if (importMode !== mode) {
+      importMode = mode;
+      document.getElementById('import-report').innerHTML = '';
+      setImportMsg('');
+    }
+    document.getElementById('import-title').textContent = IMPORT_MODES[mode].title;
+    document.getElementById('import-apply').textContent = IMPORT_MODES[mode].apply;
+    document.getElementById('import-about-entrants').style.display =
+      mode === 'entrants' ? '' : 'none';
+    document.getElementById('import-about-handicaps').style.display =
+      mode === 'handicaps' ? '' : 'none';
+    panel.style.display = '';
+  }
+
+  async function runImport(dryRun) {
     const json = document.getElementById('import-text').value;
     if (!json.trim()) { setImportMsg('Nothing to import.'); return; }
     // The import writes entrants server-side, so anything unsaved here would be
@@ -1645,14 +1693,16 @@
 
     setImportMsg(dryRun ? 'Checking…' : 'Importing…');
     const r = await fetchJson(
-      '/api/races/' + encodeURIComponent(raceId) + '/entrants/import'
+      '/api/races/' + encodeURIComponent(raceId) + IMPORT_MODES[importMode].path
         + (dryRun ? '?dryRun=true' : ''),
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json });
     if (!r.ok) { setImportMsg('Import failed: ' + errorOf(r)); return; }
 
     renderImportReport(r.body, dryRun);
     setImportMsg(dryRun ? 'Preview only — nothing saved.'
-      : 'Done — ' + r.body.entrants + ' entrants in this race.');
+      : importMode === 'handicaps'
+        ? 'Done — ' + ((r.body.tally || {}).UPDATED || 0) + ' TCFs updated.'
+        : 'Done — ' + r.body.entrants + ' entrants in this race.');
     if (!dryRun) { sessionClear(); await load(); renderImportReport(r.body, false); }
   }
 
@@ -1663,7 +1713,8 @@
         + report.problems.map(p => '<li>' + esc(p) + '</li>').join('') + '</ul></div>');
     }
     const tally = report.tally || {};
-    const counts = Object.keys(tally).map(k => tally[k] + ' ' + k.toLowerCase());
+    const counts = Object.keys(tally)
+      .map(k => tally[k] + ' ' + k.toLowerCase().replace(/_/g, ' '));
     if (counts.length) {
       parts.push('<div class="banner ' + (tally.CONFLICT ? 'banner-warn' : 'banner-ok') + '">'
         + esc(counts.join(', ')) + '</div>');
@@ -1687,6 +1738,12 @@
   }
 
   function importLabel(row, dryRun) {
+    if (importMode === 'handicaps') {
+      const verb = dryRun ? 'will be updated' : 'TCF updated';
+      return { UPDATED: verb + ' from ' + fmtTcf(row.oldTcf), UNCHANGED: 'already on this TCF',
+               NOT_ENTERED: 'not in this race — skipped',
+               NO_HANDICAP: 'no handicap in the file — skipped' }[row.outcome] || row.outcome;
+    }
     if (dryRun || row.outcome === 'PREVIEW') return 'will be entered';
     if (row.outcome === 'CONFLICT') return 'needs a decision';
     const boat = { CREATED: 'new boat', UPGRADED: 'design added',
@@ -2339,10 +2396,8 @@
     document.getElementById('add-new-btn').onclick = onAddNew;
     document.getElementById('add-oneoff-btn').onclick = onAddOneOff;
     document.getElementById('add-clear-btn').onclick = clearAddFields;
-    document.getElementById('import-btn').onclick = () => {
-      const panel = document.getElementById('import-panel');
-      panel.style.display = panel.style.display === 'none' ? '' : 'none';
-    };
+    document.getElementById('import-btn').onclick = () => toggleImportPanel('entrants');
+    document.getElementById('import-hcp-btn').onclick = () => toggleImportPanel('handicaps');
     document.getElementById('import-close').onclick = () => {
       document.getElementById('import-panel').style.display = 'none';
     };
@@ -2352,8 +2407,8 @@
       document.getElementById('import-text').value = await file.text();
       setImportMsg(file.name + ' loaded — preview it before importing.');
     };
-    document.getElementById('import-preview').onclick = () => runEntrantImport(true);
-    document.getElementById('import-apply').onclick = () => runEntrantImport(false);
+    document.getElementById('import-preview').onclick = () => runImport(true);
+    document.getElementById('import-apply').onclick = () => runImport(false);
 
     window.addEventListener('resize', fitEntrantsHeight);
     // What sits around the table changes height without the table re-rendering: the

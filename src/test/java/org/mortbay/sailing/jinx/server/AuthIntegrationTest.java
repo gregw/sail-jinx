@@ -451,6 +451,10 @@ class AuthIntegrationTest
         // what a race officer is for.
         assertThat(postAs(officer, "/api/races/" + raceId + "/times",
             "{\"times\":{}}"), is(200));
+        // Including bringing tonight's handicaps in from a file: it sets the TCFs of the
+        // boats already entered, which is an edit, not a change of who is racing.
+        assertThat(postAs(officer, "/api/races/" + raceId + "/entrants/handicaps", "[]"),
+            is(200));
 
         // But not who is in the race. Registering a boat, seeding the entrants from the
         // previous race, importing them, and adding or removing one by hand are all the

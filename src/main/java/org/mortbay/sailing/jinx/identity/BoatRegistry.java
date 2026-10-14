@@ -198,6 +198,38 @@ public class BoatRegistry
     }
 
     /**
+     * The register boat this entry refers to, or null — matched exactly as
+     * {@link #findOrCreate} would, but changing nothing: no boat is created, no design
+     * learned, no alias written. A design conflict is no match.
+     *
+     * <p>For a caller that may only touch boats it already has, such as the handicaps
+     * import, where a design-less boat learning one would move its id under a race.
+     */
+    public synchronized Boat find(RawBoat raw, LocalDate date)
+    {
+        String displayName = IdGenerator.stripStandardSuffixes(
+            raw.name() == null ? "" : raw.name().trim());
+        String normSail = IdGenerator.normaliseSailNumber(raw.sailNumber());
+        String normName = IdGenerator.normaliseName(raw.name());
+        if (normSail.isEmpty() && normName.isEmpty())
+            return null;
+
+        Optional<Aliases.BoatMatch> alias = aliases.lookupBoat(normSail, normName);
+        if (alias.isPresent())
+        {
+            Aliases.BoatMatch m = alias.get();
+            normSail = m.normSailNumber();
+            normName = m.normName();
+            if (m.canonicalDisplayName() != null && !m.canonicalDisplayName().isBlank())
+                displayName = m.canonicalDisplayName();
+        }
+
+        String designId = resolveDesign(raw.design(), normSail, normName, date);
+        Candidate found = findCandidate(normSail, normName, displayName, designId);
+        return found == null || found.conflict() ? null : found.boat();
+    }
+
+    /**
      * Record an alias that the caller discovered, e.g. the raw spelling an import used for a
      * boat that resolved to a different canonical identity. Persisted immediately.
      */
