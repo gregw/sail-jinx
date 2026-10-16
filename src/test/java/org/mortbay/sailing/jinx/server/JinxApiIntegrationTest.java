@@ -7,6 +7,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.LocalTime;
 import java.util.List;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -25,6 +26,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.lessThan;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.startsWith;
@@ -802,6 +804,76 @@ class JinxApiIntegrationTest
         assertThat(capped.path("sunsetLocal").asText().isEmpty(), is(false));
         assertThat(capped.path("startSheet").path("targetElapsedMinutes").asInt(),
             lessThan(300));
+    }
+
+    @Test
+    void theSunsetCapBringsTheSlowestBoatHomeBySunset() throws Exception
+    {
+        // The target is the median boat's time; the slowest boat takes longer. The cap
+        // has to fit the slowest boat into the daylight, or the fleet finishes in the dark.
+        String seriesId = createSeries("Twilight");
+        String fast = createBoat("AUS9", "Quick Silver");
+        String middle = createBoat("AUS10", "Middling");
+        String slow = createBoat("AUS11", "Plodder");
+        post("/api/series/" + seriesPath(seriesId) + "/config",
+            "{\"limitBySunset\":true,\"latitude\":-33.8,\"longitude\":151.2833}");
+        String raceId = createRace(seriesId, "2026-01-15");
+        enterBoats(raceId, fast, 1.0, middle, 0.9, slow, 0.8);
+
+        JsonNode capped = post("/api/races/" + raceId + "/start-times",
+            "{\"targetElapsedMinutes\":300,\"earliestStart\":\"18:00\"}");
+        assertThat(capped.path("limitedBySunset").asBoolean(), is(true));
+        LocalTime sunset = LocalTime.parse(capped.path("sunsetLocal").asText());
+        double daylight = Duration.between(LocalTime.of(18, 0), sunset).toMinutes();
+        double slowest = 0;
+        for (JsonNode s : capped.path("startSheet").path("starts"))
+            slowest = Math.max(slowest, s.path("expectedElapsedMinutes").asDouble());
+        assertThat(slowest, lessThanOrEqualTo(daylight));
+    }
+
+    @Test
+    void penaltiesAreMeasuredAgainstTheNextRacesSunsetCappedTarget() throws Exception
+    {
+        // A five-minute penalty should start the boat five minutes late next race. The
+        // next race's start times will be computed against its target after the sunset
+        // cap, so the TCF change must be measured against that, not the 90 it was given.
+        String seriesId = createSeries("Twilight");
+        post("/api/series/" + seriesPath(seriesId) + "/config",
+            "{\"limitBySunset\":true,\"latitude\":-33.8,\"longitude\":151.2833,"
+                + "\"earliestStart\":\"19:00\",\"defaultRaceDuration\":90}");
+        String fast = createBoat("AUS9", "Quick Silver");
+        String mid = createBoat("5678", "Mid Fleet");
+        String slow = createBoat("A123", "Slow Poke");
+        String absent = createBoat("A7", "Stayed Home");
+        String race1 = createRace(seriesId, "2026-01-15");
+        String race2 = createRace(seriesId, "2026-01-22");
+        enterBoats(race1, fast, 1.0, mid, 0.9, slow, 0.8, absent, 0.9);
+
+        // A Sydney January sunset is a little after 20:00: about an hour of daylight
+        // after a 19:00 start, so the 90 is capped.
+        JsonNode next = get("/api/races/" + race2);
+        assertThat(next.path("race").path("targetElapsedMinutes").asInt(), equalTo(90));
+        LocalTime sunset = LocalTime.parse(next.path("sunsetLocal").asText());
+        int capped = ApiServlet.capBySunset(90, LocalTime.of(19, 0), sunset,
+            List.of(1.0, 0.9, 0.8, 0.9));
+        assertThat(capped, lessThan(90));
+
+        JsonNode processed = post("/api/races/" + race1 + "/process-handicaps", """
+            {"targetElapsedMinutes":90,
+             "boats":[
+               {"boatId":"%s","currentTcf":1.0,"status":"FIN","elapsedMinutes":50.0,"finishPosition":1},
+               {"boatId":"%s","currentTcf":0.9,"status":"FIN","elapsedMinutes":55.0,"finishPosition":2},
+               {"boatId":"%s","currentTcf":0.8,"status":"FIN","elapsedMinutes":60.0,"finishPosition":3},
+               {"boatId":"%s","currentTcf":0.9,"status":"DNC"}
+             ]}""".formatted(fast, mid, slow, absent));
+        assertThat(processed.path("nextRaceMinutes").asInt(), equalTo(capped));
+
+        // §7 against the capped target: the winner's penalty is its full minutes there.
+        JsonNode winner = processed.path("adjustments").get(0);
+        double net = winner.path("netAdjustmentMinutes").asDouble();
+        assertThat(net, greaterThan(0.0));
+        assertThat(winner.path("newTcf").asDouble(),
+            closeTo(1.0 / (1.0 - net * 1.0 / (capped * 0.9)), 1e-9));
     }
 
     @Test

@@ -2194,10 +2194,18 @@
       const sunset = parseTime(bundle.sunsetLocal + ':00');
       const available = (earliest != null && sunset != null)
         ? Math.round((sunset - earliest) / 60) : null;
+      // The target is the median boat's time; it is the slowest boat that has to be
+      // home by sunset. The same sum as ApiServlet.capBySunset.
+      const tcfs = ((bundle.entrants && bundle.entrants.entrants) || [])
+        .map(e => e.tcf).filter(t => t > 0).sort((a, b) => a - b);
+      const n = tcfs.length;
+      const median = n === 0 ? 1 : (n % 2 ? tcfs[(n - 1) / 2] : (tcfs[n / 2 - 1] + tcfs[n / 2]) / 2);
+      const fits = available == null ? null
+        : Math.floor(available * (n ? tcfs[0] : 1) / median);
       note.textContent = 'sunset ' + bundle.sunsetLocal
         + (available == null ? ''
            : ' — ' + fmtInterval(available) + ' of daylight'
-             + (target > available ? ', so this will be capped' : ''));
+             + (target > fits ? ', so this will be capped to ' + fmtInterval(Math.max(0, fits)) : ''));
     } else {
       note.textContent = '';
     }

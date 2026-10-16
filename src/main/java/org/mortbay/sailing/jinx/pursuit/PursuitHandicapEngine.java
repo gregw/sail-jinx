@@ -436,7 +436,11 @@ public class PursuitHandicapEngine implements HandicapEngine
         return t.getSecond() >= 30 ? onTheMinute.plusMinutes(1) : onTheMinute;
     }
 
-    private static double median(List<Double> values)
+    /**
+     * The median TCF that scales every boat's expected time (wiki §4). Public because the
+     * sunset cap needs it to work out how long the slowest boat takes.
+     */
+    public static double median(List<Double> values)
     {
         if (values.isEmpty()) return 1.0;
         List<Double> sorted = new ArrayList<>(values);

@@ -1456,10 +1456,12 @@ public class ApiServlet extends HttpServlet
         // earliest start, and both can still change up to this point.
         int requested = target;
         LocalTime sunset = alg.limitBySunset() ? sunsetFor(alg, race) : null;
-        target = capBySunset(target, earliest, sunset);
+        target = capBySunset(target, earliest, sunset,
+            entrants.entrants().stream().map(Entrant::tcf).toList());
         if (target <= 0)
         {
-            // Sunset is at or before the earliest start: there is no daylight to cap
+            // Sunset is at or before the earliest start, or too close after it for the
+            // slowest boat to sail even a one-minute target: there is no daylight to cap
             // into. Emitting a nought-minute target would produce a start sheet with
             // every boat on the same gun, which is worse than refusing — the race as
             // described cannot be sailed, and the RO needs to move the start or the date.
@@ -1534,15 +1536,26 @@ public class ApiServlet extends HttpServlet
     // --- Sunset cap ----------------------------------------------------------
 
     /**
-     * The expected duration, capped so the fleet is expected home by sunset. Returns 0
-     * when sunset is at or before the earliest start, which the caller refuses.
+     * The expected duration, capped so the fleet is expected home by sunset (wiki §4).
+     * Returns 0 when there is no daylight to fit a target into, which the caller refuses.
+     *
+     * <p>The expected duration is the <em>median</em> boat's time, and every boat is
+     * expected to finish when the slowest one does — {@code TCF_med / TCF_min} times
+     * later than that. So it is the slowest boat that has to fit in the daylight, and the
+     * target is rounded down to make sure it does.
      */
-    static int capBySunset(int requested, LocalTime earliestStart, LocalTime sunset)
+    static int capBySunset(int requested, LocalTime earliestStart, LocalTime sunset,
+                           List<Double> tcfs)
     {
         if (sunset == null || earliestStart == null)
             return requested;
         long available = java.time.Duration.between(earliestStart, sunset).toMinutes();
-        return requested > available ? (int)Math.max(0, available) : requested;
+        if (available <= 0)
+            return 0;
+        double slowest = tcfs.stream().mapToDouble(Double::doubleValue).min().orElse(1.0);
+        double median = PursuitHandicapEngine.median(tcfs);
+        int fits = (int)Math.floor(available * slowest / median);
+        return Math.min(requested, fits);
     }
 
     private LocalTime sunsetFor(JinxConfig.Algorithm alg, Race race)
@@ -1666,8 +1679,26 @@ public class ApiServlet extends HttpServlet
         // against that race's expected duration — see PursuitHandicapEngine §6.1. Save
         // does not recompute, so a next race whose target is edited afterwards keeps the
         // TCFs it was carried; unlocking and processing again is the way to pick it up.
+        // And it is that race's target after the sunset cap, since that is what its start
+        // times will be computed against: measured against the uncapped figure, a
+        // five-minute penalty starts the boat less than five minutes late (wiki §7).
+        // These TCFs stand in for the new ones; a night moves their ratio too little to
+        // matter. A next race with no daylight at all keeps its target — computing its
+        // start times refuses anyway, and it has to be moved before then.
+        List<Double> tcfs = boats.stream().map(Competitor::tcf).toList();
         Integer nextRaceMinutes = store.nextRaceInSeries(raceId)
-            .map(Race::targetElapsedMinutes).orElse(null);
+            .map(next ->
+            {
+                Integer target = next.targetElapsedMinutes();
+                LocalTime sunset = alg.limitBySunset() ? sunsetFor(alg, next) : null;
+                if (target == null || sunset == null)
+                    return target;
+                LocalTime earliest = next.earliestStart() != null
+                    ? next.earliestStart() : LocalTime.parse(alg.earliestStart());
+                int capped = capBySunset(target, earliest, sunset, tcfs);
+                return capped > 0 ? capped : target;
+            })
+            .orElse(null);
         List<Adjustment> adjustments = new PursuitHandicapEngine(alg)
             .processResults(boats, forEngine, results, nextRaceMinutes);
 
