@@ -91,6 +91,9 @@
       <!-- A bare checkbox in a grid cell centres itself against the label opposite,
            which reads as a stray mark rather than a box belonging to that row. -->
       <span class="check-cell"><input id="cfg-sunset" type="checkbox"></span>
+
+      <label for="cfg-after-sunset" title="With the sunset cap, how long after sunset the slowest boat may be expected home. Negative means home before sunset.">Minutes after sunset</label>
+      <input id="cfg-after-sunset" type="number" step="1">
     </div>
     <div class="toolbar">
       <button id="cfg-save" class="primary" type="button">Save settings</button>
@@ -311,6 +314,7 @@
     document.getElementById('cfg-duration').value = c.defaultRaceDuration;
     document.getElementById('cfg-earliest').value = c.earliestStart;
     document.getElementById('cfg-sunset').checked = !!c.limitBySunset;
+    document.getElementById('cfg-after-sunset').value = c.minutesAfterSunset ?? 8;
     showLadderNote();
   }
 
@@ -355,7 +359,10 @@
       penaltyList: penalties,
       defaultRaceDuration: Number(document.getElementById('cfg-duration').value),
       earliestStart: document.getElementById('cfg-earliest').value.trim(),
-      limitBySunset: document.getElementById('cfg-sunset').checked
+      limitBySunset: document.getElementById('cfg-sunset').checked,
+      // Blank is the club default rather than nought minutes.
+      minutesAfterSunset: document.getElementById('cfg-after-sunset').value.trim() === ''
+        ? null : Math.round(Number(document.getElementById('cfg-after-sunset').value))
     };
     const r = await postJson('/api/series/' + seriesPath(configSeriesId) + '/config', payload);
     const msg = document.getElementById('cfg-msg');

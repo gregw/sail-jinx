@@ -20,7 +20,7 @@ class ApiServletTest
     @Test
     void aTargetThatFitsBeforeSunsetIsLeftAlone()
     {
-        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(20, 30), ONE_DESIGN),
+        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(20, 30), 0, ONE_DESIGN),
             equalTo(90));
     }
 
@@ -28,14 +28,14 @@ class ApiServletTest
     void aTargetRunningPastSunsetIsCappedToTheDaylightLeft()
     {
         // Start 18:00, sunset 19:10 — seventy minutes, not the ninety asked for.
-        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(19, 10), ONE_DESIGN),
+        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(19, 10), 0, ONE_DESIGN),
             equalTo(70));
     }
 
     @Test
     void theCapIsExactAtTheBoundary()
     {
-        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(19, 30), ONE_DESIGN),
+        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(19, 30), 0, ONE_DESIGN),
             equalTo(90));
     }
 
@@ -44,7 +44,7 @@ class ApiServletTest
     {
         // An out-of-season date where it is already dark at the earliest start. The cap
         // still engages rather than silently passing the request through.
-        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(17, 20), ONE_DESIGN),
+        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(17, 20), 0, ONE_DESIGN),
             equalTo(0));
     }
 
@@ -54,7 +54,7 @@ class ApiServletTest
         // Start 18:00, sunset 19:07: 67 minutes of daylight. The slowest boat (0.8)
         // takes 0.9/0.8 of the median boat's time, so the target is 67 × 0.8/0.9 =
         // 59.6, rounded down. Capping the target to 67 brought the fleet home at 19:15.
-        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(19, 7),
+        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(19, 7), 0,
             List.of(1.0, 0.9, 0.8)), equalTo(59));
     }
 
@@ -62,15 +62,31 @@ class ApiServletTest
     void aTargetWhoseSlowestBoatFitsBeforeSunsetIsLeftAlone()
     {
         // 59 × 0.9/0.8 = 66.4 minutes for the slowest boat, inside the 67 available.
-        assertThat(ApiServlet.capBySunset(59, LocalTime.of(18, 0), LocalTime.of(19, 7),
+        assertThat(ApiServlet.capBySunset(59, LocalTime.of(18, 0), LocalTime.of(19, 7), 0,
             List.of(1.0, 0.9, 0.8)), equalTo(59));
+    }
+
+    @Test
+    void theFleetMayBeExpectedHomeMinutesAfterSunset()
+    {
+        // 19:07 sunset and eight minutes after it: 75 minutes from an 18:00 start, so
+        // 75 × 0.8/0.9 = 66.7, rounded down. The slowest boat is home at 19:14.
+        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(19, 7), 8,
+            List.of(1.0, 0.9, 0.8)), equalTo(66));
+    }
+
+    @Test
+    void aNegativeAllowanceBringsTheFleetHomeBeforeSunset()
+    {
+        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(19, 10), -10,
+            ONE_DESIGN), equalTo(60));
     }
 
     @Test
     void noSunsetMeansNoCap()
     {
         // Either the series does not ask for the cap, or the date is unknown.
-        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), null, ONE_DESIGN), equalTo(90));
-        assertThat(ApiServlet.capBySunset(90, null, LocalTime.of(19, 0), ONE_DESIGN), equalTo(90));
+        assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), null, 0, ONE_DESIGN), equalTo(90));
+        assertThat(ApiServlet.capBySunset(90, null, LocalTime.of(19, 0), 0, ONE_DESIGN), equalTo(90));
     }
 }

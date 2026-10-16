@@ -41,6 +41,8 @@ algorithm:
                                    # previous race's handicap change
   earliestStart: "18:00"           # the slowest boat's gun, given to each new race
   limitBySunset: false             # shorten the duration so the fleet is home by sunset
+  minutesAfterSunset: 8            # with limitBySunset, how long after sunset the
+                                   # slowest boat may be expected home; negative is before
 
 server:
   port: 8082

@@ -570,17 +570,20 @@ class JinxApiIntegrationTest
         JsonNode before = get("/api/series/" + seriesId + "/config");
         assertThat(before.path("isCustom").asBoolean(), is(false));
         assertThat(before.path("config").path("defaultRaceDuration").asInt(), equalTo(90));
+        assertThat(before.path("config").path("minutesAfterSunset").asInt(), equalTo(8));
 
         // The retired keys ride along because real saved overrides on the club's Pi have
         // them: they must be ignored rather than refused, or the series' settings would
         // fail to load.
         post("/api/series/" + seriesId + "/config",
-            "{\"penaltyList\":[10,5],\"defaultRaceDuration\":60,\"dnfAllowance\":7,"
+            "{\"penaltyList\":[10,5],\"defaultRaceDuration\":60,\"minutesAfterSunset\":-5,"
+                + "\"dnfAllowance\":7,"
                 + "\"dnfWeight\":1.5,\"dncWeight\":0.5,\"variant\":\"C\"}");
 
         JsonNode after = get("/api/series/" + seriesId + "/config");
         assertThat(after.path("isCustom").asBoolean(), is(true));
         assertThat(after.path("config").path("defaultRaceDuration").asInt(), equalTo(60));
+        assertThat(after.path("config").path("minutesAfterSunset").asInt(), equalTo(-5));
         // The retired keys are gone from the answer rather than echoed back.
         for (String retired : List.of("dnfAllowance", "dnfWeight", "dncWeight", "variant"))
             assertThat(retired, after.path("config").has(retired), is(false));
@@ -823,12 +826,15 @@ class JinxApiIntegrationTest
         JsonNode capped = post("/api/races/" + raceId + "/start-times",
             "{\"targetElapsedMinutes\":300,\"earliestStart\":\"18:00\"}");
         assertThat(capped.path("limitedBySunset").asBoolean(), is(true));
+        // The series leaves minutesAfterSunset at the club's default of eight: the
+        // slowest boat is expected home after sunset, and within eight minutes of it.
         LocalTime sunset = LocalTime.parse(capped.path("sunsetLocal").asText());
-        double daylight = Duration.between(LocalTime.of(18, 0), sunset).toMinutes();
+        double toSunset = Duration.between(LocalTime.of(18, 0), sunset).toMinutes();
         double slowest = 0;
         for (JsonNode s : capped.path("startSheet").path("starts"))
             slowest = Math.max(slowest, s.path("expectedElapsedMinutes").asDouble());
-        assertThat(slowest, lessThanOrEqualTo(daylight));
+        assertThat(slowest, greaterThan(toSunset));
+        assertThat(slowest, lessThanOrEqualTo(toSunset + 8));
     }
 
     @Test
@@ -849,12 +855,12 @@ class JinxApiIntegrationTest
         String race2 = createRace(seriesId, "2026-01-22");
         enterBoats(race1, fast, 1.0, mid, 0.9, slow, 0.8, absent, 0.9);
 
-        // A Sydney January sunset is a little after 20:00: about an hour of daylight
-        // after a 19:00 start, so the 90 is capped.
+        // A Sydney January sunset is a little after 20:00: with the default eight
+        // minutes after it, a bit over an hour after a 19:00 start, so the 90 is capped.
         JsonNode next = get("/api/races/" + race2);
         assertThat(next.path("race").path("targetElapsedMinutes").asInt(), equalTo(90));
         LocalTime sunset = LocalTime.parse(next.path("sunsetLocal").asText());
-        int capped = ApiServlet.capBySunset(90, LocalTime.of(19, 0), sunset,
+        int capped = ApiServlet.capBySunset(90, LocalTime.of(19, 0), sunset, 8,
             List.of(1.0, 0.9, 0.8, 0.9));
         assertThat(capped, lessThan(90));
 

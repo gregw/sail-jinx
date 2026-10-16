@@ -128,6 +128,11 @@ public record JinxConfig(
      * what a time adjustment is measured against when it becomes a TCF change. It accepts
      * the old names {@code idealRaceDuration} and {@code idealRaceLength}.
      *
+     * <p>{@code minutesAfterSunset} is how long after sunset, with {@code limitBySunset},
+     * the slowest boat may be expected home: twilight outlasts sunset, and a fleet held
+     * strictly to it would sail shorter races than the light allows. Negative means home
+     * before sunset. Absent is the club default of 8, not 0.
+     *
      * <p><b>Retired keys still load and are ignored:</b> {@code variant},
      * {@code penaltyScaling}, {@code givebackGamma}, {@code dnfWeight} and
      * {@code dncWeight} (the previous iteration's weighted giveback), and before them
@@ -145,7 +150,8 @@ public record JinxConfig(
         @JsonProperty("earliestStart") String earliestStart,
         @JsonProperty("latitude") Double latitude,
         @JsonProperty("longitude") Double longitude,
-        @JsonProperty("limitBySunset") boolean limitBySunset)
+        @JsonProperty("limitBySunset") boolean limitBySunset,
+        @JsonProperty("minutesAfterSunset") Integer minutesAfterSunset)
     {
         public Algorithm
         {
@@ -167,6 +173,15 @@ public record JinxConfig(
                 latitude = -33.8000;
             if (longitude == null)
                 longitude = 151.2833;
+            if (minutesAfterSunset == null)
+                minutesAfterSunset = 8;
+        }
+
+        public Algorithm(List<Double> penaltyList, int defaultRaceDuration, String earliestStart,
+                         Double latitude, Double longitude, boolean limitBySunset)
+        {
+            this(penaltyList, defaultRaceDuration, earliestStart, latitude, longitude,
+                limitBySunset, null);
         }
     }
 

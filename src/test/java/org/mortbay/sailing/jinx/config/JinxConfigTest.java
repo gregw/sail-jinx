@@ -39,6 +39,7 @@ class JinxConfigTest
               latitude: -34.1234
               longitude: 150.9876
               limitBySunset: true
+              minutesAfterSunset: 12
               v0knots: 6.2                # retired key — must be ignored, not fatal
             server:
               port: 9090
@@ -57,6 +58,7 @@ class JinxConfigTest
         assertThat(config.algorithm().latitude(), closeTo(-34.1234, 1e-9));
         assertThat(config.algorithm().longitude(), closeTo(150.9876, 1e-9));
         assertThat(config.algorithm().limitBySunset(), is(true));
+        assertThat(config.algorithm().minutesAfterSunset(), equalTo(12));
         assertThat(config.server().port(), equalTo(9090));
         assertThat(config.server().forwardedHeaders(), is(true));
     }
@@ -104,6 +106,8 @@ class JinxConfigTest
         assertThat(config.algorithm().latitude(), closeTo(-33.8000, 1e-9));
         assertThat(config.algorithm().longitude(), closeTo(151.2833, 1e-9));
         assertThat(config.algorithm().limitBySunset(), is(false));
+        // Twilight outlasts sunset; eight minutes of it is the club's allowance.
+        assertThat(config.algorithm().minutesAfterSunset(), equalTo(8));
 
         assertThat(config.server().port(), equalTo(8080));
         // Off unless asked for: trusting X-Forwarded-* on a directly-exposed server

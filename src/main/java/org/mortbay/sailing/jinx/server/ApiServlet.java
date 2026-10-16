@@ -1456,19 +1456,21 @@ public class ApiServlet extends HttpServlet
         // earliest start, and both can still change up to this point.
         int requested = target;
         LocalTime sunset = alg.limitBySunset() ? sunsetFor(alg, race) : null;
-        target = capBySunset(target, earliest, sunset,
+        target = capBySunset(target, earliest, sunset, alg.minutesAfterSunset(),
             entrants.entrants().stream().map(Entrant::tcf).toList());
         if (target <= 0)
         {
-            // Sunset is at or before the earliest start, or too close after it for the
-            // slowest boat to sail even a one-minute target: there is no daylight to cap
+            // Sunset plus minutesAfterSunset is at or before the earliest start, or too
+            // close after it for the slowest boat to sail even a one-minute target: there
+            // is no daylight to cap
             // into. Emitting a nought-minute target would produce a start sheet with
             // every boat on the same gun, which is worse than refusing — the race as
             // described cannot be sailed, and the RO needs to move the start or the date.
             badRequest(resp, "sunset on " + race.date() + " is at "
                 + String.format("%02d:%02d", sunset.getHour(), sunset.getMinute())
-                + ", before the earliest start of " + earliest.toString().substring(0, 5)
-                + " — there is no daylight to race in. Move the start earlier, "
+                + " and the fleet may finish " + alg.minutesAfterSunset()
+                + " minutes after it, which leaves no daylight to race in from the earliest"
+                + " start of " + earliest.toString().substring(0, 5) + ". Move the start earlier, "
                 + "or turn off the sunset limit for this series.");
             return;
         }
@@ -1536,8 +1538,9 @@ public class ApiServlet extends HttpServlet
     // --- Sunset cap ----------------------------------------------------------
 
     /**
-     * The expected duration, capped so the fleet is expected home by sunset (wiki §4).
-     * Returns 0 when there is no daylight to fit a target into, which the caller refuses.
+     * The expected duration, capped so the fleet is expected home by
+     * {@code minutesAfterSunset} after sunset (wiki §4). Returns 0 when there is no
+     * daylight to fit a target into, which the caller refuses.
      *
      * <p>The expected duration is the <em>median</em> boat's time, and every boat is
      * expected to finish when the slowest one does — {@code TCF_med / TCF_min} times
@@ -1545,11 +1548,12 @@ public class ApiServlet extends HttpServlet
      * target is rounded down to make sure it does.
      */
     static int capBySunset(int requested, LocalTime earliestStart, LocalTime sunset,
-                           List<Double> tcfs)
+                           int minutesAfterSunset, List<Double> tcfs)
     {
         if (sunset == null || earliestStart == null)
             return requested;
-        long available = java.time.Duration.between(earliestStart, sunset).toMinutes();
+        long available = java.time.Duration.between(earliestStart, sunset).toMinutes()
+            + minutesAfterSunset;
         if (available <= 0)
             return 0;
         double slowest = tcfs.stream().mapToDouble(Double::doubleValue).min().orElse(1.0);
@@ -1695,7 +1699,8 @@ public class ApiServlet extends HttpServlet
                     return target;
                 LocalTime earliest = next.earliestStart() != null
                     ? next.earliestStart() : LocalTime.parse(alg.earliestStart());
-                int capped = capBySunset(target, earliest, sunset, tcfs);
+                int capped = capBySunset(target, earliest, sunset, alg.minutesAfterSunset(),
+                    tcfs);
                 return capped > 0 ? capped : target;
             })
             .orElse(null);
@@ -1834,6 +1839,7 @@ public class ApiServlet extends HttpServlet
         m.put("latitude", a.latitude());
         m.put("longitude", a.longitude());
         m.put("limitBySunset", a.limitBySunset());
+        m.put("minutesAfterSunset", a.minutesAfterSunset());
         return m;
     }
 
