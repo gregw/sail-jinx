@@ -615,6 +615,101 @@ function createScorer(state) {
   };
 }
 
+// --- handicap calcs: from one race's starts to the next's -------------------
+
+/** The median, as PursuitHandicapEngine.median takes it: the mean of the middle two. */
+function medianOf(values) {
+  const v = values.slice().sort((a, b) => a - b);
+  const n = v.length;
+  if (!n) return NaN;
+  return n % 2 ? v[(n - 1) / 2] : (v[n / 2 - 1] + v[n / 2]) / 2;
+}
+
+/**
+ * A published start sheet, as the engine computed it (wiki §4): target × median TCF,
+ * and the scratch boat, both over the series entrants unless there are none. Each
+ * boat's published offset in whole minutes, and the exact one it was rounded from.
+ */
+function startFrame(bundle) {
+  const sheet = bundle.startSheet;
+  const types = new Map(((bundle.entrants && bundle.entrants.entrants) || [])
+    .map(e => [String(e.boatId), e.entryType]));
+  const starts = sheet.starts || [];
+  let setters = starts.filter(s => types.get(String(s.boatId)) === 'ROSTER');
+  if (!setters.length) setters = starts;
+  const tm = sheet.targetElapsedMinutes * medianOf(setters.map(s => s.tcf));
+  const scratch = setters.reduce((a, b) => (b.tcf < a.tcf ? b : a));
+  const earliest = parseTime(sheet.earliestStart);
+  const boats = new Map(starts.map(s => [String(s.boatId), {
+    tcf: s.tcf,
+    published: Math.round((parseTime(s.startTime) - earliest) / 60),
+    exact: tm / scratch.tcf - tm / s.tcf
+  }]));
+  return { tm, scratchId: String(scratch.boatId), boats };
+}
+
+/**
+ * Every boat's move from race N's start to race N+1's, in minutes after each race's
+ * earliest start, split so that each row adds up exactly:
+ *
+ *   startN + result + shift + duration + rounding = startN1
+ *
+ * With τ = T·med/tcf, and T·med written tm:
+ *   result   = tm₁ × (1/tcf_N − 1/tcf_N+1)   the boat's own handicap change, in race N+1's
+ *              minutes. Processing aims it at the next race (wiki §7), so it is the net
+ *              adjustment, or very nearly; a TCF edited by hand shows here too.
+ *   shift    = −(e_N(s) + result(s))       s is race N+1's scratch boat. Its gun is the
+ *              earliest start, so wherever its own start would have gone, the fleet
+ *              moves the other way. The same for every boat.
+ *   duration = (tm₁ − tm_N) × (1/tcf_N(s) − 1/tcf_N)   a longer race, or a lower median,
+ *              stretches every gap to the scratch boat.
+ *   rounding = the rest: both sheets' rounding to whole minutes.
+ *
+ * Boats sorted by exact race N start; a boat in only one race has a start on that side
+ * and nothing else, and comes after the rest. Null when the next race has no start
+ * sheet, or the next race's scratch boat did not sail this one — then there is no race N
+ * start to measure its move from.
+ */
+function handicapCalcs(thisRace, nextRace) {
+  if (!thisRace || !thisRace.startSheet || !nextRace || !nextRace.startSheet) return null;
+  const n = startFrame(thisRace);
+  const n1 = startFrame(nextRace);
+  const s = n1.scratchId;
+  const sN = n.boats.get(s);
+  if (!sN) return null;
+
+  const resultOf = id => n1.tm * (1 / n.boats.get(id).tcf - 1 / n1.boats.get(id).tcf);
+  const shift = -(sN.exact + resultOf(s));
+
+  const names = new Map();
+  for (const r of [thisRace, nextRace])
+    for (const e of ((r.entrants && r.entrants.entrants) || []))
+      names.set(String(e.boatId), e);
+
+  const rows = [];
+  for (const id of new Set([...n.boats.keys(), ...n1.boats.keys()])) {
+    const a = n.boats.get(id), b = n1.boats.get(id);
+    const e = names.get(id) || {};
+    const row = {
+      boatId: id, name: e.name || id, sailNumber: e.sailNumber || '',
+      entryType: e.entryType || null,
+      startN: a ? a.published : null, startN1: b ? b.published : null,
+      result: null, shift: null, duration: null, rounding: null,
+      sortKey: [a && b ? 0 : (a ? 1 : 2), a ? a.exact : b.exact]
+    };
+    if (a && b) {
+      row.result = resultOf(id);
+      row.shift = shift;
+      row.duration = (n1.tm - n.tm) * (1 / sN.tcf - 1 / a.tcf);
+      row.rounding = b.published - a.published - row.result - row.shift - row.duration;
+    }
+    rows.push(row);
+  }
+  rows.sort((x, y) => x.sortKey[0] - y.sortKey[0] || x.sortKey[1] - y.sortKey[1]
+    || String(x.name).localeCompare(String(y.name)));
+  return { rows, shift, tmN: n.tm, tmN1: n1.tm, scratchN: n.scratchId, scratchN1: s };
+}
+
 // --- boat identity ---------------------------------------------------------
 //
 // The same normalisation the server applies (identity/IdGenerator.java,

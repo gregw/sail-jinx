@@ -51,6 +51,7 @@
       <button id="unlock-results-btn" type="button" data-requires="officer" style="display:none;"
               title="Discard the saved handicap changes so the race can be edited and processed again. The next race keeps its TCFs until then.">Unlock results</button>
       <a id="report-finish-link" class="button-link disabled">Finish sheet ▸</a>
+      <a id="report-handicaps-link" class="button-link disabled">Handicap calcs ▸</a>
     </div>
   </section>
 
@@ -2177,6 +2178,12 @@
       '/report-finish.html?raceId=' + encodeURIComponent(raceId),
       locked,
       'Process the results first.');
+    // From this race's starts to the next one's, so it needs both: the results
+    // processed, and a next race to carry them to.
+    setReportLink('report-handicaps-link',
+      '/report-handicaps.html?raceId=' + encodeURIComponent(raceId),
+      locked && !!bundle.nextRaceId,
+      locked ? 'There is no next race in this series.' : 'Process the results first.');
 
     document.getElementById('prev-btn').disabled = !bundle.previousRaceId;
     document.getElementById('next-btn').disabled = !bundle.nextRaceId;

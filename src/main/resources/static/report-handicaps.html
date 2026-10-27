@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sail-jinx — Handicap calculations</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    /* The race headings span their three columns; a rule under each says which three. */
+    table.report-table th.span { text-align: center; border-bottom: 1px solid var(--line); }
+    table.report-table th.group-start, table.report-table td.group-start {
+      border-left: 1px solid var(--line);
+    }
+    .calc-notes { margin-top: 1.2em; font-size: 0.95em; }
+    .calc-notes dt { font-weight: 600; }
+    .calc-notes dd { margin: 0 0 0.4em 1.2em; }
+    .calc-warning { font-weight: 600; margin-top: 1em; }
+    @media print {
+      table.report-table th.span { border-bottom: 0.5pt solid #000; }
+      table.report-table th.group-start, table.report-table td.group-start {
+        border-left: 0.5pt solid #000;
+      }
+      .calc-notes { font-size: 9.5pt; break-inside: avoid; }
+    }
+  </style>
+</head>
+<body class="report-page">
+
+<div class="report-toolbar report-wide no-print">
+  <button onclick="window.print()" class="primary" type="button">Print</button>
+  <a id="back-link" href="/races.html">← back to the race</a>
+</div>
+
+<main class="report report-wide">
+  <header class="report-head">
+    <h1 id="report-title">PROVISIONAL Handicap Calculations</h1>
+    <div id="report-sub" class="report-sub"></div>
+  </header>
+
+  <div id="report-state" class="banner banner-info">Loading…</div>
+
+  <div id="report-body" style="display:none;">
+    <table class="report-table">
+      <thead>
+        <tr>
+          <th>Boat</th>
+          <th id="head-n" class="span group-start" colspan="3"></th>
+          <th id="head-n1" class="span group-start" colspan="3"></th>
+        </tr>
+        <tr>
+          <th class="nowrap">Name</th>
+          <th class="num-cell group-start">Start</th>
+          <th class="num-cell">Result&nbsp;Δ</th>
+          <th class="num-cell">Shift</th>
+          <th class="num-cell group-start">Duration&nbsp;Δ</th>
+          <th class="num-cell">Rounding</th>
+          <th class="num-cell">Start</th>
+        </tr>
+      </thead>
+      <tbody id="report-tbody"></tbody>
+    </table>
+
+    <p id="earliest-note" class="report-note"></p>
+
+    <dl class="calc-notes">
+      <dt>Start</dt>
+      <dd>The boat's gun in each race. Each row adds up: the first Start, plus the four
+        columns between, is the second Start. The changes are in minutes.</dd>
+      <dt>Result Δ</dt>
+      <dd>The boat's own handicap change from its result in <span class="race-n"></span>:
+        the penalty for a top-five finish (+5, +4, +3, +2, +1) or the minute given back to
+        the boats behind (−1). It is very nearly whole minutes, because each new handicap
+        is set for the length of the next race.</dd>
+      <dt>Shift</dt>
+      <dd>The same for every boat. Starts are measured from the slowest boat, which always
+        starts on the earliest start. When that boat's own change would move its gun, it
+        cannot move, so the whole fleet moves the other way instead.</dd>
+      <dt>Duration Δ</dt>
+      <dd>A longer race stretches every boat's gap to the slowest boat in proportion, so
+        the faster the boat, the more it moves. A change in the fleet's median handicap
+        does the same, by much less.</dd>
+      <dt>Rounding</dt>
+      <dd>Guns are on whole minutes, each to the nearest one. This is what both sheets'
+        rounding adds up to, never more than a minute either way.</dd>
+    </dl>
+
+    <p class="calc-warning">These calculations are provisional. Results and handicaps may
+      still change before the next race, and so may its start times. Check your start
+      time online before <span class="race-n1"></span>.</p>
+  </div>
+
+  <footer class="report-foot" id="report-foot"></footer>
+</main>
+
+<script src="/common.js"></script>
+<script src="/scoring.js"></script>
+<script>
+  const raceId = new URLSearchParams(location.search).get('raceId');
+
+  // Signed, to a tenth of a minute, with a real minus sign; nothing for a boat that was
+  // not in both races.
+  function fmtDelta(v) {
+    if (v == null) return '';
+    const r = Math.round(v * 10) / 10;
+    if (r === 0) return '0.0';
+    return (r < 0 ? '−' : '+') + Math.abs(r).toFixed(1);
+  }
+
+  // A start is minutes after that race's earliest start, shown as the gun itself.
+  function fmtStart(minutes, earliest) {
+    if (minutes == null || earliest == null) return '';
+    return fmtTimeOfDay(earliest + minutes * 60).slice(0, 5);
+  }
+
+  function fail(cls, html) {
+    const state = document.getElementById('report-state');
+    state.className = 'banner ' + cls;
+    state.innerHTML = html;
+  }
+
+  (async () => {
+    if (!raceId) return fail('banner-err', 'No race given.');
+    const back = '/race.html?raceId=' + encodeURIComponent(raceId);
+    document.getElementById('back-link').href = back;
+
+    const [thisR, cfg] = await Promise.all([
+      fetchJson('/api/races/' + encodeURIComponent(raceId)),
+      getConfig()
+    ]);
+    if (!thisR.ok) return fail('banner-err', 'Could not load race: ' + esc(errorOf(thisR)));
+    const b = thisR.body;
+    if (!b.locked)
+      return fail('banner-warn', 'This race has not been processed yet. '
+        + '<a href="' + back + '">Process the results first.</a>');
+    if (!b.nextRaceId)
+      return fail('banner-warn', 'There is no next race in this series to calculate for.');
+
+    const nextR = await fetchJson('/api/races/' + encodeURIComponent(b.nextRaceId));
+    if (!nextR.ok) return fail('banner-err', 'Could not load the next race: ' + esc(errorOf(nextR)));
+    const nb = nextR.body;
+
+    const nameN = 'Race ' + b.race.number, nameN1 = 'Race ' + nb.race.number;
+    document.getElementById('head-n').textContent = nameN;
+    document.getElementById('head-n1').textContent = nameN1;
+    document.querySelectorAll('.race-n').forEach(el => el.textContent = nameN);
+    document.querySelectorAll('.race-n1').forEach(el => el.textContent = nameN1);
+
+    const describe = (r, name) => name + (r.race.date ? ' ' + fmtDate(r.race.date) : '')
+      + (r.startSheet ? ', ' + r.startSheet.targetElapsedMinutes + ' min' : '');
+    document.getElementById('report-sub').textContent = [
+      b.seriesName || null, describe(b, nameN), describe(nb, nameN1)
+    ].filter(Boolean).join('   ·   ');
+
+    if (!b.startSheet)
+      return fail('banner-warn', nameN + ' has no start sheet to calculate from.');
+    if (!nb.startSheet)
+      return fail('banner-warn', nameN1 + ' has no start times yet. '
+        + '<a href="/race.html?raceId=' + encodeURIComponent(b.nextRaceId)
+        + '">Compute them first.</a>');
+
+    const calcs = handicapCalcs(b, nb);
+    if (!calcs)
+      return fail('banner-warn', 'The slowest boat in ' + nameN1 + ' did not sail '
+        + nameN + ', so there is no start to measure the fleet\'s move from.');
+
+    const earliestN = parseTime(b.startSheet.earliestStart);
+    const earliestN1 = parseTime(nb.startSheet.earliestStart);
+    document.getElementById('report-tbody').innerHTML = calcs.rows.map(r =>
+      '<tr>'
+      + '<td class="nowrap">' + esc(r.name)
+        + (r.entryType && r.entryType !== 'ROSTER' ? ' <span class="hint">(casual)</span>' : '')
+        + '</td>'
+      + '<td class="num-cell mono group-start">' + fmtStart(r.startN, earliestN) + '</td>'
+      + '<td class="num-cell mono">' + fmtDelta(r.result) + '</td>'
+      + '<td class="num-cell mono">' + fmtDelta(r.shift) + '</td>'
+      + '<td class="num-cell mono group-start">' + fmtDelta(r.duration) + '</td>'
+      + '<td class="num-cell mono">' + fmtDelta(r.rounding) + '</td>'
+      + '<td class="num-cell mono">' + fmtStart(r.startN1, earliestN1) + '</td>'
+      + '</tr>').join('');
+
+    // The columns add up in minutes after each race's own earliest start; when those
+    // differ, the guns differ by that too.
+    document.getElementById('earliest-note').textContent = earliestN === earliestN1 ? ''
+      : 'The earliest start moved from ' + fmtTimeOfDay(earliestN).slice(0, 5) + ' to '
+        + fmtTimeOfDay(earliestN1).slice(0, 5) + ', so every gun also moves by that.';
+
+    document.getElementById('report-state').style.display = 'none';
+    document.getElementById('report-body').style.display = '';
+    document.getElementById('report-foot').textContent =
+      calcs.rows.length + ' boats   ·   ' + (cfg ? cfg.club.longName : '')
+      + '   ·   generated ' + new Date().toLocaleString();
+  })();
+</script>
+</body>
+</html>
