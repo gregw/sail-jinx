@@ -697,6 +697,41 @@ function startSheetIsCurrent(bundle) {
 }
 
 /**
+ * TCFs set by hand between processing the previous race and sailing this one: a boat
+ * whose TCF here is not the one the previous race's saved adjustment gave it, at the four
+ * decimals TCFs are held to. Each with the previous race's result, the TCF processing
+ * gave, the TCF used, and how many minutes the edit moved its start in this race —
+ * tm × (1/processed − 1/used), positive for later, tm from the stored τ (startFrame).
+ * Boats that did not sail the previous race have nothing to compare with and are left
+ * out. Empty without the previous race.
+ */
+function manualTcfEdits(prevRace, thisRace) {
+  if (!prevRace || !thisRace) return [];
+  const processed = new Map((prevRace.adjustments || [])
+    .filter(a => a.newTcf > 0).map(a => [String(a.boatId), a]));
+  const frame = thisRace.startSheet ? startFrame(thisRace) : null;
+  // The TCF the boat's start was computed on, which is what it sailed; the entry list
+  // where there is no sheet.
+  const onSheet = new Map(((thisRace.startSheet && thisRace.startSheet.starts) || [])
+    .map(s => [String(s.boatId), s.tcf]));
+  const out = [];
+  for (const e of ((thisRace.entrants && thisRace.entrants.entrants) || [])) {
+    const id = String(e.boatId);
+    const a = processed.get(id);
+    const used = onSheet.has(id) ? onSheet.get(id) : e.tcf;
+    if (!a || !(used > 0)) continue;
+    const given = Math.round(a.newTcf * 1e4) / 1e4;
+    if (Math.round(given * 1e4) === Math.round(used * 1e4)) continue;
+    out.push({
+      boatId: id, name: e.name || id, net: a.netAdjustmentMinutes,
+      processed: given, used,
+      minutes: frame ? frame.tm * (1 / given - 1 / used) : null
+    });
+  }
+  return out;
+}
+
+/**
  * Every boat's move from race N's start to race N+1's, in minutes after each race's
  * earliest start, split so that each row adds up exactly:
  *

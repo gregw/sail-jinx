@@ -752,6 +752,25 @@
         resultLabel('new', places, flags)]);
   }
 
+  // A TCF set by hand between processing race N−1 and sailing race N: race N's TCF is not
+  // the one processing gave it. Found by comparing the two at four decimals, and measured
+  // in race N's start minutes — tm × (1/processed − 1/used), so a higher TCF starts later.
+  {
+    const prev = { adjustments: [
+      { boatId: 'A', netAdjustmentMinutes: -1, newTcf: 0.80004 },   // as processed
+      { boatId: 'B', netAdjustmentMinutes: 2, newTcf: 0.98 },       // set to 1.00 by hand
+      { boatId: 'X', netAdjustmentMinutes: 0, newTcf: 1.10 } ] };   // did not sail race N
+    const raceN = { entrants: { entrants: CALC_ENTRANTS }, startSheet: calcSheet(60, [
+      ['A', 0.80, '18:00:00'], ['B', 1.00, '18:15:00'], ['C', 1.20, '18:25:00']]) };
+    const edits = manualTcfEdits(prev, raceN);
+    check('edits: only the boat whose TCF was changed by hand', ['B'], edits.map(e => e.boatId));
+    const b = edits[0];
+    check('edits: what processing gave, what was used, and the minutes it moved the start',
+      [2, 0.98, 1.00, 1.2],
+      [b.net, b.processed, b.used, Math.round(b.minutes * 10) / 10]);
+    check('edits: none without the previous race', [], manualTcfEdits(null, raceN));
+  }
+
   // A published sheet is current while it was computed for the boats now entered, on the
   // TCFs they now have. Reprocessing the previous race changes the TCFs and leaves the
   // sheet behind, which is exactly when the calcs sheet must not use it.
