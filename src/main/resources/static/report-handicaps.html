@@ -13,6 +13,9 @@
     }
     .calc-notes { margin-top: 1.2em; font-size: 0.95em; }
     .edits-head { margin: 1em 0 0.3em; }
+    /* Every race N start carries the footnote's slot, filled or not, so a marked time
+       lines up with the rest instead of being pushed left by its asterisk. */
+    .mark { display: inline-block; width: 1ch; text-align: left; }
     #edits { break-inside: avoid; }
     .calc-notes dt { font-weight: 600; }
     .calc-notes dd { margin: 0 0 0.4em 1.2em; }
@@ -69,9 +72,8 @@
     </table>
 
     <div id="edits" style="display:none;">
-      <p class="edits-head">* TCF set by hand after <span id="edits-prev"></span> was
-        processed, so the <span class="race-n"></span> start is not the one its result
-        alone would have given:</p>
+      <p class="edits-head">* TCF manually adjusted after <span id="edits-prev"></span> was
+        processed:</p>
       <table class="report-table compact">
         <thead>
           <tr>
@@ -170,7 +172,7 @@
     if (!nextR.ok) return fail('banner-err', 'Could not load the next race: ' + esc(errorOf(nextR)));
     const nb = nextR.body;
 
-    // The race before, for TCFs set by hand after it was processed. Without one — the
+    // The race before, for TCFs manually adjusted after it was processed. Without one — the
     // first race of a series — there is nothing to compare with.
     let pb = null;
     if (b.previousRaceId) {
@@ -319,7 +321,7 @@
         + '</td>'
       + '<td class="num-cell mono group-start">' + esc(resultLabel(r.boatId, places, flags)) + '</td>'
       + '<td class="num-cell mono">' + fmtStart(r.startN, earliestN)
-        + (edited.has(r.boatId) ? '*' : '') + '</td>'
+        + '<span class="mark">' + (edited.has(r.boatId) ? '*' : '') + '</span></td>'
       + '<td class="num-cell mono">' + fmtDelta(r.result) + '</td>'
       + '<td class="num-cell mono">' + fmtDelta(r.shift) + '</td>'
       + '<td class="num-cell mono group-start">' + fmtDelta(r.duration) + '</td>'
