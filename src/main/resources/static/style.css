@@ -457,7 +457,10 @@ table.report-table td { padding: 7px 10px; border-bottom: 1px solid var(--line);
 table.report-table.compact td, table.report-table.compact th {
   padding-top: 1px; padding-bottom: 1px;
 }
-table.report-table tbody tr:nth-child(even) td { background: none; }
+/* Banded rows, so a line can be followed across the sheet from name to numbers. Very
+   light, so it survives a club printer without looking like a fill. */
+table.report-table tbody tr:nth-child(odd) td { background: #fff; }
+table.report-table tbody tr:nth-child(even) td { background: #f6f6f6; }
 table.report-table tr:hover td { background: none; }
 
 /* Start-sheet write-in columns: blank space the RO fills in on the clipboard, so what
@@ -495,6 +498,8 @@ table.report-table td.write-in { height: 1.9em; }
   .report { max-width: none; }
   .report-note { break-inside: avoid; }
   table.report-table { font-size: 11pt; width: 100%; }
+  /* Browsers drop backgrounds when printing unless told the page means them. */
+  table.report-table tbody td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   table.report-table th { border-bottom: 1pt solid #000; }
   /* Repeat the header on every page — a fleet of forty can spill over. */
   table.report-table thead { display: table-header-group; }
