@@ -15,6 +15,7 @@ import org.mortbay.sailing.jinx.model.Adjustment;
 import org.mortbay.sailing.jinx.model.FinishStatus;
 import org.mortbay.sailing.jinx.model.Race;
 import org.mortbay.sailing.jinx.model.Result;
+import org.mortbay.sailing.jinx.model.StartTime;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.closeTo;
@@ -269,6 +270,78 @@ class HandicapRulesTest
         double all = out.stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum();
         assertThat("the casual's share is extra, by design",
             Math.abs(all) > 1e-6, is(true));
+    }
+
+    /**
+     * The start sheet is the same rule as the results: every series boat's gun is where
+     * it would be had the casuals stayed home. A casual moved the fleet median, and so
+     * every series gun, by up to a minute (race 2 of the 2026/27 twilight series).
+     */
+    @Test
+    void aCasualDoesNotMoveAnySeriesBoatsGun()
+    {
+        List<Competitor> series = List.of(
+            new Competitor("slow", 0.71),
+            new Competitor("s2", 0.80),
+            new Competitor("mid", 0.92),
+            new Competitor("f2", 0.96),
+            new Competitor("fast", 1.09));
+        PursuitHandicapEngine engine = new PursuitHandicapEngine(alg());
+        Map<String, LocalTime> alone = gunsOf(engine.computeStartTimes(series, race()));
+
+        // Slower, middling and faster than the fleet: each pulls the median a different way.
+        for (double casualTcf : List.of(0.75, 0.93, 1.20))
+        {
+            List<Competitor> boats = new ArrayList<>(series);
+            boats.add(new Competitor("casual", casualTcf, false));
+            Map<String, LocalTime> mixed = gunsOf(engine.computeStartTimes(boats, race()));
+            for (Competitor c : series)
+                assertThat("casual at " + casualTcf + " must not move " + c.boatId(),
+                    mixed.get(c.boatId()), equalTo(alone.get(c.boatId())));
+        }
+    }
+
+    /**
+     * A casual slower than every series boat still gets its true pursuit gap, which puts
+     * its gun before the earliest start. Pinning it to the earliest start instead would
+     * make it the scratch boat and push every series gun later.
+     */
+    @Test
+    void aCasualSlowerThanTheSeriesStartsBeforeTheEarliestStart()
+    {
+        List<Competitor> boats = List.of(
+            new Competitor("slow", 0.90),
+            new Competitor("mid", 1.00),
+            new Competitor("fast", 1.10),
+            new Competitor("casual", 0.78, false));
+        Map<String, LocalTime> guns = gunsOf(
+            new PursuitHandicapEngine(alg()).computeStartTimes(boats, race()));
+
+        assertThat(guns.get("slow"), equalTo(LocalTime.of(18, 0)));
+        // τ = 90 × 1.00 / tcf: slow 100.0, casual 115.4 — 15.4 minutes earlier, to the
+        // nearest whole minute.
+        assertThat(guns.get("casual"), equalTo(LocalTime.of(17, 45)));
+    }
+
+    /** A race of nobody but casuals has no series to protect: they are the fleet. */
+    @Test
+    void aFleetOfOnlyCasualsIsStartedAsAFleet()
+    {
+        List<Competitor> casuals = List.of(
+            new Competitor("x", 0.90, false),
+            new Competitor("y", 1.10, false));
+        List<Competitor> seeded = List.of(
+            new Competitor("x", 0.90),
+            new Competitor("y", 1.10));
+        PursuitHandicapEngine engine = new PursuitHandicapEngine(alg());
+        assertThat(gunsOf(engine.computeStartTimes(casuals, race())),
+            equalTo(gunsOf(engine.computeStartTimes(seeded, race()))));
+    }
+
+    private static Map<String, LocalTime> gunsOf(List<StartTime> starts)
+    {
+        return starts.stream().collect(
+            Collectors.toMap(StartTime::boatId, StartTime::startTime));
     }
 
     @Test

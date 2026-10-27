@@ -39,15 +39,21 @@ public class PursuitHandicapEngine implements HandicapEngine
             ? race.earliestStart()
             : LocalTime.parse(config.earliestStart());
 
-        double tcfMed = median(boats.stream().map(Competitor::tcf).toList());
+        // The series fleet sets the stagger, as it sets the handicaps (processResults): a
+        // series boat's gun is where it would be had the casuals stayed home. So the
+        // median and the scratch boat are the series boats' alone, and a casual slower
+        // than all of them is off before the earliest start rather than pushing every
+        // series gun later. A race of nobody but casuals is its own fleet.
+        List<Competitor> setters = boats.stream().filter(Competitor::seeded).toList();
+        if (setters.isEmpty())
+            setters = boats;
+        double tcfMed = median(setters.stream().map(Competitor::tcf).toList());
+        double tauMax = tTarget * tcfMed
+            / setters.stream().mapToDouble(Competitor::tcf).min().orElseThrow();
 
         double[] tau = new double[boats.size()];
-        double tauMax = Double.NEGATIVE_INFINITY;
         for (int i = 0; i < boats.size(); i++)
-        {
             tau[i] = tTarget * tcfMed / boats.get(i).tcf();
-            if (tau[i] > tauMax) tauMax = tau[i];
-        }
 
         // A gun is a whole minute (wiki §4). Both roundings here are to the NEAREST one:
         // an offset of 4.81 minutes is a five-minute offset, and an earliest start that

@@ -97,7 +97,9 @@
           return '<td class="' + c.cls + '"><span class="tickbox"></span></td>';
         if (c.write) return '<td class="' + c.cls + '"></td>';
         const v = c.key === 'offset'
-          ? (r.offset == null ? '' : '+' + r.offset) : r[c.key];
+          // A casual slower than the series fleet is off before the earliest start.
+          ? (r.offset == null ? '' : (r.offset < 0 ? '−' + -r.offset : '+' + r.offset))
+          : r[c.key];
         return '<td class="' + c.cls + '">' + esc(v) + '</td>';
       }).join('') + '</tr>').join('');
 

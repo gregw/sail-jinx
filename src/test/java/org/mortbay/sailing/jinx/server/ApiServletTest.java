@@ -4,6 +4,7 @@ import java.time.LocalTime;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.mortbay.sailing.jinx.model.Entrant;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
@@ -80,6 +81,37 @@ class ApiServletTest
     {
         assertThat(ApiServlet.capBySunset(90, LocalTime.of(18, 0), LocalTime.of(19, 10), -10,
             ONE_DESIGN), equalTo(60));
+    }
+
+    /**
+     * The cap is the series fleet's, like everything else about a series boat's start:
+     * a slow casual starts before the earliest start and is expected home with everyone
+     * else, so it must not shorten the race.
+     */
+    @Test
+    void theSunsetCapIsMeasuredOnTheSeriesFleetAlone()
+    {
+        List<Entrant> entrants = List.of(
+            entrant("a", 1.0, Entrant.EntryType.ROSTER),
+            entrant("b", 0.9, Entrant.EntryType.ROSTER),
+            entrant("c", 0.8, Entrant.EntryType.ROSTER),
+            entrant("casual", 0.6, Entrant.EntryType.CASUAL),
+            Entrant.oneOff("one-off-1", "Visitor", "V1", 0.5));
+        assertThat(ApiServlet.seriesTcfs(entrants), equalTo(List.of(1.0, 0.9, 0.8)));
+    }
+
+    @Test
+    void aFleetOfOnlyCasualsIsCappedOnItself()
+    {
+        List<Entrant> entrants = List.of(
+            entrant("casual", 0.6, Entrant.EntryType.CASUAL),
+            Entrant.oneOff("one-off-1", "Visitor", "V1", 0.5));
+        assertThat(ApiServlet.seriesTcfs(entrants), equalTo(List.of(0.6, 0.5)));
+    }
+
+    private static Entrant entrant(String id, double tcf, Entrant.EntryType type)
+    {
+        return new Entrant(id, id, id, null, null, null, tcf, type);
     }
 
     @Test

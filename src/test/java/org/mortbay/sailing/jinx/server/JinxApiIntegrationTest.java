@@ -8,7 +8,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -291,6 +293,49 @@ class JinxApiIntegrationTest
         assertThat(starts.get(0).path("startTime").asText(), equalTo("18:00:00"));
         assertThat(starts.get(2).path("boatId").asText(), equalTo(fast));
         assertThat(starts.get(2).path("startTime").asText(), greaterThan("18:00:00"));
+    }
+
+    /**
+     * Entering a casual moves no series boat's gun. Race 2 of the 2026/27 twilight
+     * series: a casual on the scratch TCF moved the fleet median, and every series start
+     * with it.
+     */
+    @Test
+    void aCasualOnTheStartSheetMovesNoSeriesBoatsGun() throws Exception
+    {
+        String seriesId = createSeries("Twilight");
+        String slow = createBoat("A123", "Slow Poke");
+        String mid = createBoat("5678", "Mid Fleet");
+        String fast = createBoat("AUS9", "Quick Silver");
+        String casual = createBoat("MYC99", "Passing Through");
+        String alone = createRace(seriesId, "2026-06-05");
+        String mixed = createRace(seriesId, "2026-06-12");
+        String fleet = """
+            {"boatId":"%s","tcf":0.7103,"entryType":"ROSTER"},
+            {"boatId":"%s","tcf":0.9224,"entryType":"ROSTER"},
+            {"boatId":"%s","tcf":1.0935,"entryType":"ROSTER"}"""
+            .formatted(slow, mid, fast);
+        post("/api/races/" + alone + "/entrants", "{\"entrants\":[" + fleet + "]}");
+        post("/api/races/" + mixed + "/entrants", "{\"entrants\":[" + fleet + """
+            ,{"boatId":"%s","tcf":0.6500,"entryType":"CASUAL"}]}""".formatted(casual));
+
+        String body = "{\"targetElapsedMinutes\":61,\"earliestStart\":\"18:00\"}";
+        Map<String, String> without = guns(post("/api/races/" + alone + "/start-times", body));
+        Map<String, String> with = guns(post("/api/races/" + mixed + "/start-times", body));
+
+        for (String id : List.of(slow, mid, fast))
+            assertThat(id, with.get(id), equalTo(without.get(id)));
+        assertThat(without.get(slow), equalTo("18:00:00"));
+        // Slower than the series' scratch boat, so off before the earliest start.
+        assertThat(with.get(casual), lessThan("18:00:00"));
+    }
+
+    private static Map<String, String> guns(JsonNode response)
+    {
+        Map<String, String> out = new HashMap<>();
+        for (JsonNode s : response.path("startSheet").path("starts"))
+            out.put(s.path("boatId").asText(), s.path("startTime").asText());
+        return out;
     }
 
     @Test

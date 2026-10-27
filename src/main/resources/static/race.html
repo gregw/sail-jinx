@@ -2196,8 +2196,11 @@
       const available = (earliest != null && sunset != null)
         ? Math.round((sunset - earliest) / 60) + afterSunset : null;
       // The target is the median boat's time; it is the slowest boat that has to be
-      // home by minutesAfterSunset after sunset. The same sum as ApiServlet.capBySunset.
-      const tcfs = ((bundle.entrants && bundle.entrants.entrants) || [])
+      // home by minutesAfterSunset after sunset. The same sum as ApiServlet.capBySunset,
+      // over the same boats: the series fleet's, unless there are only casuals.
+      const entered = (bundle.entrants && bundle.entrants.entrants) || [];
+      const series = entered.filter(e => e.entryType === 'ROSTER');
+      const tcfs = (series.length ? series : entered)
         .map(e => e.tcf).filter(t => t > 0).sort((a, b) => a - b);
       const n = tcfs.length;
       const median = n === 0 ? 1 : (n % 2 ? tcfs[(n - 1) / 2] : (tcfs[n / 2 - 1] + tcfs[n / 2]) / 2);

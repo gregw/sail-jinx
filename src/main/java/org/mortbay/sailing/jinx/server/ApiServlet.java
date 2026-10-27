@@ -1457,7 +1457,7 @@ public class ApiServlet extends HttpServlet
         int requested = target;
         LocalTime sunset = alg.limitBySunset() ? sunsetFor(alg, race) : null;
         target = capBySunset(target, earliest, sunset, alg.minutesAfterSunset(),
-            entrants.entrants().stream().map(Entrant::tcf).toList());
+            seriesTcfs(entrants.entrants()));
         if (target <= 0)
         {
             // Sunset plus minutesAfterSunset is at or before the earliest start, or too
@@ -1483,7 +1483,7 @@ public class ApiServlet extends HttpServlet
         for (int i = 0; i < entrants.entrants().size(); i++)
         {
             Entrant e = entrants.entrants().get(i);
-            forEngine.add(new Competitor(entrantKey(e, i), e.tcf()));
+            forEngine.add(new Competitor(entrantKey(e, i), e.tcf(), inSeries(e)));
         }
         Race forEngineRace = new Race(race.id(), race.seriesId(), race.number(), race.name(),
             race.date(), earliest, target, race.abandoned());
@@ -1560,6 +1560,25 @@ public class ApiServlet extends HttpServlet
         double median = PursuitHandicapEngine.median(tcfs);
         int fits = (int)Math.floor(available * slowest / median);
         return Math.min(requested, fits);
+    }
+
+    /**
+     * The TCFs the sunset cap is measured on: the series entrants', because the stagger
+     * is theirs (see {@link PursuitHandicapEngine#computeStartTimes}). A slow casual is
+     * off before the earliest start and expected home with everybody else, so it must
+     * not shorten the race. A race of nobody but casuals is capped on itself.
+     */
+    static List<Double> seriesTcfs(List<Entrant> entrants)
+    {
+        List<Double> series = entrants.stream()
+            .filter(ApiServlet::inSeries).map(Entrant::tcf).toList();
+        return series.isEmpty() ? entrants.stream().map(Entrant::tcf).toList() : series;
+    }
+
+    /** A season entrant, as {@code scoring.js} decides {@code seeded} for processing. */
+    private static boolean inSeries(Entrant e)
+    {
+        return e.entryType() == Entrant.EntryType.ROSTER;
     }
 
     private LocalTime sunsetFor(JinxConfig.Algorithm alg, Race race)
