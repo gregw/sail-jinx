@@ -18,6 +18,14 @@ import org.mortbay.sailing.jinx.model.StartTime;
 /**
  * MYC Twilight pursuit handicap, version 2.
  * Full specification: {@code wiki/Jinx-Handicaps.md}.
+ *
+ * <p><b>When a rule here changes, also update {@code static/report-handicaps.html}.</b>
+ * That sheet explains each boat's change in start time to competitors, and its notes
+ * describe these rules in words — the ladder, the minute back, ties, the slowest boat on
+ * the earliest start, the sunset limit. Its numbers need no change: {@code handicapCalcs}
+ * in {@code scoring.js} takes apart the TCFs and the stored τ this class produced, and
+ * relies only on a start being {@code τ = T·med / tcf} (computeStartTimes). Change that
+ * shape and it must change too.
  */
 public class PursuitHandicapEngine implements HandicapEngine
 {

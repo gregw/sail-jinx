@@ -77,6 +77,7 @@ import org.slf4j.LoggerFactory;
  *   POST   /api/races/{id}/entrants/import    add entrants from a sailing-pf export
  *   POST   /api/races/{id}/entrants/handicaps set entered boats' TCFs from the same export
  *   POST   /api/races/{id}/abandon            call a race off, or put it back on
+ *   GET    /api/races/{id}/start-times        the sheet computing would publish now (saves nothing)
  *   POST   /api/races/{id}/start-times        compute and publish the pursuit start sheet
  *   GET    /api/races/{id}/times              RO-captured came / start / finish
  *   POST   /api/races/{id}/times              save them
@@ -271,6 +272,8 @@ public class ApiServlet extends HttpServlet
             writeJson(resp, store.racesInSeries(m.group(1)));
         else if ((m = RACE_TIMES.matcher(path)).matches())
             writeJson(resp, mapOf("raceId", m.group(1), "times", store.raceTimes(m.group(1))));
+        else if ((m = RACE_START_TIMES.matcher(path)).matches())
+            handlePreviewStartTimes(resp, m.group(1));
         else if ((m = RACE.matcher(path)).matches())
             writeRaceBundle(req, resp, m.group(1));
         else
@@ -1427,21 +1430,59 @@ public class ApiServlet extends HttpServlet
     {
         if (denyUnless(req, resp, Role.RACE_OFFICER))
             return;
+        Computed c = computeStartSheet(raceId, MAPPER.readTree(req.getInputStream()), resp);
+        if (c == null)
+            return;
+
+        store.putStartSheet(c.sheet());
+        // Persist the inputs on the race too, so reopening it shows what the
+        // published sheet was actually computed from.
+        Race race = c.race();
+        store.putRace(new Race(race.id(), race.seriesId(), race.number(), race.name(),
+            race.date(), c.sheet().earliestStart(), c.sheet().targetElapsedMinutes(),
+            race.abandoned()));
+        writeJson(resp, c.body());
+    }
+
+    /**
+     * The start sheet the race would get now, from its own target and earliest start,
+     * without publishing it. For the handicap calcs sheet, before the next race's starts
+     * are computed or once they are out of date with its TCFs: the engine's answer,
+     * so the browser never needs its own copy of the start-time rules. A race is public,
+     * so its preview is too.
+     */
+    private void handlePreviewStartTimes(HttpServletResponse resp, String raceId)
+        throws Exception
+    {
+        Computed c = computeStartSheet(raceId, MAPPER.createObjectNode(), resp);
+        if (c != null)
+            writeJson(resp, c.body());
+    }
+
+    /** A computed start sheet, the race it is for, and the response that reports it. */
+    private record Computed(Race race, StartSheet sheet, Map<String, Object> body) {}
+
+    /**
+     * Wiki §4, for publishing and previewing alike. Null when the race cannot be given
+     * a sheet, with the reason already written to {@code resp}.
+     */
+    private Computed computeStartSheet(String raceId, JsonNode body, HttpServletResponse resp)
+        throws Exception
+    {
         Race race = store.races().get(raceId);
         if (race == null)
         {
             resp.setStatus(404);
             writeJson(resp, mapOf("error", "no such race: " + raceId));
-            return;
+            return null;
         }
         RaceEntrants entrants = store.entrants(raceId);
         if (entrants == null || entrants.entrants().isEmpty())
         {
             badRequest(resp, "race has no entrants — seed them first");
-            return;
+            return null;
         }
 
-        JsonNode body = MAPPER.readTree(req.getInputStream());
         JinxConfig.Algorithm alg = algorithmFor(race.seriesId());
         int target = body.hasNonNull("targetElapsedMinutes")
             ? body.path("targetElapsedMinutes").asInt()
@@ -1472,7 +1513,7 @@ public class ApiServlet extends HttpServlet
                 + " minutes after it, which leaves no daylight to race in from the earliest"
                 + " start of " + earliest.toString().substring(0, 5) + ". Move the start earlier, "
                 + "or turn off the sunset limit for this series.");
-            return;
+            return null;
         }
 
         // The engine wants an id to key its answer by and the TCF in force. Entrants are
@@ -1494,19 +1535,12 @@ public class ApiServlet extends HttpServlet
         starts.sort(Comparator.comparing(StartTime::startTime));
 
         StartSheet sheet = new StartSheet(raceId, Instant.now(), target, earliest, starts);
-        store.putStartSheet(sheet);
-
-        // Persist the inputs on the race too, so reopening it shows what the
-        // published sheet was actually computed from.
-        store.putRace(new Race(race.id(), race.seriesId(), race.number(), race.name(),
-            race.date(), earliest, target, race.abandoned()));
-
         Map<String, Object> out = mapOf("ok", true, "raceId", raceId, "startSheet", sheet);
         out.put("requestedTargetMinutes", requested);
         out.put("limitedBySunset", target != requested);
         out.put("sunsetLocal", sunset == null ? null
             : String.format("%02d:%02d", sunset.getHour(), sunset.getMinute()));
-        writeJson(resp, out);
+        return new Computed(race, sheet, out);
     }
 
     /**

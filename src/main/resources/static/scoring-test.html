@@ -613,9 +613,13 @@
     { boatId: 'B', name: 'Bravo',   entryType: 'ROSTER' },
     { boatId: 'C', name: 'Charlie', entryType: 'ROSTER' }
   ];
-  const calcSheet = (target, starts) => ({
+  // As the engine stores it: each boat's τ = tm / tcf, where tm is target × the series
+  // median TCF — given here, since working it out would be the rule the sheet must not
+  // copy. The median is 1.00 unless a test says otherwise.
+  const calcSheet = (target, starts, tm = target) => ({
     targetElapsedMinutes: target, earliestStart: '18:00:00',
-    starts: starts.map(([boatId, tcf, startTime]) => ({ boatId, tcf, startTime }))
+    starts: starts.map(([boatId, tcf, startTime]) =>
+      ({ boatId, tcf, startTime, expectedElapsedMinutes: tm / tcf }))
   });
   const RACE_N = { entrants: { entrants: CALC_ENTRANTS }, startSheet: calcSheet(60, [
     ['A', 0.80, '18:00:00'], ['B', 1.00, '18:15:00'], ['C', 1.20, '18:25:00']]) };
@@ -659,7 +663,7 @@
   // fleet shift is −(15 − 6.33) = −8.67: the gun B ends on, measured from the one A had.
   {
     const next = { entrants: { entrants: CALC_ENTRANTS }, startSheet: calcSheet(60, [
-      ['A', 0.95, '18:03:00'], ['B', 0.90, '18:00:00'], ['C', 1.20, '18:16:00']]) };
+      ['A', 0.95, '18:03:00'], ['B', 0.90, '18:00:00'], ['C', 1.20, '18:16:00']], 57) };
     const c = handicapCalcs(RACE_N, next);
     check('calcs: the shift is the new scratch boat\'s race N start plus its result',
       [-8.7, -8.7, -8.7], c.rows.map(r => Math.round(r.shift * 10) / 10));
@@ -700,7 +704,27 @@
       [15, -1.2, null, null, null, null], row(c, 'X'));
   }
 
-  // A casual neither sets the median nor the scratch boat (wiki §4).
+  // The sheet is read as the engine stored it, whatever rule made it: race 2 of 2026/27
+  // was computed with a casual in the median. Here tm is 59 where the median rule would
+  // say 60, and every exact offset follows the stored τ — A to C is 59/0.8 − 59/1.2.
+  {
+    const old = { entrants: { entrants: CALC_ENTRANTS }, startSheet: calcSheet(60, [
+      ['A', 0.80, '18:00:00'], ['B', 1.00, '18:15:00'], ['C', 1.20, '18:25:00']], 59) };
+    const c = handicapCalcs(old, old);
+    check('calcs: target × median is read from the stored τ, not worked out again',
+      [59, 59], [Math.round(c.tmN * 1e9) / 1e9, Math.round(c.tmN1 * 1e9) / 1e9]);
+  }
+
+  // Another boat can round onto the first gun; the scratch boat is the one on it that is
+  // expected to take longest.
+  {
+    const close = { entrants: { entrants: CALC_ENTRANTS }, startSheet: calcSheet(60, [
+      ['A', 0.80, '18:00:00'], ['B', 0.805, '18:00:00'], ['C', 1.20, '18:25:00']]) };
+    check('calcs: of the boats on the first gun, the slowest is scratch', 'A',
+      handicapCalcs(close, close).scratchN1);
+  }
+
+  // A casual slower than the series starts before the first gun, so it is not scratch.
   {
     const entrants = [...CALC_ENTRANTS, { boatId: 'X', name: 'Xray', entryType: 'CASUAL' }];
     const withCasual = { entrants: { entrants }, startSheet: calcSheet(60, [
@@ -726,6 +750,24 @@
     check('result label: a place, else the reason, else nothing',
       [1, 'DNF', ''], [resultLabel('p1', places, flags), resultLabel('dnf', places, flags),
         resultLabel('new', places, flags)]);
+  }
+
+  // A published sheet is current while it was computed for the boats now entered, on the
+  // TCFs they now have. Reprocessing the previous race changes the TCFs and leaves the
+  // sheet behind, which is exactly when the calcs sheet must not use it.
+  {
+    const sheet = calcSheet(60, [['A', 0.80, '18:00:00'], ['B', 1.00, '18:15:00']]);
+    const bundle = es => ({ startSheet: sheet, entrants: { entrants: es } });
+    check('sheet current: same boats, same TCFs', true, startSheetIsCurrent(bundle(
+      [{ boatId: 'A', tcf: 0.80 }, { boatId: 'B', tcf: 1.00 }])));
+    check('sheet stale: a TCF has moved since', false, startSheetIsCurrent(bundle(
+      [{ boatId: 'A', tcf: 0.80 }, { boatId: 'B', tcf: 1.0150 }])));
+    check('sheet stale: a boat has been entered since', false, startSheetIsCurrent(bundle(
+      [{ boatId: 'A', tcf: 0.80 }, { boatId: 'B', tcf: 1.00 }, { boatId: 'C', tcf: 1.2 }])));
+    check('sheet stale: a boat has been taken out since', false, startSheetIsCurrent(bundle(
+      [{ boatId: 'A', tcf: 0.80 }])));
+    check('no sheet is not current', false,
+      startSheetIsCurrent({ startSheet: null, entrants: { entrants: [] } }));
   }
 
   // Only a next race with a start sheet can be split.

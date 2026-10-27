@@ -43,6 +43,7 @@
     <p class="calc-warning">These calculations are provisional. Results and handicaps may
       still change before the next race, and so may its start times. Check your start
       time online before <span class="race-n1"></span>.</p>
+    <p id="preview-note" class="calc-warning" style="display:none;"></p>
 
     <table class="report-table compact">
       <thead>
@@ -67,6 +68,9 @@
 
     <p id="earliest-note" class="report-note"></p>
 
+    <!-- ALGORITHM: these notes describe PursuitHandicapEngine's rules in words, for
+         competitors. When a rule changes there (and in wiki/Jinx-Handicaps.md), change
+         the words here. The numbers in the table follow by themselves. -->
     <dl class="calc-notes">
       <dt>Place</dt>
       <dd>The boat's place in <span class="race-n"></span>, or why it has none. The sheet
@@ -77,8 +81,9 @@
       <dt>Result Δ</dt>
       <dd>The boat's own handicap change from its result in <span class="race-n"></span>:
         the penalty for a top-five finish (+5, +4, +3, +2, +1) or the minute given back to
-        the boats behind (−1). It is very nearly whole minutes, because each new handicap
-        is set for the length of the next race.</dd>
+        the boats behind (−1). Boats tied on a place share what their places would have
+        given: two tied 4th get (2 + 1) ÷ 2 = +1.5 each. It is very nearly whole minutes,
+        because each new handicap is set for the length of the next race.</dd>
       <dt>Shift</dt>
       <dd>The same for every boat. Starts are measured from the slowest boat, which always
         starts on the earliest start. When the slowest boat's start changes, it is shifted
@@ -144,8 +149,27 @@
     const nextR = await fetchJson('/api/races/' + encodeURIComponent(b.nextRaceId));
     if (!nextR.ok) return fail('banner-err', 'Could not load the next race: ' + esc(errorOf(nextR)));
     const nb = nextR.body;
-
     const nameN = 'Race ' + b.race.number, nameN1 = 'Race ' + nb.race.number;
+
+    // The next race's starts as the fleet will get them. Until they are published, or
+    // once the TCFs have moved under a published sheet (this race reprocessed), that is
+    // what computing them would give now — asked of the server, which runs the engine,
+    // so no start-time rule is copied into this page.
+    let previewNote = '';
+    if (!startSheetIsCurrent(nb)) {
+      const pr = await fetchJson('/api/races/' + encodeURIComponent(b.nextRaceId) + '/start-times');
+      if (!pr.ok)
+        return fail('banner-warn', 'Could not work out ' + nameN1 + '\'s start times: '
+          + esc(errorOf(pr)));
+      previewNote = nameN1 + '\'s start times '
+        + (nb.startSheet ? 'were published before its handicaps last changed, so they are'
+          + ' out of date' : 'have not been published yet')
+        + '. Its starts here are what computing them now would give.';
+      nb.startSheet = pr.body.startSheet;
+    }
+    document.getElementById('preview-note').textContent = previewNote;
+    document.getElementById('preview-note').style.display = previewNote ? '' : 'none';
+
     document.getElementById('head-n').textContent = nameN;
     document.getElementById('head-n1').textContent = nameN1;
     document.querySelectorAll('.race-n').forEach(el => el.textContent = nameN);
@@ -159,11 +183,6 @@
 
     if (!b.startSheet)
       return fail('banner-warn', nameN + ' has no start sheet to calculate from.');
-    if (!nb.startSheet)
-      return fail('banner-warn', nameN1 + ' has no start times yet. '
-        + '<a href="/race.html?raceId=' + encodeURIComponent(b.nextRaceId)
-        + '">Compute them first.</a>');
-
     const calcs = handicapCalcs(b, nb);
     if (!calcs)
       return fail('banner-warn', 'The slowest boat in ' + nameN1 + ' did not sail '

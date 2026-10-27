@@ -645,35 +645,55 @@ function createScorer(state) {
 
 // --- handicap calcs: from one race's starts to the next's -------------------
 
-/** The median, as PursuitHandicapEngine.median takes it: the mean of the middle two. */
-function medianOf(values) {
-  const v = values.slice().sort((a, b) => a - b);
-  const n = v.length;
-  if (!n) return NaN;
-  return n % 2 ? v[(n - 1) / 2] : (v[n / 2 - 1] + v[n / 2]) / 2;
-}
-
 /**
- * A published start sheet, as the engine computed it (wiki §4): target × median TCF,
- * and the scratch boat, both over the series entrants unless there are none. Each
- * boat's published offset in whole minutes, and the exact one it was rounded from.
+ * A published start sheet, read back from what the engine stored rather than worked out
+ * again here. ALGORITHM: no handicap rule is re-implemented in this file — which boats set
+ * the median, which is scratch, how a TCF becomes a start all live in
+ * PursuitHandicapEngine.computeStartTimes, and a copy here went stale once already. What
+ * the sheet records is enough:
+ *
+ *   tm      target × median TCF, the same for every boat: each boat's stored τ × its TCF
+ *           (τ = tm / tcf).
+ *   scratch the boat on the first gun — the earliest start, to the nearest minute — with
+ *           the longest τ. Others can round onto that gun; none is expected to take longer.
+ *           A casual slower than the series starts before it and is not scratch.
+ *
+ * Each boat's published offset in whole minutes, and the exact one it was rounded from.
  */
 function startFrame(bundle) {
   const sheet = bundle.startSheet;
-  const types = new Map(((bundle.entrants && bundle.entrants.entrants) || [])
-    .map(e => [String(e.boatId), e.entryType]));
   const starts = sheet.starts || [];
-  let setters = starts.filter(s => types.get(String(s.boatId)) === 'ROSTER');
-  if (!setters.length) setters = starts;
-  const tm = sheet.targetElapsedMinutes * medianOf(setters.map(s => s.tcf));
-  const scratch = setters.reduce((a, b) => (b.tcf < a.tcf ? b : a));
+  if (!starts.length || starts.some(s => !(s.expectedElapsedMinutes > 0))) return null;
+  const tm = starts[0].expectedElapsedMinutes * starts[0].tcf;
   const earliest = parseTime(sheet.earliestStart);
+  const firstGun = Math.round(earliest / 60) * 60;
+  const onGun = starts.filter(s => parseTime(s.startTime) === firstGun);
+  if (!onGun.length) return null;
+  const scratch = onGun.reduce((a, b) =>
+    (b.expectedElapsedMinutes > a.expectedElapsedMinutes ? b : a));
   const boats = new Map(starts.map(s => [String(s.boatId), {
     tcf: s.tcf,
     published: Math.round((parseTime(s.startTime) - earliest) / 60),
-    exact: tm / scratch.tcf - tm / s.tcf
+    exact: scratch.expectedElapsedMinutes - s.expectedElapsedMinutes
   }]));
   return { tm, scratchId: String(scratch.boatId), boats };
+}
+
+/**
+ * Whether a race's published start sheet was computed for the boats entered now, on the
+ * TCFs they have now. Processing the race before carries new TCFs forward and leaves an
+ * already-published sheet behind; until it is computed again, it is not the start the
+ * fleet will get. TCFs compare at the four decimals they are held to (model/Tcf).
+ */
+function startSheetIsCurrent(bundle) {
+  const sheet = bundle && bundle.startSheet;
+  if (!sheet) return false;
+  const entered = (bundle.entrants && bundle.entrants.entrants) || [];
+  const starts = sheet.starts || [];
+  if (entered.length !== starts.length) return false;
+  const onSheet = new Map(starts.map(s => [String(s.boatId), s.tcf]));
+  return entered.every(e => onSheet.has(String(e.boatId))
+    && Math.round(onSheet.get(String(e.boatId)) * 1e4) === Math.round(e.tcf * 1e4));
 }
 
 /**
@@ -695,14 +715,21 @@ function startFrame(bundle) {
  *
  * Boats sorted by exact race N start; a boat in only one race has a start on that side
  * and comes after the rest. One that was handicapped in race N but is not in the next
- * (a casual is never carried forward) also has its result, from the saved adjustment. Null when the next race has no start
- * sheet, or the next race's scratch boat did not sail this one — then there is no race N
- * start to measure its move from.
+ * (a casual is never carried forward) also has its result, from the saved adjustment.
+ * Null when the next race has no start sheet, or the next race's scratch boat did not
+ * sail this one — then there is no race N start to measure its move from.
+ *
+ * ALGORITHM: this only takes apart what the engine produced — the saved TCFs and the
+ * start sheets' stored τ — so a change to the penalties, the giveback, ties or casuals
+ * shows up here by itself. What it does rely on is the shape of a start, τ = tm / tcf
+ * (PursuitHandicapEngine.computeStartTimes); change that and this must change too. The
+ * words that explain these columns to competitors are in report-handicaps.html.
  */
 function handicapCalcs(thisRace, nextRace) {
   if (!thisRace || !thisRace.startSheet || !nextRace || !nextRace.startSheet) return null;
   const n = startFrame(thisRace);
   const n1 = startFrame(nextRace);
+  if (!n || !n1) return null;
   const s = n1.scratchId;
   const sN = n.boats.get(s);
   if (!sN) return null;

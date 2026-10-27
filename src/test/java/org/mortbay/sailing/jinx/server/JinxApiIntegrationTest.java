@@ -338,6 +338,40 @@ class JinxApiIntegrationTest
         return out;
     }
 
+    /**
+     * The start sheet a race would get, without publishing it: what the handicap calcs
+     * sheet shows before the next race's starts are computed, from the engine itself
+     * rather than a copy of its rules in the browser. Anyone may look; nothing is saved.
+     */
+    @Test
+    void previewingStartTimesGivesWhatComputingWouldAndSavesNothing() throws Exception
+    {
+        String seriesId = createSeries("Twilight");
+        String slow = createBoat("A123", "Slow Poke");
+        String mid = createBoat("5678", "Mid Fleet");
+        String fast = createBoat("AUS9", "Quick Silver");
+        String raceId = createRace(seriesId, "2026-06-05");
+        enterBoats(raceId, fast, 1.0450, mid, 0.9450, slow, 0.8821);
+
+        JsonNode preview = get("/api/races/" + raceId + "/start-times").path("startSheet");
+        assertThat(get("/api/races/" + raceId).path("startSheet").isNull(), is(true));
+
+        JsonNode published = post("/api/races/" + raceId + "/start-times", "{}").path("startSheet");
+        assertThat(guns(M.createObjectNode().set("startSheet", preview)),
+            equalTo(guns(M.createObjectNode().set("startSheet", published))));
+        assertThat(preview.path("targetElapsedMinutes").asInt(),
+            equalTo(published.path("targetElapsedMinutes").asInt()));
+        assertThat(preview.path("starts").get(0).path("expectedElapsedMinutes").asDouble(),
+            greaterThan(0.0));
+    }
+
+    @Test
+    void previewingStartTimesNeedsEntrantsToo() throws Exception
+    {
+        String raceId = createRace(createSeries("S"), "2026-06-05");
+        assertThat(getRaw("/api/races/" + raceId + "/start-times").statusCode(), equalTo(400));
+    }
+
     @Test
     void startTimesNeedEntrants() throws Exception
     {
