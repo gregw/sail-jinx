@@ -648,6 +648,10 @@
     const c = handicapCalcs(RACE_N, next);
     check('calcs: duration stretches each gap in proportion', [15, 0, 0, 1, 0, 16], row(c, 'B'));
     check('calcs: and what is not a whole minute is rounding', [25, 0, 0, 1.7, 0.3, 27], row(c, 'C'));
+    // The sheet explains the duration column with the slowest and fastest boats' expected
+    // times, so it needs each boat's TCF in both races and target × median for each.
+    check('calcs: each row carries the TCF it sailed on in both races',
+      [0.8, 0.8, 60, 64], [c.rows[0].tcfN, c.rows[0].tcfN1, c.tmN, c.tmN1]);
   }
 
   // A new scratch boat: B is now the slowest. Median 0.95, so target × median is 57.

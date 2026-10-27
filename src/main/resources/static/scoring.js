@@ -726,6 +726,7 @@ function handicapCalcs(thisRace, nextRace) {
       boatId: id, name: e.name || id, sailNumber: e.sailNumber || '',
       entryType: e.entryType || null,
       startN: a ? a.published : null, startN1: b ? b.published : null,
+      tcfN: a ? a.tcf : null, tcfN1: b ? b.tcf : null,
       result: null, shift: null, duration: null, rounding: null,
       sortKey: [a && b ? 0 : (a ? 1 : 2), a ? a.exact : b.exact]
     };

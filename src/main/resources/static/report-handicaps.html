@@ -82,10 +82,12 @@
       <dt>Shift</dt>
       <dd>The same for every boat. Starts are measured from the slowest boat, which always
         starts on the earliest start. When the slowest boat's start changes, it is shifted
-        back to the earliest start, and the whole fleet is shifted by the same amount.</dd>
+        back to the earliest start, and the whole fleet is shifted by the same amount.<span
+        id="shift-why"></span></dd>
       <dt>Duration Δ</dt>
       <dd><span id="duration-why"></span> A longer race stretches every boat's gap to the
-        slowest boat in proportion, so the faster the boat, the more it moves.</dd>
+        slowest boat in proportion, so the faster the boat, the more it moves.<span
+        id="duration-example"></span></dd>
       <dt>Rounding</dt>
       <dd>Starts are on whole minutes, each to the nearest one. This is what both sheets'
         rounding adds up to, never more than a minute either way.</dd>
@@ -184,8 +186,33 @@
     // daylight: the race is cut so the fleet is home by a set time after sunset, and
     // that grows through spring and shrinks through autumn.
     const minsN = b.startSheet.targetElapsedMinutes, minsN1 = nb.startSheet.targetElapsedMinutes;
-    const durations = nameN + ' was expected to take ' + minsN + ' minutes and '
-      + nameN1 + ' ' + minsN1 + '.';
+    const durations = nameN1 + ' is expected to take ' + (minsN1 === minsN ? 'as long as '
+      : Math.abs(minsN1 - minsN) + ' minutes ' + (minsN1 > minsN ? 'longer than ' : 'less than '))
+      + nameN + ' (' + minsN1 + ' minutes, against ' + minsN + ').';
+
+    // The column in numbers, for the two boats at either end of it: the gap between the
+    // slowest and fastest boats' expected times, on the same handicaps, in each race. A
+    // boat expects to take target × median TCF ÷ its own TCF.
+    const both = calcs.rows.filter(r => r.duration != null);
+    const slow = both.find(r => r.boatId === calcs.scratchN1);
+    const fast = both.reduce((x, y) => (y.tcfN > x.tcfN ? y : x), both[0]);
+    let example = '';
+    if (slow && fast && fast !== slow) {
+      // Two places, so the reader's own subtraction of the gaps agrees with the column.
+      const m = v => v.toFixed(2);
+      const tN = r => calcs.tmN / r.tcfN;
+      const tN1 = r => calcs.tmN1 / r.tcfN;
+      const gapN = tN(slow) - tN(fast), gapN1 = tN1(slow) - tN1(fast);
+      const who = r => r.name + ' (TCF ' + fmtTcf(r.tcfN) + ')';
+      example = ' On ' + nameN + '\'s handicaps, the slowest boat, ' + who(slow)
+        + ', was expected to take ' + m(tN(slow)) + ' minutes in ' + nameN
+        + ' and the fastest, ' + who(fast) + ', ' + m(tN(fast)) + ': '
+        + m(gapN) + ' minutes apart. Over ' + nameN1 + '\'s duration they would take '
+        + m(tN1(slow)) + ' and ' + m(tN1(fast)) + ', ' + m(gapN1) + ' minutes apart, so '
+        + fast.name + ' starts ' + Math.abs(gapN1 - gapN).toFixed(1) + ' minutes '
+        + (gapN1 >= gapN ? 'later' : 'earlier') + ' relative to ' + slow.name
+        + '.';
+    }
     const alg = nb.algorithm || {};
     const after = alg.minutesAfterSunset ?? 0;
     const home = after === 0 ? 'sunset'
@@ -197,8 +224,39 @@
         + (nb.sunsetLocal ? ' Sunset on ' + nameN1 + ' is ' + nb.sunsetLocal
           + (b.sunsetLocal ? ', against ' + b.sunsetLocal + ' on ' + nameN : '') + '.' : '')
       : durations;
+    document.getElementById('duration-example').textContent = example;
 
-    const earliestN = parseTime(b.startSheet.earliestStart);
+    // Which boat made the shift. It is race N+1's slowest boat: where its own start would
+    // have gone — its race N start plus its result — the fleet moves the other way.
+    const byIdRow = new Map(calcs.rows.map(r => [r.boatId, r]));
+    const sNew = byIdRow.get(calcs.scratchN1), sOld = byIdRow.get(calcs.scratchN);
+    const mins = v => Math.abs(v).toFixed(1) + ' minute' + (Math.abs(v).toFixed(1) === '1.0' ? '' : 's');
+    let shiftWhy = '';
+    if (sNew && Math.abs(calcs.shift) < 0.05) {
+      shiftWhy = ' ' + sNew.name + ' is the slowest boat and its start did not change, so'
+        + ' there is no shift.';
+    } else if (sNew) {
+      const would = -calcs.shift;            // its race N start plus its result
+      const fleet = (calcs.shift > 0 ? 'later' : 'earlier');
+      if (calcs.scratchN1 === calcs.scratchN) {
+        shiftWhy = ' ' + sNew.name + ' was the slowest boat in both races. Its Result Δ of '
+          + fmtDelta(sNew.result) + ' would have started it ' + mins(would) + ' '
+          + (would < 0 ? 'before' : 'after') + ' the earliest start, so every boat moves '
+          + mins(calcs.shift) + ' ' + fleet + '.';
+      } else {
+        const startedAfter = would - sNew.result;
+        shiftWhy = ' ' + sNew.name + ' is now the slowest boat, in place of '
+          + (sOld ? sOld.name : 'the slowest boat in ' + nameN)
+          + (sOld && sOld.startN1 == null ? ', which is not in ' + nameN1 : '') + '. '
+          + sNew.name + ' started ' + mins(startedAfter) + ' after the earliest start in '
+          + nameN + ' and its Result Δ was ' + fmtDelta(sNew.result) + ', so it would have'
+          + ' started ' + mins(would) + ' ' + (would < 0 ? 'before' : 'after')
+          + ' the earliest start, and every boat moves ' + mins(calcs.shift) + ' ' + fleet + '.';
+      }
+    }
+    document.getElementById('shift-why').textContent = shiftWhy;
+
+    const earliestN =parseTime(b.startSheet.earliestStart);
     const earliestN1 = parseTime(nb.startSheet.earliestStart);
     document.getElementById('report-tbody').innerHTML =
       inResultOrder(calcs.rows, places, flags).map(r =>

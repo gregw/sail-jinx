@@ -480,6 +480,10 @@ table.report-table td.write-in { height: 1.9em; }
   color: var(--muted); font-size: 0.85rem;
 }
 
+/* Every printed sheet: A4 with a 1cm margin, rather than whatever the browser's default
+   is — which varies, and on some is wide enough to push a forty-boat fleet onto two pages. */
+@page { size: A4; margin: 1cm; }
+
 @media print {
   body { padding: 0; background: #fff; }
   .no-print, .site-nav { display: none !important; }
