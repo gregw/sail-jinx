@@ -89,8 +89,9 @@
         slowest boat in proportion, so the faster the boat, the more it moves.<span
         id="duration-example"></span></dd>
       <dt>Rounding</dt>
-      <dd>Starts are on whole minutes, each to the nearest one. This is what both sheets'
-        rounding adds up to, never more than a minute either way.</dd>
+      <dd>Each start is rounded to the nearest whole minute, so it is never more than 30s
+        from its exact time. This column combines both races' rounding, so it is never more
+        than a minute either way.</dd>
     </dl>
   </div>
 
@@ -198,20 +199,23 @@
     const fast = both.reduce((x, y) => (y.tcfN > x.tcfN ? y : x), both[0]);
     let example = '';
     if (slow && fast && fast !== slow) {
-      // Two places, so the reader's own subtraction of the gaps agrees with the column.
-      const m = v => v.toFixed(2);
-      const tN = r => calcs.tmN / r.tcfN;
-      const tN1 = r => calcs.tmN1 / r.tcfN;
-      const gapN = tN(slow) - tN(fast), gapN1 = tN1(slow) - tN1(fast);
+      // Each sum is done on the two-place figures it prints, so it checks on paper; it
+      // can differ from the column by a hundredth, which the column rounds away.
+      const r2 = v => Math.round(v * 100) / 100;
+      const m = v => r2(v).toFixed(2);
+      const minus = (a, b) => m(a) + ' − ' + m(b) + ' = ' + m(r2(a) - r2(b));
+      const tN = r => r2(calcs.tmN / r.tcfN);
+      const tN1 = r => r2(calcs.tmN1 / r.tcfN);
+      const gapN = r2(tN(slow) - tN(fast)), gapN1 = r2(tN1(slow) - tN1(fast));
       const who = r => r.name + ' (TCF ' + fmtTcf(r.tcfN) + ')';
       example = ' On ' + nameN + '\'s handicaps, the slowest boat, ' + who(slow)
         + ', was expected to take ' + m(tN(slow)) + ' minutes in ' + nameN
         + ' and the fastest, ' + who(fast) + ', ' + m(tN(fast)) + ': '
-        + m(gapN) + ' minutes apart. Over ' + nameN1 + '\'s duration they would take '
-        + m(tN1(slow)) + ' and ' + m(tN1(fast)) + ', ' + m(gapN1) + ' minutes apart, so '
-        + fast.name + ' starts ' + Math.abs(gapN1 - gapN).toFixed(1) + ' minutes '
-        + (gapN1 >= gapN ? 'later' : 'earlier') + ' relative to ' + slow.name
-        + '.';
+        + minus(tN(slow), tN(fast)) + ' minutes apart. Over ' + nameN1
+        + '\'s duration they would take ' + m(tN1(slow)) + ' and ' + m(tN1(fast)) + ': '
+        + minus(tN1(slow), tN1(fast)) + ' minutes apart. So ' + fast.name + ' starts '
+        + (gapN1 >= gapN ? minus(gapN1, gapN) + ' minutes later'
+          : minus(gapN, gapN1) + ' minutes earlier') + ' relative to ' + slow.name + '.';
     }
     const alg = nb.algorithm || {};
     const after = alg.minutesAfterSunset ?? 0;
