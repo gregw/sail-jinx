@@ -258,6 +258,26 @@ public class PursuitHandicapEngine implements HandicapEngine
         double[] rewards = minuteGiveback(
             participants.stream().map(Participant::kind).toArray(Kind[]::new), pool);
 
+        // §6.2 — boats tied on a place share what the places they occupy would have given
+        // them, the penalties and the minutes back alike. Done here, after both are handed
+        // out by rank, so neither the ladder nor the giveback needs to know about ties:
+        // each tie only averages within itself, and the pool is unchanged.
+        double[] penalties = participants.stream().mapToDouble(Participant::penalty).toArray();
+        for (int i = 0; i < finishers.size(); )
+        {
+            Integer place = finishers.get(i).position();
+            int j = i + 1;
+            while (place != null && j < finishers.size()
+                && place.equals(finishers.get(j).position()))
+                j++;
+            if (j - i > 1)
+            {
+                shareEvenly(penalties, i, j);
+                shareEvenly(rewards, i, j);
+            }
+            i = j;
+        }
+
         // Nobody may receive: every boat that raced is on the penalty ladder, and there is
         // no DNF, duty boat, non-starter or anybody at home either. That is a fleet no bigger than penaltyList —
         // one boat sailing alone, or a five-boat series scored on [5,4,3,2,1].
@@ -288,7 +308,7 @@ public class PursuitHandicapEngine implements HandicapEngine
         for (int i = 0; i < participants.size(); i++)
         {
             Participant p = participants.get(i);
-            double penalty = nobodyCanReceive ? 0.0 : p.penalty();
+            double penalty = nobodyCanReceive ? 0.0 : penalties[i];
             double reward = nobodyCanReceive ? 0.0 : rewards[i];
             double net = penalty - reward;
             double oldTcf = p.boat().tcf();
@@ -422,6 +442,16 @@ public class PursuitHandicapEngine implements HandicapEngine
                 out[i] = left / dncs.size();
         }
         return out;
+    }
+
+    /** Replaces {@code values[from..to)} with their mean. */
+    private static void shareEvenly(double[] values, int from, int to)
+    {
+        double sum = 0.0;
+        for (int k = from; k < to; k++)
+            sum += values[k];
+        for (int k = from; k < to; k++)
+            values[k] = sum / (to - from);
     }
 
     /** Shares {@code left} evenly over {@code boats}, a minute each at most; returns the rest. */

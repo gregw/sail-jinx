@@ -109,12 +109,108 @@ class MinuteGivebackTest
         return adj.get("b" + i).netAdjustmentMinutes();
     }
 
+    /** Boat {@code j} finishes on the same place, and the same elapsed, as boat {@code i}. */
+    private static Fixture tie(Fixture f, int i, int j)
+    {
+        Result r = f.results().get("b" + i);
+        String id = "b" + j;
+        f.results().put(id, new Result(id, FinishStatus.FIN, r.actualStart(), r.finish(),
+            null, r.finishPosition(), r.correctedFinishSeconds()));
+        return f;
+    }
+
     private static double sumOfNets(Map<String, Adjustment> adj)
     {
         return adj.values().stream().mapToDouble(Adjustment::netAdjustmentMinutes).sum();
     }
 
     // ---------------------------------------------------------------------------
+
+    // --- ties (wiki §6.2) ----------------------------------------------------
+
+    /**
+     * Two boats tied 4th share the 4th and 5th rungs: 1½ minutes each, where one was
+     * charged 2 and the other 1 (race 2 of the 2026/27 twilight series).
+     */
+    @Test
+    void boatsTiedOnAPenaltyPlaceShareTheRungsTheyOccupy()
+    {
+        Map<String, Adjustment> adj = run(tie(night(20, 20, 0), 3, 4));
+        assertThat(net(adj, 3), is(closeTo(1.5, 1e-9)));
+        assertThat(net(adj, 4), is(closeTo(1.5, 1e-9)));
+        // Nobody else moves, and it all still comes back.
+        assertThat(net(adj, 2), is(closeTo(3.0, 1e-9)));
+        assertThat(net(adj, 5), is(closeTo(-1.0, 1e-9)));
+        assertThat(sumOfNets(adj), is(closeTo(0.0, 1e-9)));
+    }
+
+    /** Three tied 1st take the top three rungs between them: 4 minutes each. */
+    @Test
+    void aThreeWayTieSharesThreeRungs()
+    {
+        Fixture f = tie(tie(night(20, 20, 0), 0, 1), 0, 2);
+        Map<String, Adjustment> adj = run(f);
+        for (int i = 0; i < 3; i++)
+            assertThat("b" + i, net(adj, i), is(closeTo(4.0, 1e-9)));
+        assertThat(net(adj, 3), is(closeTo(2.0, 1e-9)));
+        assertThat(sumOfNets(adj), is(closeTo(0.0, 1e-9)));
+    }
+
+    /**
+     * A tie across the end of the ladder: 5th pays a minute and gets none back, 6th pays
+     * nothing and gets one. Tied, they share both, and come out even.
+     */
+    @Test
+    void aTieAcrossTheEndOfTheLadderSharesThePenaltyAndTheMinuteBack()
+    {
+        Map<String, Adjustment> adj = run(tie(night(20, 20, 0), 4, 5));
+        for (int i : new int[] {4, 5})
+        {
+            Adjustment a = adj.get("b" + i);
+            assertThat("b" + i + " penalty", a.penaltyMinutes(), is(closeTo(0.5, 1e-9)));
+            assertThat("b" + i + " reward", a.rewardMinutes(), is(closeTo(0.5, 1e-9)));
+        }
+        assertThat(sumOfNets(adj), is(closeTo(0.0, 1e-9)));
+    }
+
+    /**
+     * Thirty home: the fifteen minutes back reach 16th and stop. Tied 15th, the boat
+     * that would have had one and the boat that would not share it.
+     */
+    @Test
+    void boatsTiedWhereTheMinutesRunOutShareTheLastOne()
+    {
+        Map<String, Adjustment> adj = run(tie(night(30, 30, 0), 14, 15));
+        assertThat(net(adj, 14), is(closeTo(-0.5, 1e-9)));
+        assertThat(net(adj, 15), is(closeTo(-0.5, 1e-9)));
+        assertThat(net(adj, 16), is(closeTo(-1.0, 1e-9)));
+        assertThat(net(adj, 13), is(closeTo(0.0, 1e-9)));
+        assertThat(sumOfNets(adj), is(closeTo(0.0, 1e-9)));
+    }
+
+    /**
+     * One minute left for three boats tied 14th: the minutes back reach 15th and stop, so
+     * of the three places 14th–16th only 16th had one. A third of a minute each.
+     */
+    @Test
+    void oneMinuteLeftForThreeTiedBoatsIsAThirdEach()
+    {
+        Fixture f = tie(tie(night(30, 30, 0), 13, 14), 13, 15);
+        Map<String, Adjustment> adj = run(f);
+        for (int i = 13; i <= 15; i++)
+            assertThat("b" + i, net(adj, i), is(closeTo(-1.0 / 3.0, 1e-9)));
+        assertThat(net(adj, 16), is(closeTo(-1.0, 1e-9)));
+        assertThat(sumOfNets(adj), is(closeTo(0.0, 1e-9)));
+    }
+
+    /** Tied where nothing changes hands, a tie changes nothing. */
+    @Test
+    void boatsTiedInTheMiddleOfTheFleetAreLeftAlone()
+    {
+        Map<String, Adjustment> adj = run(tie(night(30, 30, 0), 7, 8));
+        assertThat(net(adj, 7), is(closeTo(0.0, 1e-9)));
+        assertThat(net(adj, 8), is(closeTo(0.0, 1e-9)));
+    }
 
     /** Twenty out, twenty home: fifteen charged, one each to the fifteen behind. */
     @Test
