@@ -14,7 +14,7 @@
     .calc-notes { margin-top: 1.2em; font-size: 0.95em; }
     .calc-notes dt { font-weight: 600; }
     .calc-notes dd { margin: 0 0 0.4em 1.2em; }
-    .calc-warning { font-weight: 600; margin-top: 1em; }
+    .calc-warning { font-weight: 600; margin: 0 0 1em; }
     @media print {
       table.report-table th.span { border-bottom: 0.5pt solid #000; }
       table.report-table th.group-start, table.report-table td.group-start {
@@ -40,16 +40,21 @@
   <div id="report-state" class="banner banner-info">Loading…</div>
 
   <div id="report-body" style="display:none;">
+    <p class="calc-warning">These calculations are provisional. Results and handicaps may
+      still change before the next race, and so may its start times. Check your start
+      time online before <span class="race-n1"></span>.</p>
+
     <table class="report-table">
       <thead>
         <tr>
           <th>Boat</th>
-          <th id="head-n" class="span group-start" colspan="3"></th>
+          <th id="head-n" class="span group-start" colspan="4"></th>
           <th id="head-n1" class="span group-start" colspan="3"></th>
         </tr>
         <tr>
           <th class="nowrap">Name</th>
-          <th class="num-cell group-start">Start</th>
+          <th class="num-cell group-start">Place</th>
+          <th class="num-cell">Start</th>
           <th class="num-cell">Result&nbsp;Δ</th>
           <th class="num-cell">Shift</th>
           <th class="num-cell group-start">Duration&nbsp;Δ</th>
@@ -63,8 +68,11 @@
     <p id="earliest-note" class="report-note"></p>
 
     <dl class="calc-notes">
+      <dt>Place</dt>
+      <dd>The boat's place in <span class="race-n"></span>, or why it has none. The sheet
+        is in this order.</dd>
       <dt>Start</dt>
-      <dd>The boat's gun in each race. Each row adds up: the first Start, plus the four
+      <dd>The boat's start time in each race. Each row adds up: the first Start, plus the four
         columns between, is the second Start. The changes are in minutes.</dd>
       <dt>Result Δ</dt>
       <dd>The boat's own handicap change from its result in <span class="race-n"></span>:
@@ -73,20 +81,15 @@
         is set for the length of the next race.</dd>
       <dt>Shift</dt>
       <dd>The same for every boat. Starts are measured from the slowest boat, which always
-        starts on the earliest start. When that boat's own change would move its gun, it
-        cannot move, so the whole fleet moves the other way instead.</dd>
+        starts on the earliest start. When the slowest boat's start changes, it is shifted
+        back to the earliest start, and the whole fleet is shifted by the same amount.</dd>
       <dt>Duration Δ</dt>
-      <dd>A longer race stretches every boat's gap to the slowest boat in proportion, so
-        the faster the boat, the more it moves. A change in the fleet's median handicap
-        does the same, by much less.</dd>
+      <dd><span id="duration-why"></span> A longer race stretches every boat's gap to the
+        slowest boat in proportion, so the faster the boat, the more it moves.</dd>
       <dt>Rounding</dt>
-      <dd>Guns are on whole minutes, each to the nearest one. This is what both sheets'
+      <dd>Starts are on whole minutes, each to the nearest one. This is what both sheets'
         rounding adds up to, never more than a minute either way.</dd>
     </dl>
-
-    <p class="calc-warning">These calculations are provisional. Results and handicaps may
-      still change before the next race, and so may its start times. Check your start
-      time online before <span class="race-n1"></span>.</p>
   </div>
 
   <footer class="report-foot" id="report-foot"></footer>
@@ -106,7 +109,7 @@
     return (r < 0 ? '−' : '+') + Math.abs(r).toFixed(1);
   }
 
-  // A start is minutes after that race's earliest start, shown as the gun itself.
+  // A start is minutes after that race's earliest start, shown as the start time itself.
   function fmtStart(minutes, earliest) {
     if (minutes == null || earliest == null) return '';
     return fmtTimeOfDay(earliest + minutes * 60).slice(0, 5);
@@ -163,14 +166,48 @@
       return fail('banner-warn', 'The slowest boat in ' + nameN1 + ' did not sail '
         + nameN + ', so there is no start to measure the fleet\'s move from.');
 
+    // Places and reasons from exactly the scorer the race page and the finish sheet use,
+    // so the three cannot disagree.
+    const entrantsN = (b.entrants && b.entrants.entrants) || [];
+    const scorer = createScorer({
+      entrants: entrantsN,
+      startSheet: b.startSheet,
+      times: (b.times && b.times.times) || {},
+      dutyBoatId: b.times && b.times.dutyBoatId,
+      flagOverrides: new Map(),
+      tcfOverrides: new Map()
+    });
+    const places = scorer.places('pursuit');
+    const flags = new Map(entrantsN.map(e => [String(e.boatId), scorer.flags(e)]));
+
+    // Why the expected duration changed. With the sunset limit on, it is mostly the
+    // daylight: the race is cut so the fleet is home by a set time after sunset, and
+    // that grows through spring and shrinks through autumn.
+    const minsN = b.startSheet.targetElapsedMinutes, minsN1 = nb.startSheet.targetElapsedMinutes;
+    const durations = nameN + ' was expected to take ' + minsN + ' minutes and '
+      + nameN1 + ' ' + minsN1 + '.';
+    const alg = nb.algorithm || {};
+    const after = alg.minutesAfterSunset ?? 0;
+    const home = after === 0 ? 'sunset'
+      : Math.abs(after) + ' minutes ' + (after > 0 ? 'after' : 'before') + ' sunset';
+    document.getElementById('duration-why').textContent = alg.limitBySunset
+      ? 'Each race is as long as the daylight allows: its expected duration is cut so the'
+        + ' fleet is expected home by ' + home + ', so it grows as the evenings lengthen and shrinks as they'
+        + ' shorten. ' + durations
+        + (nb.sunsetLocal ? ' Sunset on ' + nameN1 + ' is ' + nb.sunsetLocal
+          + (b.sunsetLocal ? ', against ' + b.sunsetLocal + ' on ' + nameN : '') + '.' : '')
+      : durations;
+
     const earliestN = parseTime(b.startSheet.earliestStart);
     const earliestN1 = parseTime(nb.startSheet.earliestStart);
-    document.getElementById('report-tbody').innerHTML = calcs.rows.map(r =>
+    document.getElementById('report-tbody').innerHTML =
+      inResultOrder(calcs.rows, places, flags).map(r =>
       '<tr>'
       + '<td class="nowrap">' + esc(r.name)
         + (r.entryType && r.entryType !== 'ROSTER' ? ' <span class="hint">(casual)</span>' : '')
         + '</td>'
-      + '<td class="num-cell mono group-start">' + fmtStart(r.startN, earliestN) + '</td>'
+      + '<td class="num-cell mono group-start">' + esc(resultLabel(r.boatId, places, flags)) + '</td>'
+      + '<td class="num-cell mono">' + fmtStart(r.startN, earliestN) + '</td>'
       + '<td class="num-cell mono">' + fmtDelta(r.result) + '</td>'
       + '<td class="num-cell mono">' + fmtDelta(r.shift) + '</td>'
       + '<td class="num-cell mono group-start">' + fmtDelta(r.duration) + '</td>'
@@ -179,10 +216,10 @@
       + '</tr>').join('');
 
     // The columns add up in minutes after each race's own earliest start; when those
-    // differ, the guns differ by that too.
+    // differ, the starts differ by that too.
     document.getElementById('earliest-note').textContent = earliestN === earliestN1 ? ''
       : 'The earliest start moved from ' + fmtTimeOfDay(earliestN).slice(0, 5) + ' to '
-        + fmtTimeOfDay(earliestN1).slice(0, 5) + ', so every gun also moves by that.';
+        + fmtTimeOfDay(earliestN1).slice(0, 5) + ', so every start also moves by that.';
 
     document.getElementById('report-state').style.display = 'none';
     document.getElementById('report-body').style.display = '';

@@ -679,6 +679,23 @@
       ['A', 'B', 'C', 'D'], c.rows.map(r => r.boatId));
   }
 
+  // A casual is not carried into the next race, but it was handicapped (wiki §6.5): its
+  // result comes from the race's saved adjustment, in the next race's minutes, so the
+  // boat can see it before it turns up again. Nothing else, because it has no next start.
+  {
+    const entrants = [...CALC_ENTRANTS, { boatId: 'X', name: 'Xray', entryType: 'CASUAL' }];
+    const raceN = { entrants: { entrants }, startSheet: calcSheet(60, [
+      ['A', 0.80, '18:00:00'], ['B', 1.00, '18:15:00'], ['C', 1.20, '18:25:00'],
+      ['X', 1.00, '18:15:00']]),
+      // 1/0.98 − 1/1.00 = 0.0204, × 60 = 1.2 minutes.
+      adjustments: [{ boatId: 'X', oldTcf: 1.00, newTcf: 0.98 }] };
+    const next = { entrants: { entrants: CALC_ENTRANTS }, startSheet: calcSheet(60, [
+      ['A', 0.80, '18:00:00'], ['B', 1.00, '18:15:00'], ['C', 1.20, '18:25:00']]) };
+    const c = handicapCalcs(raceN, next);
+    check('calcs: a casual not in the next race still shows its result',
+      [15, -1.2, null, null, null, null], row(c, 'X'));
+  }
+
   // A casual neither sets the median nor the scratch boat (wiki §4).
   {
     const entrants = [...CALC_ENTRANTS, { boatId: 'X', name: 'Xray', entryType: 'CASUAL' }];
@@ -688,6 +705,23 @@
     const c = handicapCalcs(withCasual, withCasual);
     check('calcs: a casual sets neither the median nor the scratch boat',
       [-11, 0, 0, 0, 0, -11], row(c, 'X'));
+  }
+
+  // The calcs sheet is read beside the results, so it runs in result order: placed boats
+  // first to last, then the unplaced by reason in STATUS_ORDER, then boats that were not
+  // in the race at all. Within a reason, the order the rows came in.
+  {
+    const rows = ['dnc', 'p2', 'dnf', 'new', 'dns', 'p1', 'none', 'avg']
+      .map(boatId => ({ boatId }));
+    const places = new Map([['p1', 1], ['p2', 2]]);
+    const flags = new Map([['dnc', ['DNC']], ['dnf', ['DNF', 'OCS']], ['dns', ['DNS']],
+      ['avg', ['AVG']], ['p1', []], ['p2', ['OCS']], ['none', []]]);
+    check('result order: places, then reasons in STATUS_ORDER, then not in the race',
+      ['p1', 'p2', 'avg', 'dnf', 'dns', 'dnc', 'none', 'new'],
+      inResultOrder(rows, places, flags).map(r => r.boatId));
+    check('result label: a place, else the reason, else nothing',
+      [1, 'DNF', ''], [resultLabel('p1', places, flags), resultLabel('dnf', places, flags),
+        resultLabel('new', places, flags)]);
   }
 
   // Only a next race with a start sheet can be split.

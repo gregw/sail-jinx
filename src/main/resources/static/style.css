@@ -440,8 +440,11 @@ table.report-table td.nowrap, table.report-table th.nowrap { white-space: nowrap
 .report-head h1 { margin: 0; font-size: 1.4rem; }
 .report-sub { color: var(--muted); font-size: 0.95rem; margin-top: 0.2rem; }
 
+/* On screen, as wide as the columns need and no wider: stretched across a wide window, a
+   row was hard to follow from the boat's name to its numbers. Paper still gets the full
+   page (the print rules below), which is what the write-in columns want. */
 table.report-table {
-  width: 100%; box-shadow: none; border: none; border-radius: 0;
+  width: auto; max-width: 100%; box-shadow: none; border: none; border-radius: 0;
   font-size: 1.02rem;
 }
 table.report-table th {
@@ -482,7 +485,7 @@ table.report-table td.write-in { height: 1.9em; }
   .no-print, .site-nav { display: none !important; }
   .report { max-width: none; }
   .report-note { break-inside: avoid; }
-  table.report-table { font-size: 11pt; }
+  table.report-table { font-size: 11pt; width: 100%; }
   table.report-table th { border-bottom: 1pt solid #000; }
   /* Repeat the header on every page — a fleet of forty can spill over. */
   table.report-table thead { display: table-header-group; }

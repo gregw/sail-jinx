@@ -70,6 +70,34 @@ function unplacedRank(flagList) {
 }
 
 /**
+ * Rows in result order: placed boats first to last, then the unplaced by their reason
+ * ({@link unplacedRank}), then boats with no flags entry at all, which were not in the
+ * race. Stable, so within a reason the rows keep the order they came in.
+ *
+ * @param places Map boatId -> place, as scorer.places() gives it
+ * @param flags  Map boatId -> flag list, for every boat that was in the race
+ */
+function inResultOrder(rows, places, flags) {
+  const key = r => {
+    const id = String(r.boatId);
+    if (places.has(id)) return [0, places.get(id)];
+    if (flags.has(id)) return [1, unplacedRank(flags.get(id))];
+    return [2, 0];
+  };
+  return rows.map((r, i) => ({ r, i, k: key(r) }))
+    .sort((a, b) => a.k[0] - b.k[0] || a.k[1] - b.k[1] || a.i - b.i)
+    .map(x => x.r);
+}
+
+/** What a results column shows for a boat: its place, else its reason, else nothing. */
+function resultLabel(boatId, places, flags) {
+  const id = String(boatId);
+  if (places.has(id)) return places.get(id);
+  const f = flags.get(id) || [];
+  return STATUS_ORDER.find(s => f.includes(s)) || '';
+}
+
+/**
  * Apply one tick, or one untick, to a boat's flag override.
  *
  * <p>The override is {@code {added, removed}}, and what goes into {@code removed} is the
@@ -666,7 +694,8 @@ function startFrame(bundle) {
  *   rounding = the rest: both sheets' rounding to whole minutes.
  *
  * Boats sorted by exact race N start; a boat in only one race has a start on that side
- * and nothing else, and comes after the rest. Null when the next race has no start
+ * and comes after the rest. One that was handicapped in race N but is not in the next
+ * (a casual is never carried forward) also has its result, from the saved adjustment. Null when the next race has no start
  * sheet, or the next race's scratch boat did not sail this one — then there is no race N
  * start to measure its move from.
  */
@@ -686,6 +715,9 @@ function handicapCalcs(thisRace, nextRace) {
     for (const e of ((r.entrants && r.entrants.entrants) || []))
       names.set(String(e.boatId), e);
 
+  const adjusted = new Map((thisRace.adjustments || [])
+    .filter(x => x.oldTcf > 0 && x.newTcf > 0).map(x => [String(x.boatId), x]));
+
   const rows = [];
   for (const id of new Set([...n.boats.keys(), ...n1.boats.keys()])) {
     const a = n.boats.get(id), b = n1.boats.get(id);
@@ -702,6 +734,11 @@ function handicapCalcs(thisRace, nextRace) {
       row.shift = shift;
       row.duration = (n1.tm - n.tm) * (1 / sN.tcf - 1 / a.tcf);
       row.rounding = b.published - a.published - row.result - row.shift - row.duration;
+    } else if (a && adjusted.has(id)) {
+      // Not in the next race — a casual is not carried forward — but it was handicapped,
+      // and the new TCF it would come back on is in the saved adjustment.
+      const adj = adjusted.get(id);
+      row.result = n1.tm * (1 / adj.oldTcf - 1 / adj.newTcf);
     }
     rows.push(row);
   }
